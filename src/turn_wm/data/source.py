@@ -11,7 +11,6 @@ from __future__ import annotations
 import json
 from dataclasses import dataclass
 from pathlib import Path
-from typing import TypeAlias
 
 from datasets import Dataset, DatasetDict, load_dataset
 from huggingface_hub import hf_hub_download
@@ -76,7 +75,19 @@ class LocalSource:
     metadata_file: Path | None = None
 
 
-DataSource: TypeAlias = HuggingFaceSource | LocalSource
+type DataSource = HuggingFaceSource | LocalSource
+
+
+EGOCOM = HuggingFaceSource(
+    repo_id="batgre/conversational-dynamics-egocom",
+    model_ready_config="model_ready",
+    action_grid_config="action_grid",
+)
+
+# Published datasets addressable by name from the CLI and experiments.
+DATASETS: dict[str, HuggingFaceSource] = {
+    "egocom": EGOCOM,
+}
 
 
 @dataclass(frozen=True)
@@ -213,9 +224,7 @@ def _require_columns(
     missing = required - available
 
     if missing:
-        raise ValueError(
-            f"{artifact} is missing required columns: " f"{sorted(missing)}"
-        )
+        raise ValueError(f"{artifact} is missing required columns: {sorted(missing)}")
 
 
 def _read_json(path: Path) -> dict[str, object]:

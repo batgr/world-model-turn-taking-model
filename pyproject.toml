@@ -4,14 +4,19 @@ version = "0.1.0"
 requires-python = ">=3.13"
 dependencies = [
     "datasets>=5.0.1",
+    "httpx>=0.28.1",
     "huggingface-hub>=1.32.0",
     "numpy>=2.5.3",
     "torch>=2.14.0",
 ]
 
+[project.scripts]
+turn-wm = "turn_wm.cli:main"
+
 [dependency-groups]
 dev = [
     "pytest>=8.4",
+    "ruff>=0.12",
 ]
 
 [build-system]
@@ -23,3 +28,9 @@ packages = ["src/turn_wm"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
+# Real-data tests download from the Hugging Face Hub; run them explicitly
+# with `uv run pytest -m integration`.
+addopts = "-m 'not integration'"
+markers = [
+    "integration: requires network access to the published Hugging Face datasets",
+]

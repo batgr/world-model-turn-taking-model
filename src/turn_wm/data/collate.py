@@ -12,6 +12,7 @@ from typing import Any
 
 import torch
 from torch.nn.utils.rnn import pad_sequence
+
 from turn_wm.data.dataset import PAD_ACTION_ID, PAD_STATE_ID
 
 

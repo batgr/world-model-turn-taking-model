@@ -9,8 +9,9 @@ balanced sampling compensates for event/background frequency imbalance.
 from __future__ import annotations
 
 from collections import Counter
+from collections.abc import Sequence
 from dataclasses import dataclass
-from typing import Literal, Sequence
+from typing import Literal
 
 import torch
 from torch.utils.data import Sampler, WeightedRandomSampler

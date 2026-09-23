@@ -99,7 +99,8 @@ class TurnTakingDataset(Dataset):
         anchor_idx = int(anchor["anchor_idx"])
         anchor_row = int(anchor["anchor_row"])
 
-        window = build_window(
+        # Validates the logical window bounds; row offsets are derived below.
+        build_window(
             anchor_idx=anchor_idx,
             context_steps=context_steps,
             future_steps=self.window.future_steps,
@@ -219,14 +220,11 @@ class TurnTakingDataset(Dataset):
         row_count = len(rows["recording_id"])
 
         if row_count != expected_steps:
-            raise ValueError(
-                f"Expected {expected_steps} grid rows, " f"got {row_count}"
-            )
+            raise ValueError(f"Expected {expected_steps} grid rows, got {row_count}")
 
         recordings = set(rows["recording_id"])
 
         if recordings != {recording_id}:
             raise ValueError(
-                "Extracted window crosses a recording boundary: "
-                f"{sorted(recordings)}"
+                f"Extracted window crosses a recording boundary: {sorted(recordings)}"
             )

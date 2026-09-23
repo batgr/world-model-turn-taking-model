@@ -59,7 +59,7 @@ def build_window(
 
     if context_start < 0:
         raise ValueError(
-            f"Anchor {anchor_idx} does not provide " f"{context_steps} context steps"
+            f"Anchor {anchor_idx} does not provide {context_steps} context steps"
         )
 
     return WindowBounds(

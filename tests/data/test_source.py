@@ -56,12 +56,8 @@ def test_load_local_source(tmp_path):
     model_ready = tmp_path / "model_ready"
     model_ready.mkdir()
 
-    make_model_ready("train").to_parquet(
-        model_ready / "train.parquet"
-    )
-    make_model_ready("validation").to_parquet(
-        model_ready / "validation.parquet"
-    )
+    make_model_ready("train").to_parquet(model_ready / "train.parquet")
+    make_model_ready("validation").to_parquet(model_ready / "validation.parquet")
 
     action_grid = tmp_path / "action_grid.parquet"
     make_action_grid().to_parquet(action_grid)
@@ -92,9 +88,7 @@ def test_missing_action_grid_raises(tmp_path):
     model_ready = tmp_path / "model_ready"
     model_ready.mkdir()
 
-    make_model_ready("train").to_parquet(
-        model_ready / "train.parquet"
-    )
+    make_model_ready("train").to_parquet(model_ready / "train.parquet")
 
     with pytest.raises(FileNotFoundError):
         load_data(
@@ -125,9 +119,7 @@ def test_split_column_must_match_physical_split(tmp_path):
     model_ready = tmp_path / "model_ready"
     model_ready.mkdir()
 
-    make_model_ready("validation").to_parquet(
-        model_ready / "train.parquet"
-    )
+    make_model_ready("validation").to_parquet(model_ready / "train.parquet")
 
     action_grid = tmp_path / "action_grid.parquet"
     make_action_grid().to_parquet(action_grid)
@@ -145,12 +137,8 @@ def test_test_split_is_optional(tmp_path):
     model_ready = tmp_path / "model_ready"
     model_ready.mkdir()
 
-    make_model_ready("train").to_parquet(
-        model_ready / "train.parquet"
-    )
-    make_model_ready("validation").to_parquet(
-        model_ready / "validation.parquet"
-    )
+    make_model_ready("train").to_parquet(model_ready / "train.parquet")
+    make_model_ready("validation").to_parquet(model_ready / "validation.parquet")
 
     action_grid = tmp_path / "action_grid.parquet"
     make_action_grid().to_parquet(action_grid)

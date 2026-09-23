@@ -1,6 +1,6 @@
 import pytest
 import torch
-from datasets import Dataset
+from datasets import Dataset, concatenate_datasets
 
 from turn_wm.data.dataset import (
     ACTION_TO_ID,
@@ -9,7 +9,6 @@ from turn_wm.data.dataset import (
     TurnTakingDataset,
     WindowConfig,
 )
-from datasets import concatenate_datasets
 
 
 def make_grid(
