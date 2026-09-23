@@ -59,7 +59,7 @@ def collate_turn_taking(
 
     future_valid = torch.stack([sample["future_valid"] for sample in samples])
 
-    return {
+    batch = {
         "context_state": context_state,
         "context_action": context_action,
         "context_valid": context_valid,
@@ -80,3 +80,15 @@ def collate_turn_taking(
         ),
         "sample_class": [sample["sample_class"] for sample in samples],
     }
+
+    has_media = "context_media" in samples[0]
+
+    if any(("context_media" in sample) != has_media for sample in samples):
+        raise ValueError("Cannot collate mixed media and non-media samples")
+
+    if has_media:
+        batch["context_media"] = [sample["context_media"] for sample in samples]
+
+        batch["future_media"] = [sample["future_media"] for sample in samples]
+
+    return batch

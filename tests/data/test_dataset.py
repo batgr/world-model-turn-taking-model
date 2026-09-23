@@ -1,5 +1,6 @@
 import pytest
 import torch
+from pathlib import Path
 from datasets import Dataset, concatenate_datasets
 
 from turn_wm.data.dataset import (
@@ -9,6 +10,118 @@ from turn_wm.data.dataset import (
     TurnTakingDataset,
     WindowConfig,
 )
+from unittest.mock import Mock
+
+import pytest
+
+from turn_wm.data.media import (
+    MediaIndex,
+    MediaPaths,
+)
+from turn_wm.data.reader import (
+    MediaReader,
+    MediaWindow,
+)
+
+
+def test_media_reader_requires_media_index():
+    reader = Mock(spec=MediaReader)
+
+    with pytest.raises(
+        ValueError,
+        match="requires media_index",
+    ):
+        TurnTakingDataset(
+            anchors=make_anchors(),
+            action_grid=make_grid(),
+            window=WindowConfig(),
+            training=False,
+            media_reader=reader,
+        )
+
+
+def test_dataset_without_media_keeps_original_contract():
+    dataset = TurnTakingDataset(
+        anchors=make_anchors(),
+        action_grid=make_grid(),
+        window=WindowConfig(
+            min_context_steps=10,
+            max_context_steps=10,
+            future_steps=10,
+        ),
+        training=False,
+    )
+
+    sample = dataset[0]
+
+    assert "context_media" not in sample
+    assert "future_media" not in sample
+
+
+def test_dataset_attaches_aligned_media_windows():
+    media_index = MediaIndex(
+        {
+            "r1": MediaPaths(
+                recording_id="r1",
+                video_path=Path("/fake/r1.mp4"),
+            )
+        },
+        validate_paths=False,
+    )
+
+    reader = Mock(spec=MediaReader)
+
+    reader.read_window.side_effect = [
+        MediaWindow(
+            start_time_s=1.0,
+            end_time_s=2.0,
+            audio=None,
+            video=None,
+        ),
+        MediaWindow(
+            start_time_s=2.0,
+            end_time_s=3.0,
+            audio=None,
+            video=None,
+        ),
+    ]
+
+    dataset = TurnTakingDataset(
+        anchors=make_anchors(
+            anchor_idx=19,
+            anchor_row=19,
+            max_context_steps=10,
+            future_steps=10,
+        ),
+        action_grid=make_grid(),
+        window=WindowConfig(
+            min_context_steps=10,
+            max_context_steps=10,
+            future_steps=10,
+        ),
+        training=False,
+        media_index=media_index,
+        media_reader=reader,
+    )
+
+    sample = dataset[0]
+
+    assert "context_media" in sample
+    assert "future_media" in sample
+
+    assert reader.read_window.call_count == 2
+
+    first_call = reader.read_window.call_args_list[0]
+
+    assert first_call.kwargs["start_time_s"] == pytest.approx(1.0)
+
+    assert first_call.kwargs["end_time_s"] == pytest.approx(2.0)
+
+    second_call = reader.read_window.call_args_list[1]
+
+    assert second_call.kwargs["start_time_s"] == pytest.approx(2.0)
+
+    assert second_call.kwargs["end_time_s"] == pytest.approx(3.0)
 
 
 def make_grid(

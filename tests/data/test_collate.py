@@ -6,6 +6,85 @@ from turn_wm.data.dataset import (
     PAD_ACTION_ID,
     PAD_STATE_ID,
 )
+from turn_wm.data.reader import MediaWindow
+
+
+def test_media_windows_are_preserved_as_lists():
+    first = make_sample(
+        sample_id="a",
+        length=2,
+    )
+
+    second = make_sample(
+        sample_id="b",
+        length=4,
+    )
+
+    first["context_media"] = MediaWindow(
+        start_time_s=0.0,
+        end_time_s=1.0,
+        audio=None,
+        video=None,
+    )
+
+    first["future_media"] = MediaWindow(
+        start_time_s=1.0,
+        end_time_s=2.0,
+        audio=None,
+        video=None,
+    )
+
+    second["context_media"] = MediaWindow(
+        start_time_s=0.0,
+        end_time_s=1.0,
+        audio=None,
+        video=None,
+    )
+
+    second["future_media"] = MediaWindow(
+        start_time_s=1.0,
+        end_time_s=2.0,
+        audio=None,
+        video=None,
+    )
+
+    batch = collate_turn_taking([first, second])
+
+    assert len(batch["context_media"]) == 2
+
+    assert len(batch["future_media"]) == 2
+
+
+def test_mixed_media_batch_raises():
+    first = make_sample(
+        sample_id="a",
+        length=2,
+    )
+
+    second = make_sample(
+        sample_id="b",
+        length=2,
+    )
+
+    first["context_media"] = MediaWindow(
+        start_time_s=0.0,
+        end_time_s=1.0,
+        audio=None,
+        video=None,
+    )
+
+    first["future_media"] = MediaWindow(
+        start_time_s=1.0,
+        end_time_s=2.0,
+        audio=None,
+        video=None,
+    )
+
+    with pytest.raises(
+        ValueError,
+        match="mixed media",
+    ):
+        collate_turn_taking([first, second])
 
 
 def make_sample(

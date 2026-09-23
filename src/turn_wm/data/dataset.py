@@ -14,7 +14,8 @@ from typing import Any
 import torch
 from datasets import Dataset as HFDataset
 from torch.utils.data import Dataset
-
+from turn_wm.data.media import MediaIndex
+from turn_wm.data.reader import MediaReader
 from turn_wm.data.window import build_window, validate_against_anchor
 
 STATE_TO_ID = {
@@ -68,6 +69,8 @@ class TurnTakingDataset(Dataset):
         window: WindowConfig,
         training: bool,
         trainable_only: bool = True,
+        media_index: MediaIndex | None = None,
+        media_reader: MediaReader | None = None,
     ) -> None:
         if trainable_only:
             anchors = anchors.filter(
@@ -76,10 +79,21 @@ class TurnTakingDataset(Dataset):
                 desc="Filtering trainable anchors",
             )
 
+        if media_reader is not None and media_index is None:
+            raise ValueError("media_reader requires media_index")
+
         self.anchors = anchors
         self.action_grid = action_grid
         self.window = window
         self.training = training
+
+        self.media_index = media_index
+
+        self.media_reader = (
+            media_reader
+            if media_reader is not None
+            else MediaReader() if media_index is not None else None
+        )
 
     def __len__(self) -> int:
         return len(self.anchors)
@@ -130,7 +144,7 @@ class TurnTakingDataset(Dataset):
         actions = rows["action"]
         valid = rows["action_valid"]
 
-        return {
+        sample = {
             "context_state": torch.tensor(
                 self._encode_states(states[context]),
                 dtype=torch.long,
@@ -163,9 +177,63 @@ class TurnTakingDataset(Dataset):
             "sample_class": anchor["sample_class"],
         }
 
+        if self.media_index is not None:
+            self._attach_media(
+                sample=sample,
+                rows=rows,
+                context_steps=context_steps,
+                recording_id=anchor["recording_id"],
+            )
+
+        return sample
+
     def sample_classes(self) -> list[str]:
         """Return the sampling class associated with each exposed anchor."""
         return list(self.anchors["sample_class"])
+
+    def _attach_media(
+        self,
+        *,
+        sample: dict[str, Any],
+        rows: dict[str, list[Any]],
+        context_steps: int,
+        recording_id: str,
+    ) -> None:
+        if self.media_index is None or self.media_reader is None:
+            return
+
+        decision_times = [float(value) for value in rows["decision_time_s"]]
+
+        if len(decision_times) <= context_steps:
+            raise ValueError("Cannot derive media boundaries from window")
+
+        context_start_s = decision_times[0]
+
+        # First future grid point.
+        future_start_s = decision_times[context_steps]
+
+        # Grid spacing comes directly from the canonical
+        # action grid instead of being hard-coded to 10 Hz.
+        grid_step_s = decision_times[context_steps] - decision_times[context_steps - 1]
+
+        if grid_step_s <= 0:
+            raise ValueError("Action-grid timestamps must be strictly increasing")
+
+        future_end_s = decision_times[-1] + grid_step_s
+
+        media = self.media_index.get(recording_id)
+
+        sample["context_media"] = self.media_reader.read_window(
+            media,
+            start_time_s=context_start_s,
+            end_time_s=future_start_s,
+        )
+
+        sample["future_media"] = self.media_reader.read_window(
+            media,
+            start_time_s=future_start_s,
+            end_time_s=future_end_s,
+        )
 
     def _context_steps(self, anchor: dict[str, Any]) -> int:
         available = min(

@@ -3,6 +3,7 @@ name = "world-model-turn-taking-models"
 version = "0.1.0"
 requires-python = ">=3.13"
 dependencies = [
+    "av>=18.1.0",
     "datasets>=5.0.1",
     "httpx>=0.28.1",
     "huggingface-hub>=1.32.0",
