@@ -8,7 +8,8 @@ The data repository publishes a `media_manifest` keyed by
     media_time_s = decision_time_s + media_offset_s
 
 This module joins those records with locally configured corpus roots. It
-contains no corpus-specific logic.
+contains no corpus-specific logic. It also defines the media modalities a
+dataset can decode.
 """
 
 from __future__ import annotations
@@ -17,10 +18,49 @@ import math
 from collections.abc import Iterable, Mapping
 from dataclasses import dataclass
 from pathlib import Path, PurePosixPath
+from typing import Literal, get_args
 
 from datasets import Dataset
 
 type MediaKey = tuple[str, str]
+
+MediaModality = Literal["audio", "video"]
+
+# Every supported modality, in canonical order; also the default selection.
+MEDIA_MODALITIES: tuple[MediaModality, ...] = get_args(MediaModality)
+
+
+def validate_modalities(
+    modalities: Iterable[MediaModality],
+) -> tuple[MediaModality, ...]:
+    """Check a modality selection and return it in canonical order.
+
+    The selection must be non-empty, contain only supported modalities and
+    name each at most once; order does not matter.
+    """
+
+    if isinstance(modalities, str):
+        raise TypeError(
+            f"modalities must be a collection such as ({modalities!r},), not a string"
+        )
+
+    values = tuple(modalities)
+
+    if not values:
+        raise ValueError("At least one media modality must be selected")
+
+    unknown = [value for value in values if value not in MEDIA_MODALITIES]
+
+    if unknown:
+        raise ValueError(
+            f"Unsupported media modalities {unknown}; "
+            f"supported: {list(MEDIA_MODALITIES)}"
+        )
+
+    if len(set(values)) != len(values):
+        raise ValueError(f"Duplicate media modalities: {list(values)}")
+
+    return tuple(modality for modality in MEDIA_MODALITIES if modality in values)
 
 
 @dataclass(frozen=True)

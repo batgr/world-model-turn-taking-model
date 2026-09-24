@@ -168,8 +168,17 @@ def first_local_index(full, corpus: str, root: Path, *, offset_filter) -> int:
     return positions[0].as_py()
 
 
-def test_real_media_flows_through_one_pipeline(full):
+@pytest.mark.parametrize(
+    ("modalities", "audio", "video"),
+    [
+        (None, True, True),
+        (("audio",), True, False),
+        (("video",), False, True),
+    ],
+)
+def test_real_media_flows_through_one_pipeline(full, modalities, audio, video):
     roots = media_roots()
+    selection = {} if modalities is None else {"modalities": modalities}
 
     dataset = build_dataset(
         full,
@@ -177,6 +186,7 @@ def test_real_media_flows_through_one_pipeline(full):
         window=WINDOW,
         training=False,
         media_roots=roots,
+        **selection,
     )
     # Global start of each corpus, whatever order the builder chose.
     starts, total = {}, 0
@@ -206,5 +216,13 @@ def test_real_media_flows_through_one_pipeline(full):
         assert future.start_time_s == context.end_time_s
 
         for window in (context, future):
-            assert window.video is not None and window.video.frames.shape[0] > 0
-            assert window.audio is not None and window.audio.waveform.shape[1] > 0
+            if video:
+                assert window.video is not None and window.video.frames.shape[0] > 0
+            else:
+                assert window.video is None
+
+            if audio:
+                assert window.audio is not None
+                assert window.audio.waveform.shape[1] > 0
+            else:
+                assert window.audio is None

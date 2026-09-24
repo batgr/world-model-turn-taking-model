@@ -8,6 +8,7 @@ and actions, and returns tensors. Batching and sampling are handled elsewhere.
 
 from __future__ import annotations
 
+from collections.abc import Iterable
 from dataclasses import dataclass, replace
 from typing import Any
 
@@ -15,7 +16,13 @@ import torch
 from datasets import Dataset as HFDataset
 from torch.utils.data import Dataset
 
-from turn_wm.data.media import MediaIndex, MediaPaths
+from turn_wm.data.media import (
+    MEDIA_MODALITIES,
+    MediaIndex,
+    MediaModality,
+    MediaPaths,
+    validate_modalities,
+)
 from turn_wm.data.reader import MediaReader, MediaWindow
 from turn_wm.data.window import build_window, validate_against_anchor
 
@@ -60,7 +67,11 @@ class WindowConfig:
 
 
 class TurnTakingDataset(Dataset):
-    """Expose temporal turn-taking samples from model-ready anchors."""
+    """Expose temporal turn-taking samples from model-ready anchors.
+
+    With a `media_index`, samples also carry `context_media`/`future_media`
+    windows in which only the selected `modalities` are decoded.
+    """
 
     def __init__(
         self,
@@ -72,7 +83,10 @@ class TurnTakingDataset(Dataset):
         trainable_only: bool = True,
         media_index: MediaIndex | None = None,
         media_reader: MediaReader | None = None,
+        modalities: Iterable[MediaModality] = MEDIA_MODALITIES,
     ) -> None:
+        self.modalities = validate_modalities(modalities)
+
         if trainable_only:
             anchors = anchors.filter(
                 lambda batch: batch["is_trainable"],
@@ -259,6 +273,7 @@ class TurnTakingDataset(Dataset):
             media,
             start_time_s=media.to_media_time(start_time_s),
             end_time_s=media.to_media_time(end_time_s),
+            modalities=self.modalities,
         )
 
         return replace(

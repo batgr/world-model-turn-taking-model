@@ -198,20 +198,22 @@ def make_manifest(*rows: dict) -> Dataset:
 class FakeMediaReader:
     """Decodes nothing; returns small tensors shaped like real media."""
 
-    def read_window(self, media, *, start_time_s, end_time_s):
+    def read_window(self, media, *, start_time_s, end_time_s, modalities):
         frames = round((end_time_s - start_time_s) * 30)
+        audio = DecodedAudio(
+            waveform=torch.zeros(2, round((end_time_s - start_time_s) * 16_000)),
+            sample_rate=16_000,
+        )
+        video = DecodedVideo(
+            frames=torch.zeros(frames, 3, 24, 32, dtype=torch.uint8),
+            timestamps_s=start_time_s + torch.arange(frames) / 30,
+        )
 
         return MediaWindow(
             start_time_s=start_time_s,
             end_time_s=end_time_s,
-            audio=DecodedAudio(
-                waveform=torch.zeros(2, round((end_time_s - start_time_s) * 16_000)),
-                sample_rate=16_000,
-            ),
-            video=DecodedVideo(
-                frames=torch.zeros(frames, 3, 24, 32, dtype=torch.uint8),
-                timestamps_s=start_time_s + torch.arange(frames) / 30,
-            ),
+            audio=audio if "audio" in modalities else None,
+            video=video if "video" in modalities else None,
         )
 
 
@@ -250,6 +252,61 @@ def test_inspect_data_with_media_manifest(fake_load, media_root, capsys):
     assert "canonical time: 0.500 s → 2.000 s" in out
     assert "physical media time: 0.500 s → 2.000 s" in out
     assert "shape (T, C, H, W): (45, 3, 24, 32)" in out
+
+
+def test_inspect_data_reports_default_modalities(fake_load, media_root, capsys):
+    _, state = fake_load
+    state["data"] = make_data(media_manifest=make_manifest(), train=make_anchors())
+
+    assert cli.main(["inspect-data", "--media-root", str(media_root)]) == 0
+
+    assert "modalities: audio, video" in capsys.readouterr().out
+
+
+@pytest.mark.parametrize(
+    ("value", "reported", "absent"),
+    [
+        ("audio", "audio", "video"),
+        ("video", "video", "audio"),
+        ("video,audio", "audio, video", None),
+    ],
+)
+def test_inspect_data_modalities(
+    fake_load, media_root, capsys, value, reported, absent
+):
+    _, state = fake_load
+    state["data"] = make_data(media_manifest=make_manifest(), train=make_anchors())
+
+    argv = ["inspect-data", "--media-root", str(media_root), "--modalities", value]
+
+    assert cli.main(argv) == 0
+
+    out = capsys.readouterr().out
+
+    assert f"modalities: {reported}" in out
+
+    for modality in ("audio", "video"):
+        present = "no" if modality == absent else "yes"
+        assert f"  {modality}:\n    present: {present}" in out
+
+
+@pytest.mark.parametrize("value", ["", "text", "audio,depth", "audio,audio"])
+def test_inspect_data_rejects_invalid_modalities(media_root, capsys, value):
+    argv = ["inspect-data", "--media-root", str(media_root), "--modalities", value]
+
+    with pytest.raises(SystemExit) as error:
+        cli.main(argv)
+
+    assert error.value.code == 2
+    assert "argument --modalities" in capsys.readouterr().err
+
+
+def test_modalities_require_a_media_root(capsys):
+    with pytest.raises(SystemExit) as error:
+        cli.main(["inspect-data", "--modalities", "audio"])
+
+    assert error.value.code == 2
+    assert "--modalities requires --media-root" in capsys.readouterr().err
 
 
 def test_nonzero_offset_formatting(fake_load, media_root, capsys):

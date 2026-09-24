@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import math
+from collections.abc import Iterable
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -8,7 +9,12 @@ import av
 import numpy as np
 import torch
 
-from turn_wm.data.media import MediaPaths
+from turn_wm.data.media import (
+    MEDIA_MODALITIES,
+    MediaModality,
+    MediaPaths,
+    validate_modalities,
+)
 
 
 @dataclass(frozen=True)
@@ -48,7 +54,9 @@ class MediaReader:
     """Decode timestamp-aligned audio/video windows using PyAV.
 
     Times are on the media file's own timeline; callers convert canonical
-    grid times beforehand.
+    grid times beforehand. Only the selected modalities are decoded; the
+    others are also skipped by the demuxer, so embedded audio can be read
+    without touching the video packets of its container, and vice versa.
     """
 
     def read_window(
@@ -57,7 +65,16 @@ class MediaReader:
         *,
         start_time_s: float,
         end_time_s: float,
+        modalities: Iterable[MediaModality] = MEDIA_MODALITIES,
     ) -> MediaWindow:
+        """Decode the selected modalities of `media` over a time interval.
+
+        A selected modality the media does not provide is None, as is a
+        modality that was not selected.
+        """
+
+        selected = validate_modalities(modalities)
+
         self._validate_window(
             start_time_s=start_time_s,
             end_time_s=end_time_s,
@@ -66,7 +83,7 @@ class MediaReader:
         video = None
         audio = None
 
-        if media.video_path is not None:
+        if "video" in selected and media.video_path is not None:
             video = self._read_video(
                 media.video_path,
                 start_time_s=start_time_s,
@@ -75,7 +92,7 @@ class MediaReader:
 
         audio_source = media.audio_source
 
-        if audio_source is not None:
+        if "audio" in selected and audio_source is not None:
             audio = self._read_audio(
                 audio_source,
                 start_time_s=start_time_s,
@@ -114,6 +131,7 @@ class MediaReader:
 
             stream = container.streams.video[0]
             stream.thread_type = "AUTO"
+            self._discard_other_streams(container, stream)
 
             origin_s = self._stream_origin_s(stream)
 
@@ -171,6 +189,7 @@ class MediaReader:
                 return None
 
             stream = container.streams.audio[0]
+            self._discard_other_streams(container, stream)
             origin_s = self._stream_origin_s(stream)
 
             self._seek(
@@ -278,6 +297,17 @@ class MediaReader:
             )
 
         return np.ascontiguousarray(array)
+
+    @staticmethod
+    def _discard_other_streams(
+        container: av.container.InputContainer,
+        keep: av.Stream,
+    ) -> None:
+        """Make the demuxer skip every packet not belonging to `keep`."""
+
+        for stream in container.streams:
+            if stream.index != keep.index:
+                stream.discard = av.stream.Discard.all
 
     @staticmethod
     def _stream_origin_s(stream: av.Stream) -> float:

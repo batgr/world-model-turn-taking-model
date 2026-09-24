@@ -1,73 +1,10 @@
-import wave
 from pathlib import Path
 
-import av
-import numpy as np
 import pytest
+from synthetic_media import make_audio, make_video, make_video_with_audio
 
 from turn_wm.data.media import MediaPaths
 from turn_wm.data.reader import MediaReader
-
-
-def make_audio(
-    path: Path,
-    *,
-    sample_rate: int = 16_000,
-    duration_s: float = 1.0,
-) -> None:
-    samples = int(sample_rate * duration_s)
-
-    signal = np.zeros(
-        samples,
-        dtype=np.int16,
-    )
-
-    with wave.open(str(path), "wb") as wav:
-        wav.setnchannels(1)
-        wav.setsampwidth(2)
-        wav.setframerate(sample_rate)
-        wav.writeframes(signal.tobytes())
-
-
-def make_video(
-    path: Path,
-    *,
-    fps: int = 10,
-    frames: int = 10,
-) -> None:
-    container = av.open(
-        str(path),
-        mode="w",
-    )
-
-    stream = container.add_stream(
-        "mpeg4",
-        rate=fps,
-    )
-
-    stream.width = 32
-    stream.height = 32
-    stream.pix_fmt = "yuv420p"
-
-    for index in range(frames):
-        array = np.full(
-            (32, 32, 3),
-            index,
-            dtype=np.uint8,
-        )
-
-        frame = av.VideoFrame.from_ndarray(
-            array,
-            format="rgb24",
-        )
-
-        for packet in stream.encode(frame):
-            container.mux(packet)
-
-    for packet in stream.encode():
-        container.mux(packet)
-
-    container.close()
 
 
 def test_invalid_negative_start_raises():
@@ -260,48 +197,6 @@ def test_separate_audio_and_video_are_loaded(
     assert window.video is not None
 
 
-def make_video_with_audio(
-    path: Path,
-    *,
-    duration_s: float = 1.0,
-    fps: int = 10,
-    sample_rate: int = 16_000,
-) -> None:
-    container = av.open(str(path), mode="w")
-
-    video = container.add_stream("mpeg4", rate=fps)
-    video.width = 32
-    video.height = 32
-    video.pix_fmt = "yuv420p"
-
-    audio = container.add_stream("aac", rate=sample_rate, layout="mono")
-
-    for index in range(int(duration_s * fps)):
-        frame = av.VideoFrame.from_ndarray(
-            np.full((32, 32, 3), index, dtype=np.uint8),
-            format="rgb24",
-        )
-        for packet in video.encode(frame):
-            container.mux(packet)
-
-    chunk = 1024
-    total = int(duration_s * sample_rate)
-
-    for start in range(0, total, chunk):
-        samples = np.zeros((1, min(chunk, total - start)), dtype=np.float32)
-        frame = av.AudioFrame.from_ndarray(samples, format="fltp", layout="mono")
-        frame.sample_rate = sample_rate
-        frame.pts = start
-        for packet in audio.encode(frame):
-            container.mux(packet)
-
-    for stream in (video, audio):
-        for packet in stream.encode():
-            container.mux(packet)
-
-    container.close()
-
-
 def test_embedded_audio_is_decoded_when_video_has_audio(tmp_path: Path):
     path = tmp_path / "video.mp4"
     make_video_with_audio(path)
@@ -341,3 +236,138 @@ def test_audio_is_absent_when_video_has_no_audio(tmp_path: Path):
     # The container carries audio, but the manifest says not to use it.
     assert window.video is not None
     assert window.audio is None
+
+
+@pytest.fixture
+def separate_media(tmp_path: Path) -> MediaPaths:
+    make_video(tmp_path / "video.mp4")
+    make_audio(tmp_path / "audio.wav")
+
+    return MediaPaths(
+        dataset="synthetic",
+        recording_id="r1",
+        video_path=tmp_path / "video.mp4",
+        audio_path=tmp_path / "audio.wav",
+    )
+
+
+def test_default_decodes_audio_and_video(separate_media, decode_spies):
+    window = MediaReader().read_window(separate_media, start_time_s=0.1, end_time_s=0.4)
+
+    assert window.audio is not None
+    assert window.video is not None
+    assert decode_spies == {
+        "audio": [separate_media.audio_path],
+        "video": [separate_media.video_path],
+    }
+
+
+def test_audio_only_never_decodes_video(separate_media, decode_spies):
+    window = MediaReader().read_window(
+        separate_media, start_time_s=0.1, end_time_s=0.4, modalities=("audio",)
+    )
+
+    assert window.audio is not None
+    assert window.video is None
+    assert decode_spies == {"audio": [separate_media.audio_path], "video": []}
+
+
+def test_video_only_never_decodes_audio(separate_media, decode_spies):
+    window = MediaReader().read_window(
+        separate_media, start_time_s=0.1, end_time_s=0.4, modalities=("video",)
+    )
+
+    assert window.audio is None
+    assert window.video is not None
+    assert decode_spies == {"audio": [], "video": [separate_media.video_path]}
+
+
+def embedded(path: Path) -> MediaPaths:
+    return MediaPaths(
+        dataset="synthetic",
+        recording_id="r1",
+        video_path=path,
+        video_has_audio=True,
+    )
+
+
+def test_audio_only_reads_embedded_audio_without_video_frames(
+    tmp_path: Path, decode_spies
+):
+    path = tmp_path / "video.mp4"
+    make_video_with_audio(path)
+
+    window = MediaReader().read_window(
+        embedded(path), start_time_s=0.2, end_time_s=0.6, modalities=("audio",)
+    )
+
+    # Audio comes from the video container, but no video frame is decoded.
+    assert window.audio is not None
+    assert window.audio.sample_rate == 16_000
+    assert window.audio.waveform.shape[1] > 0
+    assert window.video is None
+    assert decode_spies == {"audio": [path], "video": []}
+
+
+def test_video_only_skips_embedded_audio(tmp_path: Path, decode_spies):
+    path = tmp_path / "video.mp4"
+    make_video_with_audio(path)
+
+    window = MediaReader().read_window(
+        embedded(path), start_time_s=0.2, end_time_s=0.6, modalities=("video",)
+    )
+
+    assert window.audio is None
+    assert window.video is not None
+    assert window.video.frames.shape[0] > 0
+    assert decode_spies == {"audio": [], "video": [path]}
+
+
+def test_single_stream_decode_matches_full_decode(tmp_path: Path):
+    # The unselected stream is discarded by the demuxer; decoded content of
+    # the selected one must not change.
+    path = tmp_path / "video.mp4"
+    make_video_with_audio(path)
+    reader = MediaReader()
+
+    both = reader.read_window(embedded(path), start_time_s=0.2, end_time_s=0.6)
+    audio = reader.read_window(
+        embedded(path), start_time_s=0.2, end_time_s=0.6, modalities=("audio",)
+    )
+    video = reader.read_window(
+        embedded(path), start_time_s=0.2, end_time_s=0.6, modalities=("video",)
+    )
+
+    assert both.audio is not None and audio.audio is not None
+    assert both.video is not None and video.video is not None
+    assert audio.audio.waveform.equal(both.audio.waveform)
+    assert video.video.frames.equal(both.video.frames)
+    assert video.video.timestamps_s.equal(both.video.timestamps_s)
+
+
+def test_requested_audio_missing_from_media_is_none(tmp_path: Path, decode_spies):
+    path = tmp_path / "video.mp4"
+    make_video(path)
+
+    window = MediaReader().read_window(
+        MediaPaths(dataset="synthetic", recording_id="r1", video_path=path),
+        start_time_s=0.1,
+        end_time_s=0.4,
+        modalities=("audio",),
+    )
+
+    # Existing contract: unavailable media is None; video is not substituted.
+    assert window.audio is None
+    assert window.video is None
+    assert decode_spies["video"] == []
+
+
+@pytest.mark.parametrize(
+    "modalities",
+    [(), ("text",), ("audio", "depth"), ("audio", "audio")],
+)
+def test_reader_rejects_invalid_modalities(separate_media, modalities):
+    with pytest.raises(ValueError, match="modalit"):
+        MediaReader().read_window(
+            separate_media, start_time_s=0.1, end_time_s=0.4, modalities=modalities
+        )

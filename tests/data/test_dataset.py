@@ -90,7 +90,7 @@ def make_reader() -> Mock:
 
     reader = Mock(spec=MediaReader)
 
-    def read_window(media, *, start_time_s, end_time_s):
+    def read_window(media, *, start_time_s, end_time_s, modalities):
         return MediaWindow(
             start_time_s=start_time_s,
             end_time_s=end_time_s,
@@ -286,6 +286,56 @@ def test_context_and_future_media_share_boundary_without_leakage():
     assert context.canonical_end_time_s == future.canonical_start_time_s
     assert context.canonical_end_time_s == pytest.approx(first_future_time)
     assert context.canonical_end_time_s > sample["anchor_time"]
+
+
+def test_default_requests_audio_and_video_from_reader():
+    reader = make_reader()
+    dataset = make_media_dataset(media_index=make_media_index(), reader=reader)
+
+    dataset[0]
+
+    assert dataset.modalities == ("audio", "video")
+    assert [
+        call.kwargs["modalities"] for call in reader.read_window.call_args_list
+    ] == [
+        ("audio", "video"),
+        ("audio", "video"),
+    ]
+
+
+@pytest.mark.parametrize("modalities", [("audio",), ("video",)])
+def test_selected_modalities_reach_both_media_reads(modalities):
+    reader = make_reader()
+    dataset = TurnTakingDataset(
+        anchors=make_anchors(anchor_idx=19, anchor_row=19),
+        action_grid=make_grid(),
+        window=WindowConfig(min_context_steps=10, max_context_steps=10),
+        training=False,
+        media_index=make_media_index(),
+        media_reader=reader,
+        modalities=modalities,
+    )
+
+    dataset[0]
+
+    assert [
+        call.kwargs["modalities"] for call in reader.read_window.call_args_list
+    ] == [
+        modalities,
+        modalities,
+    ]
+
+
+@pytest.mark.parametrize("modalities", [(), ("text",), ("audio", "depth")])
+def test_dataset_rejects_invalid_modalities(modalities):
+    with pytest.raises(ValueError, match="modalit"):
+        TurnTakingDataset(
+            anchors=make_anchors(),
+            action_grid=make_grid(),
+            window=WindowConfig(),
+            training=False,
+            modalities=modalities,
+        )
 
 
 def test_missing_media_mapping_fails():

@@ -9,11 +9,16 @@ global index space; callers never branch on corpus count.
 from __future__ import annotations
 
 import logging
-from collections.abc import Mapping
+from collections.abc import Iterable, Mapping
 from pathlib import Path
 
 from turn_wm.data.dataset import TurnTakingDataset, WindowConfig
-from turn_wm.data.media import MediaIndex
+from turn_wm.data.media import (
+    MEDIA_MODALITIES,
+    MediaIndex,
+    MediaModality,
+    validate_modalities,
+)
 from turn_wm.data.multi import MultiCorpusDataset
 from turn_wm.data.source import LoadedCorpus, LoadedData
 
@@ -28,13 +33,17 @@ def build_dataset(
     training: bool,
     media_roots: Mapping[str, Path] | None = None,
     trainable_only: bool = True,
+    modalities: Iterable[MediaModality] = MEDIA_MODALITIES,
 ) -> MultiCorpusDataset:
     """Build one dataset over every loaded corpus that publishes `split`.
 
     Corpora without the split are left out rather than substituted. With
     `media_roots` (manifest `dataset` value → local corpus root), samples also
-    carry decoded raw media.
+    carry decoded raw media, restricted to `modalities` (audio and video by
+    default) in every corpus alike.
     """
+
+    selected = validate_modalities(modalities)
 
     children: dict[str, TurnTakingDataset] = {}
     without_split = []
@@ -54,6 +63,7 @@ def build_dataset(
             media_index=(
                 None if media_roots is None else _media_index(corpus, media_roots)
             ),
+            modalities=selected,
         )
 
         if len(dataset) == 0:

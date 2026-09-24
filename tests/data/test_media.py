@@ -3,7 +3,12 @@ from pathlib import Path
 import pytest
 from datasets import Dataset
 
-from turn_wm.data.media import MediaIndex, MediaPaths
+from turn_wm.data.media import (
+    MEDIA_MODALITIES,
+    MediaIndex,
+    MediaPaths,
+    validate_modalities,
+)
 
 
 def make_manifest(*rows: dict) -> Dataset:
@@ -242,3 +247,39 @@ def test_unknown_media_mapping_raises(tmp_path: Path):
 def test_empty_index_is_rejected():
     with pytest.raises(ValueError, match="cannot be empty"):
         MediaIndex([])
+
+
+def test_default_modalities_are_audio_and_video():
+    assert MEDIA_MODALITIES == ("audio", "video")
+
+
+@pytest.mark.parametrize(
+    ("modalities", "expected"),
+    [
+        (("audio", "video"), ("audio", "video")),
+        (("video", "audio"), ("audio", "video")),
+        (["audio"], ("audio",)),
+        (("video",), ("video",)),
+    ],
+)
+def test_modalities_are_returned_in_canonical_order(modalities, expected):
+    assert validate_modalities(modalities) == expected
+
+
+@pytest.mark.parametrize(
+    ("modalities", "message"),
+    [
+        ((), "At least one media modality"),
+        (("text",), r"Unsupported media modalities \['text'\]"),
+        (("audio", "depth"), r"Unsupported media modalities \['depth'\]"),
+        (("audio", "audio"), "Duplicate media modalities"),
+    ],
+)
+def test_invalid_modalities_are_rejected(modalities, message):
+    with pytest.raises(ValueError, match=message):
+        validate_modalities(modalities)
+
+
+def test_a_bare_string_is_not_a_modality_selection():
+    with pytest.raises(TypeError, match=r"such as \('audio',\)"):
+        validate_modalities("audio")

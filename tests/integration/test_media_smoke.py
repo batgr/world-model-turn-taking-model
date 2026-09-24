@@ -17,7 +17,7 @@ import pytest
 
 from turn_wm.data.dataset import TurnTakingDataset, WindowConfig
 from turn_wm.data.loader import DataLoaderConfig, build_dataloader
-from turn_wm.data.media import MediaIndex
+from turn_wm.data.media import MEDIA_MODALITIES, MediaIndex
 from turn_wm.data.reader import MediaWindow
 from turn_wm.data.source import EGO4D, EGOCOM, HuggingFaceSource, load_data
 
@@ -60,7 +60,9 @@ def test_published_egocom_manifest_matches_contract(egocom):
     assert manifest_recordings == grid_recordings
 
 
-def first_batch_with_local_media(data, root: Path, *, offset_filter=None):
+def first_batch_with_local_media(
+    data, root: Path, *, offset_filter=None, modalities=MEDIA_MODALITIES
+):
     """Build the real pipeline for one recording whose media exists locally."""
 
     manifest = data.media_manifest
@@ -89,6 +91,7 @@ def first_batch_with_local_media(data, root: Path, *, offset_filter=None):
         window=WINDOW,
         training=False,
         media_index=index,
+        modalities=modalities,
     )
     loader = build_dataloader(
         dataset,
@@ -107,6 +110,7 @@ def assert_window(
     steps: int,
     offset: float,
     expect_audio: bool,
+    expect_video: bool = True,
 ):
     duration = steps * GRID_STEP_S
 
@@ -117,17 +121,21 @@ def assert_window(
 
     video = window.video
 
-    assert video is not None
-    assert video.frames.ndim == 4
-    assert video.frames.shape[0] > 0
-    assert video.frames.shape[0] == video.timestamps_s.shape[0]
-    assert (video.timestamps_s >= window.start_time_s - 1e-6).all()
-    assert (video.timestamps_s < window.end_time_s).all()
-
-    if not expect_audio:
-        return
+    if expect_video:
+        assert video is not None
+        assert video.frames.ndim == 4
+        assert video.frames.shape[0] > 0
+        assert video.frames.shape[0] == video.timestamps_s.shape[0]
+        assert (video.timestamps_s >= window.start_time_s - 1e-6).all()
+        assert (video.timestamps_s < window.end_time_s).all()
+    else:
+        assert video is None
 
     audio = window.audio
+
+    if not expect_audio:
+        assert audio is None
+        return
 
     assert audio is not None
     assert audio.sample_rate > 0
@@ -138,7 +146,7 @@ def assert_window(
     )
 
 
-def assert_multimodal_batch(batch, media):
+def assert_multimodal_batch(batch, media, modalities=MEDIA_MODALITIES):
     assert batch["dataset"] == [media.dataset]
     assert batch["recording_id"] == [media.recording_id]
     assert len(batch["context_media"]) == len(batch["future_media"]) == 1
@@ -153,19 +161,22 @@ def assert_multimodal_batch(batch, media):
         float(batch["anchor_time"][0]) + GRID_STEP_S, abs=1e-4
     )
 
-    expect_audio = media.audio_source is not None
+    expect_audio = "audio" in modalities and media.audio_source is not None
+    expect_video = "video" in modalities
 
     assert_window(
         context,
         steps=context_steps,
         offset=media.media_offset_s,
         expect_audio=expect_audio,
+        expect_video=expect_video,
     )
     assert_window(
         future,
         steps=WINDOW.future_steps,
         offset=media.media_offset_s,
         expect_audio=expect_audio,
+        expect_video=expect_video,
     )
 
 
@@ -200,6 +211,35 @@ def test_nonzero_offset_raw_multimodal_batch():
     )
 
     assert_multimodal_batch(batch, media)
+
+
+@pytest.mark.parametrize("modalities", [("audio",), ("video",)])
+def test_egocom_single_modality_batch(egocom, modalities):
+    root = media_root("EGOCOM_MEDIA_ROOT")
+
+    batch, media = first_batch_with_local_media(egocom, root, modalities=modalities)
+
+    # EgoCom audio is embedded in the video container.
+    assert media.audio_path is None and media.video_has_audio is True
+
+    assert_multimodal_batch(batch, media, modalities)
+
+
+@pytest.mark.parametrize("modalities", [("audio",), ("video",)])
+def test_ego4d_single_modality_batch(modalities):
+    root = media_root("EGO4D_MEDIA_ROOT")
+
+    data = load_private(EGO4D).corpus("ego4d")
+    batch, media = first_batch_with_local_media(
+        data,
+        root,
+        offset_filter=lambda offset: offset > 1.0,
+        modalities=modalities,
+    )
+
+    assert media.audio_path is None and media.video_has_audio is True
+
+    assert_multimodal_batch(batch, media, modalities)
 
 
 def load_private(source: HuggingFaceSource):
