@@ -144,17 +144,13 @@ class Transformer(nn.Module):
             )
 
     def forward(self, x, c=None):
+        x = self.input_proj(x)
 
-        if hasattr(self, "input_proj"):
-            x = self.input_proj(x)
-
-        if c is not None and hasattr(self, "cond_proj"):
+        if c is not None:
             c = self.cond_proj(c)
 
         for block in self.layers:
             x = block(x) if isinstance(block, Block) else block(x, c)
         x = self.norm(x)
 
-        if hasattr(self, "output_proj"):
-            x = self.output_proj(x)
-        return x
+        return self.output_proj(x)

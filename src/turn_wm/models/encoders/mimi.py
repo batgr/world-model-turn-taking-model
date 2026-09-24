@@ -4,11 +4,17 @@ Frozen Mimi audio encoder producing continuous features on the action grid.
 Waveforms are down-mixed to mono and resampled to Mimi's sample rate, encoded
 to Mimi's continuous pre-quantization latents (12.5 Hz), then causally
 aligned to `target_rate` (the 10 Hz action grid by default).
+
+A batch may mix windows of different lengths and sample rates (e.g. EgoCom
+and Ego4D in one batch): each is resampled on its own, then zero-padded at
+the end. Mimi is causal, so end padding never changes the features of the
+audio before it.
 """
 
 from __future__ import annotations
 
 import math
+from collections.abc import Sequence
 
 import torch
 import torchaudio.functional as AF
@@ -65,6 +71,47 @@ def causal_align(
     return features[:, indices, :]
 
 
+def stack_waveforms(
+    waveforms: Sequence[torch.Tensor],
+    sample_rates: Sequence[int],
+    *,
+    target_rate: int,
+) -> torch.Tensor:
+    """Mono `(channels, samples)` windows at `target_rate`, end-padded to `(B, 1, S)`."""
+
+    if not waveforms:
+        raise ValueError("Cannot stack an empty batch of waveforms")
+
+    if len(waveforms) != len(sample_rates):
+        raise ValueError(
+            f"Got {len(waveforms)} waveforms but {len(sample_rates)} sample rates"
+        )
+
+    mono = []
+
+    for waveform, rate in zip(waveforms, sample_rates, strict=True):
+        if waveform.ndim != 2:
+            raise ValueError("each waveform must have shape (channels, samples)")
+
+        if rate <= 0:
+            raise ValueError("sample rates must be positive")
+
+        channel = waveform.to(torch.float32).mean(dim=0)
+
+        if rate != target_rate:
+            channel = AF.resample(channel, orig_freq=int(rate), new_freq=target_rate)
+
+        mono.append(channel)
+
+    length = max(channel.numel() for channel in mono)
+    batch = torch.zeros(len(mono), 1, length, device=mono[0].device)
+
+    for index, channel in enumerate(mono):
+        batch[index, 0, : channel.numel()] = channel
+
+    return batch
+
+
 class FrozenMimiEncoder(nn.Module):
     """Frozen Mimi encoder: waveform -> `(B, target_length, output_dim)`."""
 
@@ -99,18 +146,19 @@ class FrozenMimiEncoder(nn.Module):
     @torch.no_grad()
     def forward(
         self,
-        waveform: torch.Tensor,
-        sample_rate: int,
+        waveform: torch.Tensor | Sequence[torch.Tensor],
+        sample_rate: int | Sequence[int],
         target_length: int,
     ) -> torch.Tensor:
         """
         Args:
             waveform:
                 `(channels, samples)` for one example, as in `DecodedAudio`,
-                or `(B, channels, samples)`.
+                `(B, channels, samples)`, or a sequence of `(channels,
+                samples)` windows that may differ in length and rate.
 
             sample_rate:
-                Sample rate of `waveform`.
+                Sample rate of `waveform`, or one rate per window.
 
             target_length:
                 Number of grid steps the waveform covers.
@@ -133,10 +181,28 @@ class FrozenMimiEncoder(nn.Module):
 
     def _prepare_waveform(
         self,
-        waveform: torch.Tensor,
-        sample_rate: int,
+        waveform: torch.Tensor | Sequence[torch.Tensor],
+        sample_rate: int | Sequence[int],
     ) -> torch.Tensor:
         """Return mono float audio at Mimi's rate, shaped `(B, 1, samples)`."""
+
+        device = next(self.model.parameters()).device
+
+        if not isinstance(waveform, torch.Tensor):
+            rates = (
+                [sample_rate] * len(waveform)
+                if isinstance(sample_rate, int)
+                else sample_rate
+            )
+
+            return stack_waveforms(
+                [window.to(device) for window in waveform],
+                rates,
+                target_rate=self.sample_rate,
+            )
+
+        if not isinstance(sample_rate, int):
+            raise TypeError("a batched waveform tensor takes a single sample_rate")
 
         if waveform.ndim == 2:
             waveform = waveform.unsqueeze(0)
@@ -148,8 +214,6 @@ class FrozenMimiEncoder(nn.Module):
 
         if sample_rate <= 0:
             raise ValueError("sample_rate must be positive")
-
-        device = next(self.model.parameters()).device
 
         waveform = waveform.to(device=device, dtype=torch.float32)
         waveform = waveform.mean(dim=1, keepdim=True)
