@@ -4,7 +4,7 @@ Command-line entry point for the turn-taking modelling repository.
 `inspect-data` runs the same data path that training will use (source loading,
 TurnTakingDataset, DataLoader) and prints a structural summary of one batch.
 With `--media-root`, raw media is decoded from a local corpus copy; media is
-never downloaded.
+never downloaded. `--modalities` restricts what is decoded.
 """
 
 from __future__ import annotations
@@ -35,7 +35,13 @@ from turn_wm.data.dataset import (
     WindowConfig,
 )
 from turn_wm.data.loader import DataLoaderConfig, build_dataloader
-from turn_wm.data.media import MediaIndex, MediaPaths
+from turn_wm.data.media import (
+    MEDIA_MODALITIES,
+    MediaIndex,
+    MediaModality,
+    MediaPaths,
+    validate_modalities,
+)
 from turn_wm.data.multi import MultiCorpusDataset
 from turn_wm.data.reader import MediaWindow
 from turn_wm.data.source import (
@@ -137,6 +143,15 @@ def build_parser() -> argparse.ArgumentParser:
             "repeated, when the media manifest covers several datasets."
         ),
     )
+    inspect.add_argument(
+        "--modalities",
+        type=_modalities,
+        metavar="MODALITY[,MODALITY]",
+        help=(
+            "Media to decode with --media-root, comma-separated among "
+            f"{', '.join(MEDIA_MODALITIES)} (default: all)."
+        ),
+    )
     inspect.set_defaults(handler=_inspect_data)
 
     return parser
@@ -155,6 +170,11 @@ def _inspect_data(
     except ValueError as error:
         parser.error(str(error))
 
+    if args.modalities is not None and not args.media_root:
+        parser.error("--modalities requires --media-root")
+
+    modalities = args.modalities or MEDIA_MODALITIES
+
     source = DATASETS[args.dataset]
     data = _load(source)
     media_roots = _media_roots(data, args.media_root) if args.media_root else None
@@ -166,6 +186,7 @@ def _inspect_data(
             window=window,
             training=False,
             media_roots=media_roots,
+            modalities=modalities,
         )
     except ValueError as error:
         raise SystemExit(f"turn-wm: error: {error}") from error
@@ -201,6 +222,7 @@ def _inspect_data(
             media_index=(
                 None if media_roots is None else _display_index(data, media_roots)
             ),
+            modalities=modalities,
         )
     )
 
@@ -294,6 +316,7 @@ def format_summary(
     window: WindowConfig,
     batch: dict[str, Any],
     media_index: MediaIndex | None = None,
+    modalities: tuple[MediaModality, ...] = MEDIA_MODALITIES,
 ) -> str:
     """Render a concise structural summary of one inspected batch."""
 
@@ -345,7 +368,7 @@ def format_summary(
         f"sample_class: {batch['sample_class'][0]}",
         f"context_length: {int(lengths[0])}",
         "",
-        *_media_lines(batch, media_index),
+        *_media_lines(batch, media_index, modalities),
         *_section("States"),
         *_vocabulary_lines({**STATE_TO_ID, "PAD": PAD_STATE_ID}),
         "",
@@ -375,6 +398,7 @@ def _corpus_lines(corpus: LoadedCorpus, *, split: str, usable: int) -> list[str]
 def _media_lines(
     batch: dict[str, Any],
     media_index: MediaIndex | None,
+    modalities: tuple[MediaModality, ...],
 ) -> list[str]:
     if media_index is None or "context_media" not in batch:
         return []
@@ -388,6 +412,7 @@ def _media_lines(
         *_section("Media"),
         f"dataset: {media.dataset}",
         f"recording: {media.recording_id}",
+        f"modalities: {', '.join(modalities)}",
         f"video file: {media.video_path or 'none'}",
         f"audio file: {media.audio_path or 'none'}",
         f"media offset: {media.media_offset_s:g} s",
@@ -513,6 +538,13 @@ def _media_root(value: str) -> tuple[str | None, Path]:
         raise argparse.ArgumentTypeError(f"media root is not a directory: {path}")
 
     return name, path
+
+
+def _modalities(value: str) -> tuple[MediaModality, ...]:
+    try:
+        return validate_modalities(part.strip() for part in value.split(","))
+    except ValueError as error:
+        raise argparse.ArgumentTypeError(str(error)) from None
 
 
 def _positive_int(value: str) -> int:
