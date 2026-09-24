@@ -28,10 +28,8 @@ def test_default_config_selects_every_group():
     assert isinstance(cfg, DictConfig)
     assert set(cfg) == {
         "embed_dim",
-        "history_size",
         "model",
         "seed",
-        "num_preds",
         "data",
         "prediction",
         "trainer",
@@ -44,8 +42,9 @@ def test_default_config_selects_every_group():
 
 
 def test_shared_sizes_are_interpolated_into_the_model():
-    cfg = load_config(["embed_dim=256", "history_size=20"])
+    cfg = load_config(["embed_dim=256", "data.context_steps=20"])
 
+    # The predictor's positions cover the teacher-forced context.
     assert cfg.model.predictor.num_frames == 20
     assert cfg.model.action_encoder.emb_dim == 256
     assert cfg.model.projector.output_dim == 256

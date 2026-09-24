@@ -8,7 +8,8 @@ encoder:
 
 predictor:
   _target_: turn_wm.models.lewm.predictor.ARPredictor
-  num_frames: ${history_size}
+  # Longest input: the teacher-forced context. Rollouts pass fewer steps.
+  num_frames: ${data.context_steps}
   input_dim: ${embed_dim}
   hidden_dim: ${embed_dim}
   output_dim: ${embed_dim}

@@ -1,6 +1,7 @@
 import lightning as L
 import pytest
 import torch
+import torch.nn.functional as F
 from hydra.utils import instantiate
 from omegaconf import OmegaConf
 from torch import nn
@@ -10,6 +11,7 @@ from turn_wm.config import load_config
 from turn_wm.data.dataset import MASKED_ACTION_ID, PAD_ACTION_ID
 from turn_wm.data.reader import DecodedAudio, MediaWindow
 from turn_wm.models.lewm.sigreg import SIGReg
+from turn_wm.training import lewm as training_module
 from turn_wm.training.lewm import (
     LeWMModule,
     lejepa_losses,
@@ -41,7 +43,13 @@ class StepIndexEncoder(nn.Module):
 
 
 def small_config(**overrides):
-    cfg = load_config(["history_size=4", "data.future_steps=3"])
+    cfg = load_config(
+        [
+            "data.context_steps=4",
+            "data.future_steps=3",
+            "prediction.rollout_context_size=2",
+        ]
+    )
     OmegaConf.set_struct(cfg, False)
     cfg.prediction.rollout_horizons = [1, 3]
     cfg.loss.rollout.horizon_weights = {"1": 1.0, "3": 0.5}
@@ -52,8 +60,8 @@ def small_config(**overrides):
     return cfg
 
 
-def make_model(cfg, **kwargs):
-    return instantiate(cfg.model, encoder=StepIndexEncoder(), **kwargs)
+def make_model(cfg, *, encoder_dim=512, **kwargs):
+    return instantiate(cfg.model, encoder=StepIndexEncoder(encoder_dim), **kwargs)
 
 
 def window(steps: int, *, rate: int = SAMPLE_RATE, with_audio: bool = True):
@@ -117,22 +125,108 @@ def test_trajectories_need_media():
         trajectories(batch)
 
 
-def test_predictor_never_sees_more_than_history_size():
-    cfg = small_config()
-    model = make_model(cfg)
-    seen = []
+def predict_spy(model, record):
+    """Record every predictor call, then run the real predictor."""
+
     predict = model.predict
 
     def spy(emb, act):
-        seen.append(emb.shape[1])
+        record.append({"emb": emb.detach().clone(), "act": act.detach().clone()})
         return predict(emb, act)
 
     model.predict = spy
 
+
+def test_teacher_forcing_is_dense_over_the_whole_context():
+    # context_steps = 4: z0..z3 -> z1..z4, whatever rollout_context_size is.
+    cfg = small_config()
+    # Without projector, latents are the step indices at the predictor width.
+    model = make_model(cfg, encoder_dim=cfg.embed_dim, projector=None)
+    calls = []
+    predict_spy(model, calls)
+
     lejepa_losses(model, SIGReg(), trajectories(make_batch()), cfg)
 
-    # Teacher forcing first, then one call per rollout step (3 horizons).
-    assert seen == [4, 4, 4, 4]
+    teacher_forcing = calls[0]["emb"]
+
+    assert teacher_forcing.shape[1] == 4
+    assert teacher_forcing[0, :, 0].tolist() == [0.0, 1.0, 2.0, 3.0]
+
+
+def test_teacher_forcing_targets_are_the_next_four_steps(monkeypatch):
+    cfg = small_config()
+    # Without projector, latents are the step indices at the predictor width.
+    model = make_model(cfg, encoder_dim=cfg.embed_dim, projector=None)
+    targets = []
+    mse = F.mse_loss
+
+    def spy(prediction, target):
+        targets.append(target.detach().clone())
+        return mse(prediction, target)
+
+    monkeypatch.setattr(training_module.F, "mse_loss", spy)
+
+    lejepa_losses(model, SIGReg(), trajectories(make_batch()), cfg)
+
+    # First MSE is the teacher forcing: z1..z4, the last one being zC.
+    assert targets[0][0, :, 0].tolist() == [1.0, 2.0, 3.0, 4.0]
+
+
+def test_rollout_never_passes_more_than_rollout_context_size():
+    cfg = small_config()
+    model = make_model(cfg)
+    calls = []
+    predict_spy(model, calls)
+
+    lejepa_losses(model, SIGReg(), trajectories(make_batch()), cfg)
+
+    # Teacher forcing, then one call per rollout step up to horizon 3.
+    assert [call["emb"].shape[1] for call in calls] == [4, 2, 2, 2]
+
+
+def test_rollout_never_reinjects_ground_truth_future_latents():
+    # Ground-truth latents are 0..6 (context 0..3, future 4..6); predictions
+    # are shifted by 100, so any input in [4, 100) is a leaked GT future.
+    cfg = small_config()
+    model = make_model(cfg, projector=None)
+    calls = []
+
+    def predict(emb, act):
+        calls.append(emb.detach().clone())
+        return emb + 100
+
+    model.predict = predict
+
+    lejepa_losses(model, SIGReg(), trajectories(make_batch()), cfg)
+
+    for rollout_input in calls[1:]:
+        values = rollout_input[0, :, 0]
+        assert not ((values >= 4) & (values < 100)).any()
+
+    # The window slides over predictions only: ẑ4 = z3 + 100, ẑ5 = ẑ4 + 100.
+    assert [call[0, :, 0].tolist() for call in calls[1:]] == [
+        [2.0, 3.0],
+        [3.0, 103.0],
+        [103.0, 203.0],
+    ]
+
+
+def test_rollout_uses_the_real_future_actions():
+    cfg = small_config()
+    model = make_model(cfg)
+    calls = []
+    predict_spy(model, calls)
+    batch = make_batch()
+    batch["context_action"] = torch.tensor([[0, 0, 0, 1]] * 2)
+    batch["future_action"] = torch.tensor([[2, 0, 1]] * 2)
+
+    lejepa_losses(model, SIGReg(), trajectories(batch), cfg)
+
+    embed = model.encode_actions
+    expected = embed(torch.tensor([[0, 1], [1, 2], [2, 0]]))
+
+    for call, actions in zip(calls[1:], expected, strict=True):
+        assert torch.allclose(call["act"][0], actions)
 
 
 def test_default_config_no_longer_overflows_positions():
@@ -149,7 +243,8 @@ def test_default_config_no_longer_overflows_positions():
 
 def test_targets_are_one_step_ahead():
     # With features equal to the step index and a predictor returning
-    # "input + 1", every teacher-forced and rolled-out target matches.
+    # "input + 1", the dense teacher forcing (z0..z3 -> z1..z4) and every
+    # rolled-out horizon (ẑ4, ẑ6) match their targets exactly.
     cfg = small_config()
     model = make_model(cfg, projector=None)
     model.predict = lambda emb, act: emb + 1
@@ -195,8 +290,13 @@ def test_encoder_receives_whole_trajectories():
 @pytest.mark.parametrize(
     ("overrides", "message"),
     [
-        ({"data.context_steps": 3}, "must be >= history_size"),
-        ({"prediction.rollout_horizons": [1, 4]}, "must lie in"),
+        ({"data.context_steps": 0}, "context_steps must be >= 1"),
+        ({"prediction.rollout_context_size": 0}, "rollout_context_size must lie"),
+        ({"prediction.rollout_context_size": 5}, "rollout_context_size must lie"),
+        ({"model.predictor.num_frames": 3}, "must cover the teacher-forced"),
+        ({"prediction.rollout_horizons": [0, 1]}, "must be positive"),
+        ({"prediction.rollout_horizons": []}, "must be positive"),
+        ({"prediction.rollout_horizons": [1, 4]}, "must cover every rollout"),
         ({"prediction.rollout_horizons": [2]}, "no weight for \\[2\\]"),
     ],
 )
@@ -212,7 +312,9 @@ def test_default_training_config_is_valid():
 
     window_config = training_window(cfg)
     assert window_config.min_context_steps == window_config.max_context_steps
-    assert window_config.max_context_steps >= cfg.history_size
+    assert window_config.max_context_steps == cfg.data.context_steps
+    assert cfg.prediction.rollout_context_size <= cfg.data.context_steps
+    assert cfg.model.predictor.num_frames == cfg.data.context_steps
 
 
 def test_action_vocabulary_matches_the_dataset():
@@ -260,3 +362,20 @@ def test_lightning_runs_a_training_and_validation_step(tmp_path):
 
     assert torch.isfinite(trainer.callback_metrics["train/loss"])
     assert torch.isfinite(trainer.callback_metrics["val/loss"])
+
+
+def test_seed_makes_model_initialization_reproducible():
+    # LeWMModule seeds before building the model; Identity avoids loading Mimi.
+    cfg = small_config(**{"model.encoder._target_": "torch.nn.Identity"})
+
+    first = LeWMModule(cfg).model.predictor.pos_embedding
+    torch.manual_seed(0)
+    second = LeWMModule(cfg).model.predictor.pos_embedding
+
+    assert torch.equal(first, second)
+    assert not torch.equal(
+        first,
+        LeWMModule(
+            small_config(seed=1, **{"model.encoder._target_": "torch.nn.Identity"})
+        ).model.predictor.pos_embedding,
+    )

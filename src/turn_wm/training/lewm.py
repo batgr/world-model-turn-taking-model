@@ -6,11 +6,14 @@ sample: `T = context_steps + future_steps` grid steps of audio latents and
 actions. Training uses a fixed context length (`data.context_steps`), so
 every trajectory in a batch has the same length and no padding is needed.
 
-The predictor always sees the same window shape, whether teacher-forced or
-rolled out: at most `history_size` consecutive steps whose newest step sits
-at the last position. Teacher forcing uses the last `history_size` steps of
-the trajectory; the rollout starts from the last `history_size` context
-steps and slides that window forward over its own predictions.
+Teacher forcing is dense over the ground-truth context: from z0..z(C-1) and
+their actions the predictor predicts z1..zC, one step ahead at every
+position (zC, the first future latent, is only a target). The rollout starts
+at the context/future boundary from the ground-truth context and feeds its
+own predictions back, never a ground-truth future latent; before each
+prediction it keeps only the latest `prediction.rollout_context_size` states
+and actions. The window is chosen by the inputs given to the predictor; its
+attention stays plain causal attention.
 
 Latent targets come from the audio of every step, including steps whose
 turn-taking annotation is UNKNOWN or whose action is masked: the observation
@@ -62,24 +65,36 @@ def training_window(cfg: DictConfig) -> WindowConfig:
 def validate_config(cfg: DictConfig) -> None:
     """Check the training recipe against the model before any data is read."""
 
-    history_size = cfg.history_size
     context_steps = cfg.data.context_steps
     future_steps = cfg.data.future_steps
+    rollout_context_size = cfg.prediction.rollout_context_size
     horizons = list(cfg.prediction.rollout_horizons)
     weights = {str(key) for key in cfg.loss.rollout.horizon_weights}
 
-    if cfg.model.predictor.num_frames < history_size:
-        raise ValueError("model.predictor.num_frames must cover history_size")
+    if context_steps < 1:
+        raise ValueError(f"data.context_steps must be >= 1, got {context_steps}")
 
-    if context_steps < history_size:
+    if not 1 <= rollout_context_size <= context_steps:
         raise ValueError(
-            f"data.context_steps ({context_steps}) must be >= history_size "
-            f"({history_size}) so the rollout starts from a full window"
+            "prediction.rollout_context_size must lie in "
+            f"[1, data.context_steps={context_steps}], got {rollout_context_size}"
         )
 
-    if not horizons or min(horizons) < 1 or max(horizons) > future_steps:
+    if cfg.model.predictor.num_frames < context_steps:
         raise ValueError(
-            f"prediction.rollout_horizons must lie in [1, {future_steps}]: {horizons}"
+            f"model.predictor.num_frames ({cfg.model.predictor.num_frames}) must "
+            f"cover the teacher-forced context ({context_steps} steps)"
+        )
+
+    if not horizons or min(horizons) < 1:
+        raise ValueError(
+            f"prediction.rollout_horizons must be positive and non-empty: {horizons}"
+        )
+
+    if max(horizons) > future_steps:
+        raise ValueError(
+            f"data.future_steps ({future_steps}) must cover every rollout horizon: "
+            f"{horizons}"
         )
 
     missing = [h for h in horizons if str(h) not in weights]
@@ -148,17 +163,17 @@ def lejepa_losses(
 ) -> dict[str, torch.Tensor]:
     """Teacher-forcing, rollout and SIGReg losses for one batch."""
 
-    history_size = cfg.history_size
+    rollout_context_size = cfg.prediction.rollout_context_size
     rollout_horizons = sorted(cfg.prediction.rollout_horizons)
     rollout_stop_gradient = cfg.prediction.rollout_stop_gradient
 
     context_steps = batch.context_steps
     total_steps = batch.total_steps
 
-    if context_steps < history_size:
+    if context_steps < rollout_context_size:
         raise ValueError(
-            f"context_steps ({context_steps}) is shorter than history_size "
-            f"({history_size})"
+            f"context_steps ({context_steps}) is shorter than "
+            f"rollout_context_size ({rollout_context_size})"
         )
 
     if max(rollout_horizons) > batch.future_steps:
@@ -185,36 +200,33 @@ def lejepa_losses(
         raise ValueError(f"Expected {total_steps} latent steps, got {emb.size(1)}")
 
     # =========================================================
-    # 1. TEACHER FORCING on the last `history_size` steps
+    # 1. DENSE TEACHER FORCING over the ground-truth context
     # =========================================================
 
-    # Inputs t in [start, T - 1), targets t + 1: the same window shape the
-    # rollout feeds the predictor.
-    tf_start = total_steps - 1 - history_size
-
+    # z0..z(C-1) -> z1..zC: one-step supervision at every context position.
     tf_pred = model.predict(
-        emb[:, tf_start : total_steps - 1],
-        act_emb[:, tf_start : total_steps - 1],
+        emb[:, :context_steps],
+        act_emb[:, :context_steps],
     )
 
-    tf_loss = F.mse_loss(tf_pred, emb[:, tf_start + 1 : total_steps])
+    tf_loss = F.mse_loss(tf_pred, emb[:, 1 : context_steps + 1])
 
     # =========================================================
-    # 2. AUTOREGRESSIVE ROLLOUT from the last `history_size` context steps
+    # 2. AUTOREGRESSIVE ROLLOUT from the context/future boundary
     # =========================================================
 
     max_horizon = max(rollout_horizons)
-    history_start = context_steps - history_size
 
-    rollout_emb = emb[:, history_start:context_steps]
-    rollout_act = act_emb[:, history_start:context_steps]
+    rollout_emb = emb[:, :context_steps]
+    rollout_act = act_emb[:, :context_steps]
 
     rollout_losses: dict[int, torch.Tensor] = {}
 
     for h in range(1, max_horizon + 1):
+        # Only the latest `rollout_context_size` states and actions.
         pred = model.predict(
-            rollout_emb[:, -history_size:],
-            rollout_act[:, -history_size:],
+            rollout_emb[:, -rollout_context_size:],
+            rollout_act[:, -rollout_context_size:],
         )[:, -1:]
         # prediction of z_(C + h - 1)
 
@@ -280,6 +292,9 @@ class LeWMModule(L.LightningModule):
         super().__init__()
 
         validate_config(cfg)
+
+        # Before building the model, so its initialization is reproducible.
+        L.seed_everything(cfg.seed, workers=True)
 
         self.cfg = cfg
         self.model = model if model is not None else build_model(cfg)
