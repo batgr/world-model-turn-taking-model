@@ -1,0 +1,75 @@
+import pytest
+from hydra.utils import get_class
+from omegaconf import DictConfig, OmegaConf
+from torch import nn
+
+from turn_wm.config import CONFIG_DIR, load_config
+from turn_wm.models.build import build_model
+from turn_wm.models.lewm.jepa import JEPA
+
+# Keeps build tests offline: the real encoder downloads pretrained weights.
+OFFLINE_ENCODER = "model.encoder._target_=torch.nn.Identity"
+
+
+def targets(node, path="") -> list[tuple[str, str]]:
+    if isinstance(node, dict):
+        found = [(path, node["_target_"])] if "_target_" in node else []
+        for key, value in node.items():
+            found += targets(value, f"{path}.{key}".lstrip("."))
+        return found
+
+    return []
+
+
+def test_default_config_selects_every_group():
+    cfg = load_config()
+
+    assert isinstance(cfg, DictConfig)
+    assert set(cfg) == {"embed_dim", "history_size", "model"}
+    assert cfg.model.encoder.model_name == "kyutai/mimi"
+    assert cfg.model.encoder.target_rate == 10.0
+
+
+def test_shared_sizes_are_interpolated_into_the_model():
+    cfg = load_config(["embed_dim=256", "history_size=20"])
+
+    assert cfg.model.predictor.num_frames == 20
+    assert cfg.model.action_encoder.emb_dim == 256
+    assert cfg.model.projector.output_dim == 256
+    assert cfg.model.pred_proj.input_dim == cfg.model.pred_proj.output_dim == 256
+
+
+def test_every_target_resolves_to_a_class():
+    cfg = OmegaConf.to_container(load_config(), resolve=True)
+
+    found = targets(cfg)
+
+    assert len(found) == 6
+
+    for path, target in found:
+        assert isinstance(get_class(target), type), path
+
+
+def test_overrides_apply():
+    cfg = load_config(["model.predictor.depth=2", "model.encoder.target_rate=5.0"])
+
+    assert cfg.model.predictor.depth == 2
+    assert cfg.model.encoder.target_rate == 5.0
+
+
+def test_unknown_override_fails():
+    with pytest.raises(Exception, match="not_a_key"):
+        load_config(["model.not_a_key=1"])
+
+
+def test_config_dir_is_the_repository_configs():
+    assert (CONFIG_DIR / "config.yaml").is_file()
+
+
+def test_build_model_from_config():
+    model = build_model(load_config([OFFLINE_ENCODER]))
+
+    assert isinstance(model, JEPA)
+    assert isinstance(model.encoder, nn.Identity)
+    assert model.predictor is not None
+    assert model.action_encoder.embed[-1].out_features == 192

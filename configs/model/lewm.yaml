@@ -1,0 +1,39 @@
+_target_: turn_wm.models.lewm.jepa.JEPA
+
+encoder:
+  _target_: turn_wm.models.encoders.mimi.FrozenMimiEncoder
+  model_name: kyutai/mimi
+  # Mimi's 12.5 Hz features are aligned to the 10 Hz action grid.
+  target_rate: 10.0
+
+predictor:
+  _target_: turn_wm.models.lewm.predictor.ARPredictor
+  num_frames: ${history_size}
+  input_dim: ${embed_dim}
+  hidden_dim: ${embed_dim}
+  output_dim: ${embed_dim}
+  depth: 6
+  heads: 16
+  mlp_dim: 2048
+  dim_head: 64
+  dropout: 0.1
+  emb_dropout: 0.0
+
+action_encoder:
+  _target_: turn_wm.models.lewm.embedder.Embedder
+  num_actions: 5
+  smoothed_dim: 10
+  emb_dim: ${embed_dim}
+  padding_idx: 4
+
+projector:
+  _target_: turn_wm.models.lewm.mlp.MLP
+  input_dim: 512
+  output_dim: ${embed_dim}
+  hidden_dim: 2048
+
+pred_proj:
+  _target_: turn_wm.models.lewm.mlp.MLP
+  input_dim: ${embed_dim}
+  output_dim: ${embed_dim}
+  hidden_dim: 2048
