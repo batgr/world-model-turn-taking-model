@@ -1,0 +1,56 @@
+# @package _global_
+# Training recipe; its keys sit at the root of the composed config, next to
+# `model`, `embed_dim` and `history_size` (see config.yaml). Read by
+# turn_wm.training.lewm.
+
+seed: 3072
+
+num_preds: 1
+
+data:
+  # Fixed context in training (training_window(cfg)): every trajectory in a
+  # batch is context_steps + future_steps long. Must be >= history_size.
+  context_steps: ${history_size}
+  future_steps: 10
+  modalities: [audio]
+
+prediction:
+  # Future steps at which the rollout is supervised (each <= future_steps).
+  rollout_horizons: [1, 5, 10]
+  # Feed predictions back without gradient (truncated backprop).
+  rollout_stop_gradient: true
+
+trainer:
+  max_epochs: 100
+  accelerator: gpu
+  devices: auto
+  # Mixed precision: parameters and SIGReg stay float32 under autocast.
+  precision: bf16-mixed
+  gradient_clip_val: 1.0
+
+loader:
+  batch_size: 32
+  num_workers: 6
+  persistent_workers: true
+  pin_memory: true
+
+optimizer:
+  type: AdamW
+  lr: 5e-5
+  weight_decay: 1e-3
+
+loss:
+  teacher_forcing:
+    weight: 1.0
+  rollout:
+    weight: 1.0
+    # One weight per prediction.rollout_horizons entry (keys are strings).
+    horizon_weights:
+      "1": 1.0
+      "5": 1.0
+      "10": 1.0
+  sigreg:
+    weight: 0.09
+    kwargs:
+      knots: 17
+      num_proj: 1024

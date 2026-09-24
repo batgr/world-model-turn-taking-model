@@ -14,17 +14,43 @@ from pathlib import Path
 
 import pyarrow.compute as pc
 import pytest
+import torch
 
 from turn_wm.data.dataset import TurnTakingDataset, WindowConfig
 from turn_wm.data.loader import DataLoaderConfig, build_dataloader
 from turn_wm.data.media import MEDIA_MODALITIES, MediaIndex
 from turn_wm.data.reader import MediaWindow
 from turn_wm.data.source import EGO4D, EGOCOM, HuggingFaceSource, load_data
+from turn_wm.models.encoders.mimi import FrozenMimiEncoder
 
 pytestmark = pytest.mark.integration
 
 WINDOW = WindowConfig()
 GRID_STEP_S = 0.1
+
+
+@pytest.fixture(scope="module")
+def mimi_encoder():
+    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+
+    return FrozenMimiEncoder(target_rate=1 / GRID_STEP_S).to(device)
+
+
+def assert_mimi_pipeline(
+    encoder: FrozenMimiEncoder,
+    media_window: MediaWindow,
+    target_steps: int,
+) -> None:
+    assert media_window.audio is not None
+
+    features = encoder(
+        media_window.audio.waveform,
+        sample_rate=media_window.audio.sample_rate,
+        target_length=target_steps,
+    )
+
+    assert features.shape == (1, target_steps, encoder.output_dim)
+    assert torch.isfinite(features).all()
 
 
 @pytest.fixture(scope="module")
@@ -240,6 +266,34 @@ def test_ego4d_single_modality_batch(modalities):
     assert media.audio_path is None and media.video_has_audio is True
 
     assert_multimodal_batch(batch, media, modalities)
+
+
+def test_egocom_audio_through_mimi(egocom, mimi_encoder):
+    root = media_root("EGOCOM_MEDIA_ROOT")
+
+    batch, _ = first_batch_with_local_media(egocom, root, modalities=("audio",))
+
+    assert_mimi_pipeline(
+        mimi_encoder, batch["context_media"][0], int(batch["context_lengths"][0])
+    )
+    assert_mimi_pipeline(mimi_encoder, batch["future_media"][0], WINDOW.future_steps)
+
+
+def test_ego4d_audio_through_mimi(mimi_encoder):
+    root = media_root("EGO4D_MEDIA_ROOT")
+
+    data = load_private(EGO4D).corpus("ego4d")
+    batch, _ = first_batch_with_local_media(
+        data,
+        root,
+        offset_filter=lambda offset: offset > 1.0,
+        modalities=("audio",),
+    )
+
+    assert_mimi_pipeline(
+        mimi_encoder, batch["context_media"][0], int(batch["context_lengths"][0])
+    )
+    assert_mimi_pipeline(mimi_encoder, batch["future_media"][0], WINDOW.future_steps)
 
 
 def load_private(source: HuggingFaceSource):

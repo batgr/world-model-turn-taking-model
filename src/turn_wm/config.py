@@ -3,10 +3,11 @@ Compose the experiment configuration with Hydra.
 
 The YAML tree lives in the repository's `configs/` directory, in the spirit
 of le-wm: `config.yaml` holds shared sizes (`embed_dim`, `history_size`) and
-selects the `model`; the model config nests its sub-modules, encoder
-included, each naming its class with `_target_` and interpolating the shared
-sizes. `turn_wm.models.build.build_model`
-instantiates the result.
+selects a `model` and a `train` recipe. The model config nests its
+sub-modules, encoder included, each naming its class with `_target_` and
+interpolating the shared sizes; `turn_wm.models.build.build_model`
+instantiates it. The training recipe (`seed`, `trainer`, `loader`,
+`optimizer`, `loss`, ...) is merged at the root of the composed config.
 """
 
 from __future__ import annotations

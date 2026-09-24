@@ -1,9 +1,10 @@
-# Root config. Shared sizes live here and are interpolated by the model
-# config, as in le-wm. Override from code with
-# load_config(["embed_dim=256", "model.predictor.depth=4"]).
+# Root config: one model and one training recipe. Shared sizes live here and
+# are interpolated by the other configs, as in le-wm. Override from code with
+# load_config(["embed_dim=256", "trainer.max_epochs=10"]).
 defaults:
   - _self_
   - model: lewm
+  - train: lewm
 
 embed_dim: 192
 # Context steps the predictor attends over (WindowConfig.max_context_steps).

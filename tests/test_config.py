@@ -6,6 +6,7 @@ from torch import nn
 from turn_wm.config import CONFIG_DIR, load_config
 from turn_wm.models.build import build_model
 from turn_wm.models.lewm.jepa import JEPA
+from turn_wm.models.lewm.sigreg import SIGReg
 
 # Keeps build tests offline: the real encoder downloads pretrained weights.
 OFFLINE_ENCODER = "model.encoder._target_=torch.nn.Identity"
@@ -25,7 +26,19 @@ def test_default_config_selects_every_group():
     cfg = load_config()
 
     assert isinstance(cfg, DictConfig)
-    assert set(cfg) == {"embed_dim", "history_size", "model"}
+    assert set(cfg) == {
+        "embed_dim",
+        "history_size",
+        "model",
+        "seed",
+        "num_preds",
+        "data",
+        "prediction",
+        "trainer",
+        "loader",
+        "optimizer",
+        "loss",
+    }
     assert cfg.model.encoder.model_name == "kyutai/mimi"
     assert cfg.model.encoder.target_rate == 10.0
 
@@ -73,3 +86,20 @@ def test_build_model_from_config():
     assert isinstance(model.encoder, nn.Identity)
     assert model.predictor is not None
     assert model.action_encoder.embed[-1].out_features == 192
+
+
+def test_training_recipe_sits_at_the_root():
+    cfg = load_config(["trainer.max_epochs=10", "optimizer.lr=1e-4"])
+
+    assert cfg.trainer.max_epochs == 10
+    assert cfg.optimizer.lr == 1e-4
+    assert cfg.loss.sigreg.weight == 0.09
+
+
+def test_sigreg_kwargs_match_the_regularizer():
+    cfg = load_config()
+
+    regularizer = SIGReg(**cfg.loss.sigreg.kwargs)
+
+    assert regularizer.num_proj == cfg.loss.sigreg.kwargs.num_proj
+    assert regularizer.t.numel() == cfg.loss.sigreg.kwargs.knots
