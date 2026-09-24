@@ -41,10 +41,8 @@ ACTION_TO_ID = {
     "OFFSET": 2,
 }
 
-MASKED_ACTION_ID = 3
-PAD_ACTION_ID = 4
-
 MASKED_ACTION_ID = len(ACTION_TO_ID)
+PAD_ACTION_ID = MASKED_ACTION_ID + 1
 
 
 @dataclass(frozen=True)
@@ -93,6 +91,20 @@ class TurnTakingDataset(Dataset):
                 batched=True,
                 desc="Filtering trainable anchors",
             )
+
+        # Anchors too close to a recording's start (or end) for this window
+        # would fail in __getitem__; keep only those that support it. With
+        # the published minimum context this removes nothing unless the
+        # window asks for more (e.g. a fixed training context).
+        anchors = anchors.filter(
+            lambda context, future: [
+                c >= window.min_context_steps and f >= window.future_steps
+                for c, f in zip(context, future, strict=True)
+            ],
+            input_columns=["max_context_steps", "future_steps"],
+            batched=True,
+            desc="Filtering anchors supporting the window",
+        )
 
         if media_reader is not None and media_index is None:
             raise ValueError("media_reader requires media_index")

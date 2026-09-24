@@ -424,6 +424,25 @@ def make_anchors(
     )
 
 
+@pytest.mark.parametrize(
+    ("max_context_steps", "future_steps", "kept"),
+    [(10, 10, 1), (9, 10, 0), (10, 9, 0)],
+)
+def test_anchors_that_cannot_support_the_window_are_left_out(
+    max_context_steps, future_steps, kept
+):
+    dataset = TurnTakingDataset(
+        anchors=make_anchors(
+            max_context_steps=max_context_steps, future_steps=future_steps
+        ),
+        action_grid=make_grid(),
+        window=WindowConfig(min_context_steps=10, max_context_steps=10),
+        training=True,
+    )
+
+    assert len(dataset) == kept
+
+
 def test_eval_uses_maximum_context():
     dataset = TurnTakingDataset(
         anchors=make_anchors(
