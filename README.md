@@ -56,21 +56,23 @@ actions.
   zeroed).
 - **Predictor** (`lewm/predictor.py`, `lewm/transformer.py`): causal
   transformer conditioned on actions through AdaLN-zero, with one learned
-  position per step of its `history_size` window.
+  position per step of the teacher-forced context (`num_frames =
+  data.context_steps`). Its attention is plain causal attention; how much
+  history it sees is set by the inputs it is given.
 - **SIGReg** (`lewm/sigreg.py`): regularizer keeping latents close to an
   isotropic Gaussian, which prevents collapse.
 
 ## Configuration
 
 Experiments are configured with [Hydra](https://hydra.cc) in the spirit of
-le-wm. `configs/config.yaml` holds the sizes shared by every other config and
-selects one model and one training recipe:
+le-wm. `configs/config.yaml` holds the shared `embed_dim` and selects one
+model and one training recipe:
 
 ```text
 configs/
-  config.yaml       embed_dim, history_size; defaults: model, train
+  config.yaml       embed_dim; defaults: model, train
   model/lewm.yaml   JEPA and its nested sub-modules (_target_), encoder included
-  train/lewm.yaml   seed, data, prediction, trainer, loader, optimizer, loss
+  train/lewm.yaml   seed, data, prediction, loss, optimizer, loader, trainer
 ```
 
 The training recipe is merged at the root of the composed config, so its keys
@@ -81,7 +83,7 @@ build from code, with Hydra override syntax:
 from turn_wm.config import load_config
 from turn_wm.models.build import build_model
 
-cfg = load_config(["embed_dim=256", "model.predictor.depth=4", "optimizer.lr=1e-4"])
+cfg = load_config(["embed_dim=256", "data.context_steps=20", "optimizer.lr=1e-4"])
 model = build_model(cfg)
 ```
 
@@ -98,14 +100,20 @@ selected with `train=xxx`).
   in a batch has the same length; anchors too close to a recording's start
   for that context are left out by the dataset. Context and future audio are
   encoded together, once per trajectory.
-- **Teacher forcing** predicts step `t + 1` from steps up to `t` over the
-  last `history_size` steps of the trajectory.
-- **Rollout** starts from the last `history_size` context steps, feeds its
-  own predictions back (without gradient when
-  `prediction.rollout_stop_gradient`) and is supervised at
+- **Teacher forcing** is dense over the ground-truth context
+  (`C = data.context_steps`): from `z0 … z(C-1)` and their actions the
+  predictor predicts `z1 … zC`, one step ahead at every position. The first
+  future latent `zC` is only a target, never an input.
+- **Rollout** starts at the context/future boundary from the ground-truth
+  context, then feeds its own predictions back, never a ground-truth future
+  latent (without gradient when `prediction.rollout_stop_gradient`), with
+  the real future actions. Before each prediction it keeps only the latest
+  `prediction.rollout_context_size` states and actions
+  (`<= data.context_steps`). It is supervised at
   `prediction.rollout_horizons`, each weighted in `loss.rollout`.
-- The predictor therefore always sees the same window shape, newest step
-  last, whether teacher-forced or rolled out.
+- `validate_config` checks these sizes against each other and against the
+  predictor before any data is read; `seed` seeds the model initialization
+  (`LeWMModule`) and should also seed the data loader.
 - The total loss weights teacher forcing, rollout and SIGReg
   (`loss.*.weight`). Latent targets are defined at every step, including
   steps whose annotation is `UNKNOWN`.
@@ -129,7 +137,8 @@ dataset = build_dataset(
     modalities=tuple(cfg.data.modalities),
 )
 loader = build_dataloader(
-    dataset, loader=DataLoaderConfig(batch_size=cfg.loader.batch_size)
+    dataset,
+    loader=DataLoaderConfig(batch_size=cfg.loader.batch_size, seed=cfg.seed),
 )
 
 L.Trainer(**cfg.trainer).fit(LeWMModule(cfg), train_dataloaders=loader)
