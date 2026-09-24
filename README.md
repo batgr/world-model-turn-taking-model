@@ -36,6 +36,108 @@ uv run turn-wm inspect-data --dataset egocom --batch-size 1 --media-root /path/t
 uv run turn-wm inspect-data --dataset full --media-root egocom=/path/to/EgoCom --media-root ego4d=/path/to/Ego4D
 ```
 
+## Model
+
+The world model follows [LeWM](https://github.com/lucas-maes/le-wm): a JEPA
+that predicts the next latent observation from past latents and turn-taking
+actions.
+
+- **Encoder** (`models/encoders/mimi.py`): frozen
+  [Mimi](https://huggingface.co/kyutai/mimi). Audio is down-mixed to mono,
+  resampled to 24 kHz and encoded to Mimi's continuous pre-quantization
+  latents (12.5 Hz, 512-d), then causally aligned to the 10 Hz action grid:
+  grid step `k` takes the latest Mimi frame available by the end of its
+  interval, so no step sees future audio. A batch may mix windows of
+  different lengths and sample rates (EgoCom and Ego4D).
+- **Projector / prediction head** (`lewm/mlp.py`): MLPs to and from the
+  `embed_dim` latent space.
+- **Action embedder** (`lewm/embedder.py`): the five action ids of the
+  dataset (`NO_EVENT`, `ONSET`, `OFFSET`, `MASKED`, `PAD`, the last one
+  zeroed).
+- **Predictor** (`lewm/predictor.py`, `lewm/transformer.py`): causal
+  transformer conditioned on actions through AdaLN-zero, with one learned
+  position per step of its `history_size` window.
+- **SIGReg** (`lewm/sigreg.py`): regularizer keeping latents close to an
+  isotropic Gaussian, which prevents collapse.
+
+## Configuration
+
+Experiments are configured with [Hydra](https://hydra.cc) in the spirit of
+le-wm. `configs/config.yaml` holds the sizes shared by every other config and
+selects one model and one training recipe:
+
+```text
+configs/
+  config.yaml       embed_dim, history_size; defaults: model, train
+  model/lewm.yaml   JEPA and its nested sub-modules (_target_), encoder included
+  train/lewm.yaml   seed, data, prediction, trainer, loader, optimizer, loss
+```
+
+The training recipe is merged at the root of the composed config, so its keys
+read `cfg.trainer.max_epochs`, `cfg.loss.sigreg.weight`, etc. Compose and
+build from code, with Hydra override syntax:
+
+```python
+from turn_wm.config import load_config
+from turn_wm.models.build import build_model
+
+cfg = load_config(["embed_dim=256", "model.predictor.depth=4", "optimizer.lr=1e-4"])
+model = build_model(cfg)
+```
+
+A new model or recipe is a new file in its group (`configs/train/xxx.yaml`,
+selected with `train=xxx`).
+
+## Training
+
+`turn_wm.training.lewm` holds the objective and a Lightning module.
+
+- **Trajectories.** A sample's context window followed by its future window
+  forms one trajectory of `data.context_steps + data.future_steps` steps.
+  Training uses a fixed context (`training_window(cfg)`), so every trajectory
+  in a batch has the same length; anchors too close to a recording's start
+  for that context are left out by the dataset. Context and future audio are
+  encoded together, once per trajectory.
+- **Teacher forcing** predicts step `t + 1` from steps up to `t` over the
+  last `history_size` steps of the trajectory.
+- **Rollout** starts from the last `history_size` context steps, feeds its
+  own predictions back (without gradient when
+  `prediction.rollout_stop_gradient`) and is supervised at
+  `prediction.rollout_horizons`, each weighted in `loss.rollout`.
+- The predictor therefore always sees the same window shape, newest step
+  last, whether teacher-forced or rolled out.
+- The total loss weights teacher forcing, rollout and SIGReg
+  (`loss.*.weight`). Latent targets are defined at every step, including
+  steps whose annotation is `UNKNOWN`.
+
+```python
+import lightning as L
+
+from turn_wm.config import load_config
+from turn_wm.data.build import build_dataset
+from turn_wm.data.loader import DataLoaderConfig, build_dataloader
+from turn_wm.data.source import DATASETS, load_data
+from turn_wm.training.lewm import LeWMModule, training_window
+
+cfg = load_config()
+dataset = build_dataset(
+    load_data(DATASETS["full"]),
+    split="train",
+    window=training_window(cfg),
+    training=True,
+    media_roots={"egocom": ..., "ego4d": ...},
+    modalities=tuple(cfg.data.modalities),
+)
+loader = build_dataloader(
+    dataset, loader=DataLoaderConfig(batch_size=cfg.loader.batch_size)
+)
+
+L.Trainer(**cfg.trainer).fit(LeWMModule(cfg), train_dataloaders=loader)
+```
+
+There is no training entry point yet; the snippet above is the intended
+wiring.
+
 ## Tests
 
 ```bash
@@ -51,3 +153,6 @@ and are skipped unless their corpus root is set:
 EGOCOM_MEDIA_ROOT=/path/to/EgoCom uv run pytest -m integration
 EGO4D_MEDIA_ROOT=/path/to/Ego4D uv run pytest -m integration   # private dataset
 ```
+
+The Mimi and training smoke tests also download the Mimi weights from the Hub
+on first use.
