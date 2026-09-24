@@ -29,16 +29,27 @@ class DecodedVideo:
 
 @dataclass(frozen=True)
 class MediaWindow:
-    """Decoded multimodal observation for a temporal interval."""
+    """Decoded multimodal observation for a temporal interval.
+
+    `start_time_s`/`end_time_s` are the requested bounds on the media file's
+    own timeline. When the window comes from a canonical sample, the
+    corresponding grid-time bounds are kept in `canonical_*_time_s`.
+    """
 
     start_time_s: float
     end_time_s: float
     audio: DecodedAudio | None
     video: DecodedVideo | None
+    canonical_start_time_s: float | None = None
+    canonical_end_time_s: float | None = None
 
 
 class MediaReader:
-    """Decode timestamp-aligned audio/video windows using PyAV."""
+    """Decode timestamp-aligned audio/video windows using PyAV.
+
+    Times are on the media file's own timeline; callers convert canonical
+    grid times beforehand.
+    """
 
     def read_window(
         self,
@@ -62,9 +73,7 @@ class MediaReader:
                 end_time_s=end_time_s,
             )
 
-        audio_source = (
-            media.audio_path if media.audio_path is not None else media.video_path
-        )
+        audio_source = media.audio_source
 
         if audio_source is not None:
             audio = self._read_audio(
@@ -248,7 +257,7 @@ class MediaReader:
             array = array.reshape(samples, channels).transpose()
 
         else:
-            raise ValueError("Unexpected decoded audio shape: " f"{array.shape}")
+            raise ValueError(f"Unexpected decoded audio shape: {array.shape}")
 
         if np.issubdtype(array.dtype, np.integer):
             info = np.iinfo(array.dtype)

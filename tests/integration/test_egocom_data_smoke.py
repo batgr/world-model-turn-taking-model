@@ -33,7 +33,7 @@ WINDOW = WindowConfig()
 
 @pytest.fixture(scope="module")
 def data():
-    return load_data(EGOCOM)
+    return load_data(EGOCOM).corpus("egocom")
 
 
 @pytest.fixture(scope="module")

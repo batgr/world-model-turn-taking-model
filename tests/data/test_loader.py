@@ -60,6 +60,7 @@ class FakeTurnTakingDataset(Dataset):
             ),
             "context_length": length,
             "sample_id": f"sample-{index}",
+            "dataset": "synthetic",
             "recording_id": "r1",
             "anchor_idx": index,
             "anchor_time": index / 10,

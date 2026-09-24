@@ -114,6 +114,7 @@ def make_sample(
         ),
         "context_length": length,
         "sample_id": sample_id,
+        "dataset": "synthetic",
         "recording_id": f"recording-{sample_id}",
         "anchor_idx": length,
         "anchor_time": float(length) / 10,
@@ -230,3 +231,38 @@ def test_empty_batch_raises():
         match="empty batch",
     ):
         collate_turn_taking([])
+
+
+def test_media_batch_preserves_order_and_state_tensors():
+    samples = [
+        make_sample(sample_id=sample_id, length=length)
+        for sample_id, length in [("a", 2), ("b", 4), ("c", 3)]
+    ]
+
+    plain = collate_turn_taking(samples)
+
+    for index, sample in enumerate(samples):
+        sample["context_media"] = MediaWindow(
+            start_time_s=float(index),
+            end_time_s=float(index) + 1,
+            audio=None,
+            video=None,
+        )
+        sample["future_media"] = MediaWindow(
+            start_time_s=float(index) + 1,
+            end_time_s=float(index) + 2,
+            audio=None,
+            video=None,
+        )
+
+    batch = collate_turn_taking(samples)
+
+    assert [window.start_time_s for window in batch["context_media"]] == [0, 1, 2]
+    assert [window.start_time_s for window in batch["future_media"]] == [1, 2, 3]
+    assert batch["dataset"] == ["synthetic"] * 3
+
+    for key, value in plain.items():
+        if isinstance(value, torch.Tensor):
+            assert torch.equal(batch[key], value), key
+        else:
+            assert batch[key] == value, key

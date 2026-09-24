@@ -69,6 +69,7 @@ def collate_turn_taking(
         "future_action": future_action,
         "future_valid": future_valid,
         "sample_id": [sample["sample_id"] for sample in samples],
+        "dataset": [sample["dataset"] for sample in samples],
         "recording_id": [sample["recording_id"] for sample in samples],
         "anchor_idx": torch.tensor(
             [sample["anchor_idx"] for sample in samples],

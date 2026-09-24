@@ -14,6 +14,7 @@ from torch.utils.data import DataLoader
 
 from turn_wm.data.collate import collate_turn_taking
 from turn_wm.data.dataset import TurnTakingDataset
+from turn_wm.data.multi import MultiCorpusDataset
 from turn_wm.data.sampling import SamplingConfig, build_sampler
 
 
@@ -26,6 +27,8 @@ class DataLoaderConfig:
     pin_memory: bool = False
     drop_last: bool = False
     seed: int = 42
+    # None: shuffle natural training data, keep evaluation data in order.
+    shuffle: bool | None = None
 
     def __post_init__(self) -> None:
         if self.batch_size <= 0:
@@ -36,7 +39,7 @@ class DataLoaderConfig:
 
 
 def build_dataloader(
-    dataset: TurnTakingDataset,
+    dataset: TurnTakingDataset | MultiCorpusDataset,
     *,
     loader: DataLoaderConfig,
     sampling: SamplingConfig | None = None,
@@ -52,18 +55,26 @@ def build_dataloader(
     if dataset.training:
         sampling = sampling or SamplingConfig()
 
-        sampler = build_sampler(
-            dataset.sample_classes(),
-            sampling,
-        )
+        # Natural sampling uses standard shuffled iteration; only other
+        # strategies need the (potentially millions of) sample classes.
+        if sampling.strategy != "natural":
+            sampler = build_sampler(
+                dataset.sample_classes(),
+                sampling,
+            )
 
-        # Natural sampling uses standard shuffled iteration.
         shuffle = sampler is None
 
     elif sampling is not None and sampling.strategy != "natural":
         raise ValueError(
             "Non-natural sampling strategies are only valid during training"
         )
+
+    if loader.shuffle is not None:
+        if sampler is not None and loader.shuffle:
+            raise ValueError("shuffle cannot be combined with a sampling strategy")
+
+        shuffle = loader.shuffle and sampler is None
 
     return DataLoader(
         dataset,

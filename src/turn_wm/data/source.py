@@ -2,8 +2,10 @@
 Load and validate the conversational dynamics datasets used for modelling.
 
 This module is the boundary between storage (Hugging Face or local Parquet)
-and the modelling code. It exposes the model-ready anchor index and the
-underlying action grid without introducing PyTorch or training semantics.
+and the modelling code. A source names one or more corpora; each loaded corpus
+keeps its own model-ready anchor index, action grid, metadata and (when
+published) media manifest together, because `anchor_row` indexes that
+corpus's own grid. No PyTorch or training semantics are introduced here.
 """
 
 from __future__ import annotations
@@ -12,8 +14,10 @@ import json
 from dataclasses import dataclass
 from pathlib import Path
 
+import httpx
+import pyarrow.compute as pc
 from datasets import Dataset, DatasetDict, load_dataset
-from huggingface_hub import hf_hub_download
+from huggingface_hub import HfApi, hf_hub_download
 
 MODEL_READY_REQUIRED_COLUMNS = {
     "sample_id",
@@ -55,48 +59,138 @@ ACTION_GRID_REQUIRED_COLUMNS = {
 }
 
 
-@dataclass(frozen=True)
-class HuggingFaceSource:
-    """Hugging Face dataset configuration."""
+MEDIA_MANIFEST_REQUIRED_COLUMNS = {
+    "dataset",
+    "recording_id",
+    "video_path",
+    "audio_path",
+    "media_offset_s",
+    "video_has_audio",
+}
 
-    repo_id: str
+
+@dataclass(frozen=True)
+class CorpusConfig:
+    """Where one corpus's canonical artifacts live inside a Hub repository."""
+
+    name: str
     model_ready_config: str
     action_grid_config: str
+    media_manifest_config: str | None = None
     metadata_file: str = "metadata.json"
+
+
+@dataclass(frozen=True)
+class HuggingFaceSource:
+    """One Hub repository revision providing one or more corpora."""
+
+    repo_id: str
+    corpora: tuple[CorpusConfig, ...]
     revision: str | None = None
+
+    def __post_init__(self) -> None:
+        names = [corpus.name for corpus in self.corpora]
+
+        if not names:
+            raise ValueError("A source must provide at least one corpus")
+
+        if len(set(names)) != len(names):
+            raise ValueError(f"Duplicate corpus names in source: {names}")
 
 
 @dataclass(frozen=True)
 class LocalSource:
-    """Local model-ready and action-grid artifacts."""
+    """Local model-ready and action-grid artifacts for one corpus."""
 
     model_ready_dir: Path
     action_grid_file: Path
     metadata_file: Path | None = None
+    media_manifest_file: Path | None = None
+    name: str = "local"
 
 
 type DataSource = HuggingFaceSource | LocalSource
 
 
+def _private_corpus(name: str) -> CorpusConfig:
+    return CorpusConfig(
+        name=name,
+        model_ready_config=f"{name}_model_ready",
+        action_grid_config=f"{name}_action_grid",
+        media_manifest_config=f"{name}_media_manifest",
+        metadata_file=f"{name}/metadata.json",
+    )
+
+
+_PRIVATE_REPO = "batgre/conversational-dynamics-full"
+
 EGOCOM = HuggingFaceSource(
     repo_id="batgre/conversational-dynamics-egocom",
-    model_ready_config="model_ready",
-    action_grid_config="action_grid",
+    corpora=(
+        CorpusConfig(
+            name="egocom",
+            model_ready_config="model_ready",
+            action_grid_config="action_grid",
+            media_manifest_config="media_manifest",
+        ),
+    ),
+)
+
+# The private release publishes each corpus as its own set of configs.
+EGO4D = HuggingFaceSource(
+    repo_id=_PRIVATE_REPO,
+    corpora=(_private_corpus("ego4d"),),
+)
+
+FULL = HuggingFaceSource(
+    repo_id=_PRIVATE_REPO,
+    corpora=(_private_corpus("egocom"), _private_corpus("ego4d")),
 )
 
 # Published datasets addressable by name from the CLI and experiments.
 DATASETS: dict[str, HuggingFaceSource] = {
     "egocom": EGOCOM,
+    "ego4d": EGO4D,
+    "full": FULL,
 }
+
+
+@dataclass(frozen=True)
+class LoadedCorpus:
+    """One corpus's canonical artifacts, kept together.
+
+    `model_ready.anchor_row` indexes this corpus's `action_grid` only.
+    """
+
+    name: str
+    model_ready: DatasetDict
+    action_grid: Dataset
+    metadata: dict[str, object]
+    media_manifest: Dataset | None = None
 
 
 @dataclass(frozen=True)
 class LoadedData:
     """Canonical data exposed to the modelling repository."""
 
-    model_ready: DatasetDict
-    action_grid: Dataset
-    metadata: dict[str, object]
+    corpora: tuple[LoadedCorpus, ...]
+    # Commit every artifact was loaded from, when resolvable.
+    revision: str | None = None
+
+    def __post_init__(self) -> None:
+        if not self.corpora:
+            raise ValueError("LoadedData requires at least one corpus")
+
+    @property
+    def names(self) -> tuple[str, ...]:
+        return tuple(corpus.name for corpus in self.corpora)
+
+    def corpus(self, name: str) -> LoadedCorpus:
+        for corpus in self.corpora:
+            if corpus.name == name:
+                return corpus
+
+        raise KeyError(f"No corpus {name!r}; loaded: {list(self.names)}")
 
 
 def load_data(source: DataSource) -> LoadedData:
@@ -105,45 +199,92 @@ def load_data(source: DataSource) -> LoadedData:
     if isinstance(source, HuggingFaceSource):
         data = _load_huggingface(source)
     else:
-        data = _load_local(source)
+        data = LoadedData(corpora=(_load_local(source),))
 
-    _validate_model_ready(data.model_ready)
-    _validate_action_grid(data.action_grid)
+    for corpus in data.corpora:
+        _validate_model_ready(corpus.model_ready, corpus=corpus.name)
+        _validate_action_grid(corpus.action_grid, corpus=corpus.name)
+
+        if corpus.media_manifest is not None:
+            _validate_media_manifest(corpus.media_manifest, corpus=corpus.name)
 
     return data
 
 
 def _load_huggingface(source: HuggingFaceSource) -> LoadedData:
+    # Every artifact of every corpus must come from the same commit, even when
+    # the configured revision is a moving branch.
+    revision = _resolve_revision(source)
+
+    return LoadedData(
+        corpora=tuple(
+            _load_huggingface_corpus(source.repo_id, corpus, revision=revision)
+            for corpus in source.corpora
+        ),
+        revision=revision,
+    )
+
+
+def _load_huggingface_corpus(
+    repo_id: str,
+    corpus: CorpusConfig,
+    *,
+    revision: str | None,
+) -> LoadedCorpus:
     model_ready = load_dataset(
-        source.repo_id,
-        source.model_ready_config,
-        revision=source.revision,
+        repo_id,
+        corpus.model_ready_config,
+        revision=revision,
     )
 
     action_grid = load_dataset(
-        source.repo_id,
-        source.action_grid_config,
+        repo_id,
+        corpus.action_grid_config,
         split="train",
-        revision=source.revision,
+        revision=revision,
     )
+
+    media_manifest = None
+
+    if corpus.media_manifest_config is not None:
+        media_manifest = load_dataset(
+            repo_id,
+            corpus.media_manifest_config,
+            split="train",
+            revision=revision,
+        )
 
     metadata_path = hf_hub_download(
-        repo_id=source.repo_id,
-        filename=source.metadata_file,
+        repo_id=repo_id,
+        filename=corpus.metadata_file,
         repo_type="dataset",
-        revision=source.revision,
+        revision=revision,
     )
 
-    metadata = _read_json(Path(metadata_path))
-
-    return LoadedData(
+    return LoadedCorpus(
+        name=corpus.name,
         model_ready=model_ready,
         action_grid=action_grid,
-        metadata=metadata,
+        metadata=_read_json(Path(metadata_path)),
+        media_manifest=media_manifest,
     )
 
 
-def _load_local(source: LocalSource) -> LoadedData:
+def _resolve_revision(source: HuggingFaceSource) -> str | None:
+    """Pin the configured revision to a commit for the duration of one load.
+
+    Offline, fall back to the configured revision so cached data stays usable.
+    """
+
+    try:
+        info = HfApi().dataset_info(source.repo_id, revision=source.revision)
+    except (ConnectionError, httpx.TransportError):
+        return source.revision
+
+    return info.sha or source.revision
+
+
+def _load_local(source: LocalSource) -> LoadedCorpus:
     split_files = {}
 
     for split in ("train", "validation", "test"):
@@ -179,39 +320,80 @@ def _load_local(source: LocalSource) -> LoadedData:
 
         metadata = _read_json(source.metadata_file)
 
-    return LoadedData(
+    media_manifest = None
+
+    if source.media_manifest_file is not None:
+        if not source.media_manifest_file.exists():
+            raise FileNotFoundError(
+                f"Media manifest not found: {source.media_manifest_file}"
+            )
+
+        media_manifest = load_dataset(
+            "parquet",
+            data_files={"train": str(source.media_manifest_file)},
+            split="train",
+        )
+
+    return LoadedCorpus(
+        name=source.name,
         model_ready=model_ready,
         action_grid=action_grid,
         metadata=metadata,
+        media_manifest=media_manifest,
     )
 
 
-def _validate_model_ready(dataset: DatasetDict) -> None:
+def _validate_model_ready(dataset: DatasetDict, *, corpus: str) -> None:
     if "train" not in dataset:
-        raise ValueError("model_ready must contain a train split")
+        raise ValueError(f"{corpus}/model_ready must contain a train split")
 
     for split_name, split in dataset.items():
         _require_columns(
             split,
             MODEL_READY_REQUIRED_COLUMNS,
-            artifact=f"model_ready/{split_name}",
+            artifact=f"{corpus}/model_ready/{split_name}",
         )
 
         declared_splits = set(split.unique("split"))
 
         if declared_splits != {split_name}:
             raise ValueError(
-                f"model_ready/{split_name} contains split values "
+                f"{corpus}/model_ready/{split_name} contains split values "
                 f"{sorted(declared_splits)}"
             )
 
 
-def _validate_action_grid(dataset: Dataset) -> None:
+def _validate_action_grid(dataset: Dataset, *, corpus: str) -> None:
     _require_columns(
         dataset,
         ACTION_GRID_REQUIRED_COLUMNS,
-        artifact="action_grid",
+        artifact=f"{corpus}/action_grid",
     )
+
+
+def _validate_media_manifest(dataset: Dataset, *, corpus: str) -> None:
+    _require_columns(
+        dataset,
+        MEDIA_MANIFEST_REQUIRED_COLUMNS,
+        artifact=f"{corpus}/media_manifest",
+    )
+
+    table = dataset.with_format("arrow")[:]
+
+    without_media = pc.and_(
+        pc.is_null(table["video_path"]),
+        pc.is_null(table["audio_path"]),
+    )
+
+    if pc.any(without_media).as_py():
+        raise ValueError(f"{corpus}/media_manifest has records without video or audio")
+
+    keys = table.group_by(["dataset", "recording_id"]).aggregate([])
+
+    if keys.num_rows != table.num_rows:
+        raise ValueError(
+            f"{corpus}/media_manifest has duplicate (dataset, recording_id)"
+        )
 
 
 def _require_columns(

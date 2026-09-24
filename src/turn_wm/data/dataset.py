@@ -8,14 +8,15 @@ and actions, and returns tensors. Batching and sampling are handled elsewhere.
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from typing import Any
 
 import torch
 from datasets import Dataset as HFDataset
 from torch.utils.data import Dataset
-from turn_wm.data.media import MediaIndex
-from turn_wm.data.reader import MediaReader
+
+from turn_wm.data.media import MediaIndex, MediaPaths
+from turn_wm.data.reader import MediaReader, MediaWindow
 from turn_wm.data.window import build_window, validate_against_anchor
 
 STATE_TO_ID = {
@@ -92,7 +93,9 @@ class TurnTakingDataset(Dataset):
         self.media_reader = (
             media_reader
             if media_reader is not None
-            else MediaReader() if media_index is not None else None
+            else MediaReader()
+            if media_index is not None
+            else None
         )
 
     def __len__(self) -> int:
@@ -171,6 +174,7 @@ class TurnTakingDataset(Dataset):
             ),
             "context_length": context_steps,
             "sample_id": anchor["sample_id"],
+            "dataset": anchor["dataset"],
             "recording_id": anchor["recording_id"],
             "anchor_idx": anchor_idx,
             "anchor_time": anchor["anchor_time"],
@@ -182,6 +186,7 @@ class TurnTakingDataset(Dataset):
                 sample=sample,
                 rows=rows,
                 context_steps=context_steps,
+                dataset=anchor["dataset"],
                 recording_id=anchor["recording_id"],
             )
 
@@ -197,6 +202,7 @@ class TurnTakingDataset(Dataset):
         sample: dict[str, Any],
         rows: dict[str, list[Any]],
         context_steps: int,
+        dataset: str,
         recording_id: str,
     ) -> None:
         if self.media_index is None or self.media_reader is None:
@@ -221,18 +227,44 @@ class TurnTakingDataset(Dataset):
 
         future_end_s = decision_times[-1] + grid_step_s
 
-        media = self.media_index.get(recording_id)
+        media = self.media_index.get(
+            dataset=dataset,
+            recording_id=recording_id,
+        )
 
-        sample["context_media"] = self.media_reader.read_window(
+        sample["context_media"] = self._read_media(
             media,
             start_time_s=context_start_s,
             end_time_s=future_start_s,
         )
 
-        sample["future_media"] = self.media_reader.read_window(
+        sample["future_media"] = self._read_media(
             media,
             start_time_s=future_start_s,
             end_time_s=future_end_s,
+        )
+
+    def _read_media(
+        self,
+        media: MediaPaths,
+        *,
+        start_time_s: float,
+        end_time_s: float,
+    ) -> MediaWindow:
+        """Decode a canonical-time interval from the media file's timeline."""
+
+        assert self.media_reader is not None
+
+        window = self.media_reader.read_window(
+            media,
+            start_time_s=media.to_media_time(start_time_s),
+            end_time_s=media.to_media_time(end_time_s),
+        )
+
+        return replace(
+            window,
+            canonical_start_time_s=start_time_s,
+            canonical_end_time_s=end_time_s,
         )
 
     def _context_steps(self, anchor: dict[str, Any]) -> int:
