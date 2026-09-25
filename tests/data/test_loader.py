@@ -219,3 +219,50 @@ def test_negative_worker_count_raises():
         DataLoaderConfig(
             num_workers=-1,
         )
+
+
+@pytest.mark.parametrize(
+    ("kwargs", "message"),
+    [
+        ({"num_workers": 2, "prefetch_factor": 0}, "prefetch_factor must be positive"),
+        ({"persistent_workers": True}, "persistent_workers requires num_workers"),
+        ({"prefetch_factor": 2}, "prefetch_factor requires num_workers"),
+    ],
+)
+def test_invalid_worker_config_is_rejected(kwargs, message):
+    with pytest.raises(ValueError, match=message):
+        DataLoaderConfig(**kwargs)
+
+
+def test_persistent_workers_follow_the_config():
+    # Workers no longer imply persistent workers: the config decides.
+    dataset = FakeTurnTakingDataset(training=False)
+
+    default = build_dataloader(dataset, loader=DataLoaderConfig(num_workers=2))
+    persistent = build_dataloader(
+        dataset,
+        loader=DataLoaderConfig(num_workers=2, persistent_workers=True),
+    )
+
+    assert default.persistent_workers is False
+    assert persistent.persistent_workers is True
+
+
+def test_prefetch_factor_is_propagated():
+    loader = build_dataloader(
+        FakeTurnTakingDataset(training=False),
+        loader=DataLoaderConfig(num_workers=2, prefetch_factor=5),
+    )
+
+    assert loader.prefetch_factor == 5
+
+
+def test_single_process_loading_ignores_worker_options():
+    loader = build_dataloader(
+        FakeTurnTakingDataset(training=False),
+        loader=DataLoaderConfig(),
+    )
+
+    assert loader.num_workers == 0
+    assert loader.persistent_workers is False
+    assert loader.prefetch_factor is None

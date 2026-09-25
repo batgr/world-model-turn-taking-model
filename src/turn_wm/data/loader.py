@@ -29,6 +29,8 @@ class DataLoaderConfig:
     seed: int = 42
     # None: shuffle natural training data, keep evaluation data in order.
     shuffle: bool | None = None
+    persistent_workers: bool = False
+    prefetch_factor: int | None = None
 
     def __post_init__(self) -> None:
         if self.batch_size <= 0:
@@ -36,6 +38,15 @@ class DataLoaderConfig:
 
         if self.num_workers < 0:
             raise ValueError("num_workers must be non-negative")
+
+        if self.prefetch_factor is not None and self.prefetch_factor <= 0:
+            raise ValueError("prefetch_factor must be positive when set")
+
+        if self.num_workers == 0 and self.persistent_workers:
+            raise ValueError("persistent_workers requires num_workers > 0")
+
+        if self.num_workers == 0 and self.prefetch_factor is not None:
+            raise ValueError("prefetch_factor requires num_workers > 0")
 
 
 def build_dataloader(
@@ -76,6 +87,14 @@ def build_dataloader(
 
         shuffle = loader.shuffle and sampler is None
 
+    kwargs = {}
+
+    if loader.num_workers > 0:
+        kwargs["persistent_workers"] = loader.persistent_workers
+
+        if loader.prefetch_factor is not None:
+            kwargs["prefetch_factor"] = loader.prefetch_factor
+
     return DataLoader(
         dataset,
         batch_size=loader.batch_size,
@@ -86,5 +105,5 @@ def build_dataloader(
         drop_last=loader.drop_last,
         collate_fn=collate_turn_taking,
         generator=generator,
-        persistent_workers=loader.num_workers > 0,
+        **kwargs,
     )
