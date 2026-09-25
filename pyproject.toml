@@ -40,3 +40,7 @@ addopts = "-m 'not integration'"
 markers = [
     "integration: requires network access to the published Hugging Face datasets",
 ]
+[project.optional-dependencies]
+wandb = [
+    "wandb",
+]

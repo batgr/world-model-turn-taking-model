@@ -37,6 +37,8 @@ def test_default_config_selects_every_group():
         "optimizer",
         "loss",
         "checkpoint",
+        "experiment",
+        "logging",
     }
     assert cfg.model.encoder.model_name == "kyutai/mimi"
     assert cfg.model.encoder.target_rate == 10.0

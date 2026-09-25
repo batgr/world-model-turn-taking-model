@@ -72,3 +72,14 @@ checkpoint:
   every_n_epochs: 1
 
   resume_from: null
+
+experiment:
+  name: lewm
+  output_root: outputs
+
+logging:
+  wandb:
+    enabled: false
+    project: turn-wm
+    entity: null
+    name: null

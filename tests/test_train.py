@@ -1,5 +1,6 @@
 """run() wiring, with data loading, the model and Lightning all mocked."""
 
+import json
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -10,7 +11,13 @@ from omegaconf import OmegaConf
 from turn_wm.config import load_config
 from turn_wm.data.source import DATASETS
 from turn_wm.training import train as train_module
-from turn_wm.training.train import _build_callbacks
+from turn_wm.training.train import (
+    _build_callbacks,
+    _build_logger,
+    _config_hash,
+    _write_config,
+    _write_metadata,
+)
 
 
 class Recorder:
@@ -27,7 +34,7 @@ class Recorder:
     def load_data(self, source):
         self.events.append("load_data")
         self.loaded_sources.append(source)
-        return SimpleNamespace(names=("egocom", "ego4d"))
+        return SimpleNamespace(names=("egocom", "ego4d"), revision="rev-123")
 
     def build_dataset(self, loaded, **kwargs):
         self.events.append(f"build_dataset:{kwargs['split']}")
@@ -64,6 +71,19 @@ class Recorder:
         trainer = FakeTrainer()
         self.trainers.append(trainer)
         return trainer
+
+
+@pytest.fixture(autouse=True)
+def isolated_outputs(tmp_path, monkeypatch):
+    """Run from tmp_path so experiment.output_root never lands in the repo."""
+
+    monkeypatch.chdir(tmp_path)
+
+
+def run_dirs(tmp_path) -> list[Path]:
+    root = tmp_path / "outputs" / "lewm"
+
+    return sorted(root.iterdir()) if root.exists() else []
 
 
 @pytest.fixture
@@ -181,8 +201,12 @@ def test_run_calls_trainer_fit(recorder, media_roots):
     [module] = recorder.modules
 
     callbacks = trainer.kwargs.pop("callbacks")
+    default_root_dir = trainer.kwargs.pop("default_root_dir")
+    logger = trainer.kwargs.pop("logger")
 
     assert trainer.kwargs == OmegaConf.to_container(cfg.trainer, resolve=True)
+    assert Path(default_root_dir).parent == Path("outputs") / "lewm"
+    assert logger is False
     assert trainer.kwargs["max_epochs"] == 3
     assert [type(callback) for callback in callbacks] == [ModelCheckpoint]
     assert trainer.fit_calls == [
@@ -192,21 +216,23 @@ def test_run_calls_trainer_fit(recorder, media_roots):
     assert recorder.events[-1] == "fit"
 
 
-def test_run_rejects_unknown_dataset(recorder, media_roots):
+def test_run_rejects_unknown_dataset(recorder, media_roots, tmp_path):
     with pytest.raises(ValueError, match="Unknown dataset 'nope'"):
         run(media_roots, "data.dataset=nope")
 
     assert recorder.events == []
+    assert run_dirs(tmp_path) == []
 
 
-def test_run_rejects_an_invalid_config_before_loading(recorder, media_roots):
+def test_run_rejects_an_invalid_config_before_loading(recorder, media_roots, tmp_path):
     with pytest.raises(ValueError, match="rollout_context_size"):
         run(media_roots, "prediction.rollout_context_size=100")
 
     assert recorder.events == []
+    assert run_dirs(tmp_path) == []
 
 
-def test_missing_media_root_is_rejected(recorder, monkeypatch):
+def test_missing_media_root_is_rejected(recorder, monkeypatch, tmp_path):
     monkeypatch.delenv("EGOCOM_MEDIA_ROOT", raising=False)
     monkeypatch.delenv("EGO4D_MEDIA_ROOT", raising=False)
 
@@ -214,6 +240,7 @@ def test_missing_media_root_is_rejected(recorder, monkeypatch):
         train_module.run(load_config())
 
     assert "module" not in recorder.events
+    assert run_dirs(tmp_path) == []
 
 
 def test_explicit_media_roots_must_cover_every_corpus(recorder, media_roots):
@@ -240,7 +267,7 @@ def test_media_roots_come_from_the_environment(recorder, media_roots, monkeypatc
 def test_checkpoint_callback_uses_config():
     cfg = load_config()
 
-    callbacks = _build_callbacks(cfg)
+    callbacks = _build_callbacks(cfg, run_dir=Path("run"))
 
     assert len(callbacks) == 1
 
@@ -257,7 +284,7 @@ def test_checkpoint_callback_uses_config():
 def test_checkpoint_can_be_disabled():
     cfg = load_config(["checkpoint.enabled=false"])
 
-    callbacks = _build_callbacks(cfg)
+    callbacks = _build_callbacks(cfg, run_dir=Path("run"))
 
     assert callbacks == []
 
@@ -292,3 +319,107 @@ def test_resume_path_expands_the_home_directory(recorder, media_roots):
     [(_, _, _, ckpt_path)] = recorder.trainers[0].fit_calls
 
     assert ckpt_path == str(Path("~/runs/last.ckpt").expanduser())
+
+
+def test_config_hash_is_stable():
+    first = load_config()
+    second = load_config()
+
+    assert _config_hash(first) == _config_hash(second)
+
+
+def test_config_hash_changes_with_experiment():
+    first = load_config()
+    second = load_config(["optimizer.lr=1e-4"])
+
+    assert _config_hash(first) != _config_hash(second)
+
+
+def test_wandb_disabled_returns_false(tmp_path):
+    cfg = load_config()
+
+    assert (
+        _build_logger(
+            cfg,
+            run_id="test",
+            run_dir=tmp_path,
+        )
+        is False
+    )
+
+
+def test_wandb_enabled_without_the_package_is_a_clear_error(tmp_path, monkeypatch):
+    monkeypatch.setattr(train_module.importlib.util, "find_spec", lambda name: None)
+    cfg = load_config(["logging.wandb.enabled=true"])
+
+    with pytest.raises(RuntimeError, match="uv sync --extra wandb"):
+        _build_logger(cfg, run_id="test", run_dir=tmp_path)
+
+
+def test_checkpoint_is_inside_run_directory(tmp_path):
+    cfg = load_config()
+
+    callbacks = _build_callbacks(
+        cfg,
+        run_dir=tmp_path,
+    )
+
+    checkpoint = callbacks[0]
+
+    assert checkpoint.dirpath == str(tmp_path / "checkpoints")
+
+
+def test_write_config_saves_the_resolved_config(tmp_path):
+    cfg = load_config(["data.context_steps=20"])
+
+    _write_config(cfg, tmp_path)
+
+    saved = OmegaConf.load(tmp_path / "config.yaml")
+
+    assert (tmp_path / "config.yaml").is_file()
+    # Interpolations are resolved: the predictor size is written as a value.
+    assert saved.model.predictor.num_frames == 20
+    assert _config_hash(saved) == _config_hash(cfg)
+
+
+def test_write_metadata_records_the_run(tmp_path):
+    cfg = load_config()
+    git = {"commit": "abc", "dirty": False}
+
+    _write_metadata(
+        run_dir=tmp_path,
+        run_id="run-1",
+        config_hash="hash",
+        cfg=cfg,
+        git=git,
+        dataset_revision="rev-123",
+    )
+
+    assert (tmp_path / "metadata.json").is_file()
+    assert json.loads((tmp_path / "metadata.json").read_text()) == {
+        "run_id": "run-1",
+        "seed": cfg.seed,
+        "config_hash": "hash",
+        "git": git,
+        "dataset": "full",
+        "dataset_revision": "rev-123",
+    }
+
+
+def test_run_writes_config_and_metadata_into_its_run_directory(
+    recorder, media_roots, tmp_path
+):
+    cfg = run(media_roots)
+
+    [run_dir] = run_dirs(tmp_path)
+    config_hash = _config_hash(cfg)
+    metadata = json.loads((run_dir / "metadata.json").read_text())
+
+    assert run_dir.name.endswith(config_hash[:8])
+    assert (run_dir / "config.yaml").is_file()
+    assert metadata["run_id"] == run_dir.name
+    assert metadata["config_hash"] == config_hash
+    assert metadata["dataset_revision"] == "rev-123"
+    assert Path(recorder.trainers[0].kwargs["default_root_dir"]) == Path(
+        "outputs", "lewm", run_dir.name
+    )
