@@ -135,29 +135,42 @@ argument of `run`).
 ### Run training
 
 Training is exposed through the same `turn-wm` CLI. Experiment
-configuration remains entirely Hydra-driven:
+configuration remains entirely Hydra-driven. Real runs use the precomputed
+Mimi features (see [Precompute Mimi features](#precompute-mimi-features)); no
+raw media is needed then, only the cache:
+
+```bash
+uv run turn-wm train \
+    data.dataset=egocom \
+    data.observation_source=mimi_cache \
+    data.mimi_cache.root=/path/to/cache
+```
+
+`data.observation_source=raw_audio` decodes the raw audio and encodes it with
+frozen Mimi at every step instead (debugging); it needs the media roots:
 
 ```bash
 export EGOCOM_MEDIA_ROOT=/path/to/EgoCom
-export EGO4D_MEDIA_ROOT=/path/to/Ego4D
+export EGO4D_MEDIA_ROOT=/path/to/Ego4D   # for data.dataset=full or ego4d
 
-uv run turn-wm train
+uv run turn-wm train data.observation_source=raw_audio
 ```
 
-Hydra overrides can be passed directly:
+See [docs/training.md](docs/training.md) for both sources. Hydra overrides
+can be passed directly:
 
 ```bash
 uv run turn-wm train \
   data.dataset=egocom \
+  data.mimi_cache.root=/path/to/cache \
   data.context_steps=20 \
   prediction.rollout_context_size=10 \
   loader.batch_size=16 \
   optimizer.lr=1e-4
 ```
 
-With `data.dataset=egocom` only `EGOCOM_MEDIA_ROOT` is needed. An invalid
-override or a configuration rejected by `validate_config` stops with a
-`turn-wm: error: ...` message before any data is loaded.
+An invalid override or a configuration rejected by `validate_config` stops
+with a `turn-wm: error: ...` message before any data is loaded.
 
 ### Runs
 
@@ -224,11 +237,32 @@ uv run turn-wm precompute-mimi \
 - The cache holds one float16 safetensors file per recording and a
   `manifest.json` recording the Mimi model and revisions, the source dataset
   revision, the feature rate, dim and dtype, and for every recording its
-  `start_index`, `start_time_s` and number of steps.
+  `start_index`, `start_time_s`, number of steps, and detected `audio_gaps`.
 - `--media-root` works as for `inspect-data` (`DATASET=PATH`, repeated, for
   `--dataset full`). `--revision` pins Mimi, ideally to a commit SHA. The
   output directory must be new or empty; grids and media are checked for
   every recording before encoding starts.
+
+### Audio timeline caveats
+
+- Local decoded-frame timestamp irregularities below 100 ms are treated as
+  jitter. Frames are concatenated without introducing artificial silence.
+- Local gaps of at least 100 ms are materialized as silence at their detected
+  canonical position and recorded in the cache manifest.
+- Canonical `SPEAKING`, `SILENT`, and `UNKNOWN` labels are not modified.
+- Three Ego4D recordings with slow audio/annotation clock drift of roughly
+  0.3--0.5 s are excluded from the V1 cache. This is synchronization
+  uncertainty, not a claim that the media are corrupted; exact IDs, measured
+  drift, and reasons are retained in the manifest.
+- In cache mode, anchors whose recording is absent from the cache are filtered
+  from the experimental view, while the canonical dataset remains unchanged.
+
+After the per-corpus caches are in a shared release directory, deterministic
+release metadata can be rebuilt with:
+
+```bash
+uv run python scripts/build_mimi_release.py /path/to/mimi/v1
+```
 
 The features will then feed training in place of the raw audio.
 

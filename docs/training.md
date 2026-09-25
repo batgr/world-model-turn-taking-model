@@ -35,6 +35,51 @@ A trajectory is `data.context_steps` ground-truth context steps followed by
   `prediction.rollout_context_size` states and actions.
 - **SIGReg** keeps the latents close to an isotropic Gaussian.
 
+### Observation sources
+
+The projector always receives Mimi's causal 10 Hz × 512 features; only where
+they come from changes (`data.observation_source`):
+
+```text
+raw_audio    audio -> frozen Mimi (12.5 Hz) -> causal alignment -> 10 Hz × 512 -> projector
+mimi_cache   precomputed 10 Hz × 512 (turn-wm precompute-mimi)         -> projector
+```
+
+Both feed Mimi features of the same shape to the same projector, row `k` of
+a recording being its grid step `start_index + k`. They differ in one
+respect: the cache encodes each **whole recording** continuously (streamed
+Mimi matches one-shot Mimi to float32 precision), so every row has Mimi's full
+causal history, while `raw_audio` encodes each training window **from its
+first sample**, without the audio before it; its first rows therefore differ
+from the cache's. The cache is the more faithful input. The projector, the
+predictor and SIGReg (applied to the projected latents) are trained
+identically; the cache does not change the recipe.
+
+**The cache is the recommended mode for real training.** Mimi is frozen, and
+training windows overlap heavily, so the raw path would decode, resample and
+encode the same audio again at every step. With the cache Mimi is never loaded
+(`build_model` builds the model without an encoder), GPU memory holds only
+the trainable model, ablations run faster, and no raw media is needed: a
+machine with the published dataset and the cache can train (e.g. Colab).
+`raw_audio` stays available for debugging and end-to-end checks; it needs the
+media roots.
+
+```yaml
+data:
+  observation_source: mimi_cache
+```
+
+```bash
+uv run turn-wm train data.mimi_cache.root=/path/to/cache                 # cached
+uv run turn-wm train data.observation_source=raw_audio                   # raw audio
+```
+
+Before training, the runner refuses a cache whose feature rate is not 10 Hz,
+whose dimension differs from `model.projector.input_dim`, or whose source
+dataset revision differs from the loaded dataset's (when both are known). The
+run's `metadata.json` records the observation source and the cache identity
+(root, schema, Mimi model and revisions, source dataset revision, rate, dim).
+
 ### Optimization
 
 ```text
@@ -50,7 +95,9 @@ gradient clipping:    1.0
 
 The number of optimizer steps is Lightning's
 `trainer.estimated_stepping_batches`, which accounts for gradient
-accumulation, batch limits, `max_steps` and devices. The scheduler is a
+accumulation, batch limits, `max_steps` and devices. With a logger (e.g.
+`logging.wandb.enabled=true`) the LR is logged at every optimizer step by
+Lightning's `LearningRateMonitor`. The scheduler is a
 PyTorch `LambdaLR`; its step count is saved in checkpoints, so resuming from
 `last.ckpt` continues the schedule where it stopped (as long as the run length
 is unchanged). Frozen Mimi weights are not optimized.
