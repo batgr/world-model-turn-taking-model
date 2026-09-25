@@ -1,3 +1,6 @@
+import json
+from types import SimpleNamespace
+
 import pytest
 import torch
 from datasets import Dataset, DatasetDict
@@ -571,3 +574,251 @@ def test_train_reports_a_real_validation_error(monkeypatch):
     assert str(error.value.code).startswith(
         "turn-wm: error: prediction.rollout_context_size must lie in"
     )
+
+
+@pytest.fixture
+def fake_precompute(monkeypatch, tmp_path):
+    """Replace the Mimi cache generation; records its arguments."""
+
+    received = {}
+
+    def precompute(loaded, **kwargs):
+        received["loaded"] = loaded
+        received.update(kwargs)
+        span = SimpleNamespace(dataset="synthetic", recording_id="r1")
+        kwargs["progress"](1, 1, span)
+
+        output = kwargs["output_root"]
+        output.mkdir(parents=True)
+        manifest = output / "manifest.json"
+        manifest.write_text(
+            json.dumps(
+                {
+                    "recordings": [{"recording_id": "r1"}],
+                    "features": {"rate_hz": 10.0, "dim": 512},
+                }
+            )
+        )
+        return manifest
+
+    monkeypatch.setattr(cli, "precompute_mimi_cache", precompute)
+
+    return received
+
+
+def test_precompute_mimi_propagates_every_option(
+    fake_load, fake_precompute, tmp_path, capsys
+):
+    calls, state = fake_load
+    state["data"] = make_data(media_manifest=make_manifest(), train=make_anchors())
+    output = tmp_path / "cache"
+
+    argv = [
+        "precompute-mimi",
+        "--dataset",
+        "egocom",
+        "--media-root",
+        str(tmp_path),
+        "--output",
+        str(output),
+        "--device",
+        "mps",
+        "--chunk-seconds",
+        "10",
+        "--model",
+        "kyutai/mimi",
+        "--revision",
+        "abc123",
+    ]
+
+    assert cli.main(argv) == 0
+
+    assert calls == [cli.DATASETS["egocom"]]
+    assert fake_precompute["loaded"] is state["data"]
+    assert fake_precompute["media_roots"] == {"synthetic": tmp_path}
+    assert fake_precompute["output_root"] == output
+    assert fake_precompute["device"] == "mps"
+    assert fake_precompute["chunk_seconds"] == 10.0
+    assert fake_precompute["model_name"] == "kyutai/mimi"
+    assert fake_precompute["model_revision"] == "abc123"
+
+    out = capsys.readouterr().out
+    assert "[1/1] synthetic / r1" in out
+    assert f"Mimi cache written to {output}" in out
+    assert "recordings: 1" in out
+    assert "feature rate: 10 Hz" in out
+    assert "feature dim: 512" in out
+
+
+def test_precompute_mimi_defaults(fake_load, fake_precompute, tmp_path):
+    _, state = fake_load
+    state["data"] = make_data(media_manifest=make_manifest(), train=make_anchors())
+
+    argv = [
+        "precompute-mimi",
+        "--media-root",
+        str(tmp_path),
+        "--output",
+        str(tmp_path / "cache"),
+    ]
+
+    assert cli.main(argv) == 0
+
+    assert fake_precompute["device"] == "cpu"
+    assert fake_precompute["chunk_seconds"] == 20.0
+    assert fake_precompute["model_name"] == "kyutai/mimi"
+    assert fake_precompute["model_revision"] is None
+
+
+def test_precompute_mimi_accepts_one_root_per_corpus(
+    fake_load, fake_precompute, tmp_path
+):
+    _, state = fake_load
+    state["data"] = LoadedData(
+        corpora=(
+            make_corpus("egocom", media_manifest=make_manifest({"dataset": "egocom"})),
+            make_corpus("ego4d", media_manifest=make_manifest({"dataset": "ego4d"})),
+        )
+    )
+    egocom, ego4d = tmp_path / "egocom", tmp_path / "ego4d"
+    egocom.mkdir()
+    ego4d.mkdir()
+
+    argv = [
+        "precompute-mimi",
+        "--dataset",
+        "full",
+        "--media-root",
+        f"egocom={egocom}",
+        "--media-root",
+        f"ego4d={ego4d}",
+        "--output",
+        str(tmp_path / "cache"),
+    ]
+
+    assert cli.main(argv) == 0
+    assert fake_precompute["media_roots"] == {"egocom": egocom, "ego4d": ego4d}
+
+
+def test_precompute_mimi_requires_a_media_root(fake_precompute, tmp_path, capsys):
+    with pytest.raises(SystemExit) as error:
+        cli.main(["precompute-mimi", "--output", str(tmp_path / "cache")])
+
+    assert error.value.code == 2
+    assert "--media-root" in capsys.readouterr().err
+    assert fake_precompute == {}
+
+
+def test_precompute_mimi_requires_an_output(fake_precompute, tmp_path, capsys):
+    with pytest.raises(SystemExit) as error:
+        cli.main(["precompute-mimi", "--media-root", str(tmp_path)])
+
+    assert error.value.code == 2
+    assert "--output" in capsys.readouterr().err
+
+
+@pytest.mark.parametrize("value", ["0", "-1", "nan", "abc"])
+def test_precompute_mimi_rejects_invalid_chunk_seconds(
+    fake_precompute, tmp_path, capsys, value
+):
+    argv = [
+        "precompute-mimi",
+        "--media-root",
+        str(tmp_path),
+        "--output",
+        str(tmp_path / "cache"),
+        "--chunk-seconds",
+        value,
+    ]
+
+    with pytest.raises(SystemExit) as error:
+        cli.main(argv)
+
+    assert error.value.code == 2
+    assert "argument --chunk-seconds" in capsys.readouterr().err
+    assert fake_precompute == {}
+
+
+def test_precompute_mimi_needs_named_roots_for_several_corpora(
+    fake_load, fake_precompute, tmp_path
+):
+    _, state = fake_load
+    state["data"] = LoadedData(
+        corpora=(
+            make_corpus("egocom", media_manifest=make_manifest({"dataset": "egocom"})),
+            make_corpus("ego4d", media_manifest=make_manifest({"dataset": "ego4d"})),
+        )
+    )
+
+    argv = [
+        "precompute-mimi",
+        "--dataset",
+        "full",
+        "--media-root",
+        str(tmp_path),
+        "--output",
+        str(tmp_path / "cache"),
+    ]
+
+    with pytest.raises(SystemExit, match="pass --media-root DATASET=PATH"):
+        cli.main(argv)
+
+    assert fake_precompute == {}
+
+
+@pytest.mark.parametrize(
+    "error",
+    [
+        ValueError("No media root configured for dataset 'ego4d'"),
+        FileNotFoundError("Video file does not exist: /media/r1.mp4"),
+        ValueError("Non-contiguous action grid for 'r1'"),
+        ValueError("Output /cache already exists and is not an empty directory"),
+        OSError("kyutai/mimi is not a valid git identifier (branch name, tag)"),
+    ],
+)
+def test_precompute_mimi_errors_are_clear_cli_errors(
+    fake_load, monkeypatch, tmp_path, error
+):
+    _, state = fake_load
+    state["data"] = make_data(media_manifest=make_manifest(), train=make_anchors())
+
+    def fail(loaded, **kwargs):
+        raise error
+
+    monkeypatch.setattr(cli, "precompute_mimi_cache", fail)
+
+    argv = [
+        "precompute-mimi",
+        "--media-root",
+        str(tmp_path),
+        "--output",
+        str(tmp_path / "cache"),
+    ]
+
+    with pytest.raises(SystemExit) as exit_info:
+        cli.main(argv)
+
+    assert exit_info.value.code == f"turn-wm: error: {error}"
+
+
+def test_precompute_mimi_real_output_check_is_a_cli_error(
+    fake_load, monkeypatch, tmp_path
+):
+    # Not mocked: the real precompute refuses a non-empty output before
+    # loading Mimi.
+    _, state = fake_load
+    state["data"] = make_data(media_manifest=make_manifest(), train=make_anchors())
+    output = tmp_path / "cache"
+    output.mkdir()
+    (output / "manifest.json").write_text("{}")
+
+    argv = [
+        "precompute-mimi",
+        "--media-root",
+        str(tmp_path),
+        "--output",
+        str(output),
+    ]
+
+    with pytest.raises(SystemExit, match="not an empty directory"):
+        cli.main(argv)

@@ -6,17 +6,19 @@ TurnTakingDataset, DataLoader) and prints a structural summary of one batch.
 With `--media-root`, raw media is decoded from a local corpus copy; media is
 never downloaded. `--modalities` restricts what is decoded. `train` composes
 the Hydra configuration from its overrides and runs
-`turn_wm.training.train.run`.
+`turn_wm.training.train.run`. `precompute-mimi` writes the frozen Mimi
+features of every recording, aligned to the action grid, to a local cache.
 """
 
 from __future__ import annotations
 
 import argparse
+import json
 import re
 from collections import Counter
 from collections.abc import Sequence
 from pathlib import Path
-from typing import Any
+from typing import Any, cast
 
 import httpx
 from datasets import concatenate_datasets
@@ -46,6 +48,7 @@ from turn_wm.data.media import (
     MediaPaths,
     validate_modalities,
 )
+from turn_wm.data.mimi_precompute import RecordingSpan, precompute_mimi_cache
 from turn_wm.data.multi import MultiCorpusDataset
 from turn_wm.data.reader import MediaWindow
 from turn_wm.data.source import (
@@ -180,6 +183,64 @@ def build_parser() -> argparse.ArgumentParser:
 
     train.set_defaults(handler=_train)
 
+    precompute = commands.add_parser(
+        "precompute-mimi",
+        help="Precompute frozen Mimi features for every recording.",
+        description=(
+            "Encode every recording of a published dataset with frozen Mimi "
+            "from local raw media, align the features to the 10 Hz action "
+            "grid and write one safetensors file per recording plus "
+            "manifest.json."
+        ),
+    )
+    precompute.add_argument(
+        "--dataset",
+        choices=sorted(DATASETS),
+        default="egocom",
+        help="Published source to encode (default: egocom).",
+    )
+    precompute.add_argument(
+        "--media-root",
+        action="append",
+        type=_media_root,
+        required=True,
+        metavar="[DATASET=]PATH",
+        help=(
+            "Local corpus root the media manifest paths are relative to. Use "
+            "DATASET=PATH, repeated, when the source has several corpora."
+        ),
+    )
+    precompute.add_argument(
+        "--output",
+        type=Path,
+        required=True,
+        help="Cache directory to create; must not exist or be empty.",
+    )
+    precompute.add_argument(
+        "--device",
+        default="cpu",
+        help="Torch device for Mimi, e.g. cpu, cuda, mps (default: cpu).",
+    )
+    precompute.add_argument(
+        "--chunk-seconds",
+        type=_positive_float,
+        default=20.0,
+        help=(
+            "Audio streamed through Mimi per call, rounded down to whole Mimi "
+            "frames; features do not depend on it (default: %(default)s)."
+        ),
+    )
+    precompute.add_argument(
+        "--model",
+        default="kyutai/mimi",
+        help="Mimi checkpoint on the Hub (default: %(default)s).",
+    )
+    precompute.add_argument(
+        "--revision",
+        help="Mimi revision to pin, ideally a commit SHA (default: latest).",
+    )
+    precompute.set_defaults(handler=_precompute_mimi)
+
     return parser
 
 
@@ -197,6 +258,43 @@ def _train(
     except ValueError as error:
         # Rejected configuration, unknown dataset or missing media root.
         raise SystemExit(f"turn-wm: error: {error}") from error
+
+    return 0
+
+
+def _precompute_mimi(
+    args: argparse.Namespace,
+    parser: argparse.ArgumentParser,
+) -> int:
+    data = _load(DATASETS[args.dataset])
+    media_roots = _media_roots(data, args.media_root)
+
+    def report(index: int, total: int, span: RecordingSpan) -> None:
+        print(f"[{index}/{total}] {span.dataset} / {span.recording_id}", flush=True)
+
+    try:
+        manifest_path = precompute_mimi_cache(
+            data,
+            media_roots=media_roots,
+            output_root=args.output,
+            model_name=args.model,
+            model_revision=args.revision,
+            chunk_seconds=args.chunk_seconds,
+            device=args.device,
+            progress=report,
+        )
+    except (ValueError, OSError) as error:
+        # Output not empty, missing media or root, inconsistent grid or
+        # audio, or a Mimi model/revision the Hub cannot provide.
+        raise SystemExit(f"turn-wm: error: {error}") from error
+
+    manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    features = manifest["features"]
+
+    print(f"Mimi cache written to {manifest_path.parent}")
+    print(f"recordings: {len(manifest['recordings'])}")
+    print(f"feature rate: {features['rate_hz']:g} Hz")
+    print(f"feature dim: {features['dim']}")
 
     return 0
 
@@ -586,9 +684,23 @@ def _media_root(value: str) -> tuple[str | None, Path]:
 
 def _modalities(value: str) -> tuple[MediaModality, ...]:
     try:
-        return validate_modalities(part.strip() for part in value.split(","))
+        # validate_modalities rejects anything that is not a MediaModality.
+        parts = cast(list[MediaModality], [part.strip() for part in value.split(",")])
+        return validate_modalities(parts)
     except ValueError as error:
         raise argparse.ArgumentTypeError(str(error)) from None
+
+
+def _positive_float(value: str) -> float:
+    try:
+        number = float(value)
+    except ValueError:
+        raise argparse.ArgumentTypeError(f"expected a number, got {value!r}") from None
+
+    if not number > 0:
+        raise argparse.ArgumentTypeError(f"must be positive, got {value}")
+
+    return number
 
 
 def _positive_int(value: str) -> int:
