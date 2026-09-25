@@ -197,6 +197,64 @@ curriculum whose stages end at increasing `until` values in (0, 1] with the
 last at 1.0, each using configured horizons that have a positive weight and
 including every horizon of the stage before (the curriculum is cumulative).
 
+### Validation metrics
+
+Validation evaluates every `prediction.rollout_horizons` (the curriculum only
+affects training) and, besides the losses, logs diagnostics computed from the
+latents and predictions of the losses (`turn_wm.training.metrics`; no second
+forward). All are accumulated as sums over the whole validation epoch, so they
+do not depend on the batch size. Training logs only the losses, the
+curriculum state and the learning rate.
+
+1. **Prediction MSE** — `val/tf_mse` (one-step, on exactly the teacher-forced
+   positions) and `val/rollout_{h}_mse`.
+2. **Persistence baseline** — the error of copying a latent forward:
+   `z_t` for the teacher-forced step `z_t -> z_{t+1}` (`val/tf_persistence_mse`)
+   and the last ground-truth context latent `z_{C-1}` for every rollout
+   horizon (`val/persistence_{h}_mse`). Model and baseline use the same
+   targets and positions.
+3. **Skill score** —
+
+   ```text
+   skill = 1 - MSE_model / MSE_persistence
+   ```
+
+   from the epoch's aggregated errors (never an average of per-batch skills):
+   `> 0` better than persistence, `0` as good, `< 0` worse (unclipped).
+   `val/tf_skill`, `val/skill_{h}` and `val/skill_mean` (mean over horizons).
+4. **Cosine similarity** — `val/cosine_{h}` between predicted and target
+   latents, a geometric complement to the MSE.
+5. **Delta dynamics** — `val/target_delta_norm_{h}` = mean `||z_target -
+   z_{C-1}||` and `val/prediction_delta_norm_{h}` = mean `||z_pred -
+   z_{C-1}||`. A predicted delta near 0 while the target delta is large means
+   the model stays close to persistence rather than predicting a change.
+6. **Latent health** — on the projected target latents: `val/latent_std`
+   (per-dimension std, averaged over dimensions), `val/latent_norm`
+   (mean L2 norm), `val/prediction_norm` (mean L2 norm of the rollout
+   predictions at every horizon) and `val/effective_rank`
+   (`exp(entropy)` of the normalized singular values of the centred latents,
+   1 for a collapsed direction up to `embed_dim`), computed on a deterministic
+   random sample of at most `evaluation.latent_rank_samples` latents per epoch.
+7. **Global vs per corpus** — prediction, persistence and skill metrics are
+   also logged per corpus (`val/egocom/...`, `val/ego4d/...`, from each
+   sample's `dataset`). Global metrics pool every element of every corpus;
+   they are not averages of the corpus metrics.
+
+```yaml
+evaluation:
+  persistence_baseline: true
+  cosine_similarity: true
+  latent_health: true
+  latent_rank_samples: 8192
+```
+
+Checkpoints are still selected on `val/loss`; these metrics are diagnostics.
+
+**The test split is not used during training or model selection.** `run()`
+builds only the train and validation splits, and the Lightning module has no
+test step. The test split is evaluated once, after the final checkpoint has
+been selected.
+
 ### Not in V1
 
 Left for later ablations: other optimizers or schedules, weight-decay
