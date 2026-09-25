@@ -150,19 +150,50 @@ uv run turn-wm train \
   optimizer.lr=1e-4
 ```
 
-Checkpoints follow `checkpoint.*`: by default the three best by `val/loss`
-plus `last.ckpt`, under the Lightning log directory
-(`checkpoint.enabled=false` turns them off). Resume a run, with its
-optimizer state, epoch and step, from a checkpoint (quote paths starting
-with `~` for Hydra):
-
-```bash
-uv run turn-wm train checkpoint.resume_from=/path/to/last.ckpt
-```
-
 With `data.dataset=egocom` only `EGOCOM_MEDIA_ROOT` is needed. An invalid
 override or a configuration rejected by `validate_config` stops with a
 `turn-wm: error: ...` message before any data is loaded.
+
+### Runs
+
+Each run gets its own directory, created only once the configuration, the
+dataset and the media roots have been checked (a rejected run leaves
+nothing behind):
+
+```text
+outputs/<experiment.name>/<UTC timestamp>-<config hash>/
+  config.yaml      the fully resolved configuration
+  metadata.json    run id, seed, config hash, git commit and dirty flag,
+                   dataset and its resolved revision
+  checkpoints/     best checkpoints by val/loss and last.ckpt
+  wandb/           Weights & Biases files, when logging.wandb.enabled
+```
+
+`experiment.output_root` (default `outputs/`, relative to the working
+directory and git-ignored) and `experiment.name` choose where runs go. The
+hash covers the whole resolved configuration, so runs of the same
+configuration share its suffix.
+
+Checkpoints follow `checkpoint.*`: by default the three best by `val/loss`
+plus `last.ckpt` (`checkpoint.enabled=false` turns them off). Resume from a
+checkpoint, with its optimizer state, epoch and step; the resumed run gets a
+new directory (quote paths starting with `~` for Hydra):
+
+```bash
+uv run turn-wm train checkpoint.resume_from=outputs/lewm/<run id>/checkpoints/last.ckpt
+```
+
+Weights & Biases logging is optional and off by default:
+
+```bash
+uv sync --extra wandb
+uv run turn-wm train logging.wandb.enabled=true logging.wandb.entity=<entity>
+```
+
+It logs to `logging.wandb.project` (default `turn-wm`) under the run id, or
+`logging.wandb.name`, with the resolved configuration. Without it, the
+Trainer runs without a logger: metrics are not recorded anywhere and only
+drive checkpointing.
 
 ## Tests
 
