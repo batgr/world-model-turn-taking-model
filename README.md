@@ -112,40 +112,57 @@ selected with `train=xxx`).
   (`<= data.context_steps`). It is supervised at
   `prediction.rollout_horizons`, each weighted in `loss.rollout`.
 - `validate_config` checks these sizes against each other and against the
-  predictor before any data is read; `seed` seeds the model initialization
-  (`LeWMModule`) and should also seed the data loader.
+  predictor before any data is read.
 - The total loss weights teacher forcing, rollout and SIGReg
   (`loss.*.weight`). Latent targets are defined at every step, including
   steps whose annotation is `UNKNOWN`.
 
-```python
-import lightning as L
+`turn_wm.training.train.run(cfg)` runs one experiment: it validates the
+config, seeds Python, NumPy, PyTorch and the loader workers with `seed`
+(before the model is built), loads `DATASETS[data.dataset]` (`egocom`,
+`ego4d` or `full`), builds the train and validation splits with the same
+fixed window and `data.modalities`, and fits `LeWMModule` with a Lightning
+`Trainer(**cfg.trainer)`. The loaders take `loader.*` and are seeded with
+`seed`; validation stays in order. Raw media comes from
+`<DATASET>_MEDIA_ROOT` for every loaded corpus (or from the `media_roots`
+argument of `run`).
 
-from turn_wm.config import load_config
-from turn_wm.data.build import build_dataset
-from turn_wm.data.loader import DataLoaderConfig, build_dataloader
-from turn_wm.data.source import DATASETS, load_data
-from turn_wm.training.lewm import LeWMModule, training_window
+### Run training
 
-cfg = load_config()
-dataset = build_dataset(
-    load_data(DATASETS["full"]),
-    split="train",
-    window=training_window(cfg),
-    training=True,
-    media_roots={"egocom": ..., "ego4d": ...},
-    modalities=tuple(cfg.data.modalities),
-)
-loader = build_dataloader(
-    dataset,
-    loader=DataLoaderConfig(batch_size=cfg.loader.batch_size, seed=cfg.seed),
-)
+Training is exposed through the same `turn-wm` CLI. Experiment
+configuration remains entirely Hydra-driven:
 
-L.Trainer(**cfg.trainer).fit(LeWMModule(cfg), train_dataloaders=loader)
+```bash
+export EGOCOM_MEDIA_ROOT=/path/to/EgoCom
+export EGO4D_MEDIA_ROOT=/path/to/Ego4D
+
+uv run turn-wm train
 ```
 
-There is no training entry point yet; the snippet above is the intended
-wiring.
+Hydra overrides can be passed directly:
+
+```bash
+uv run turn-wm train \
+  data.dataset=egocom \
+  data.context_steps=20 \
+  prediction.rollout_context_size=10 \
+  loader.batch_size=16 \
+  optimizer.lr=1e-4
+```
+
+Checkpoints follow `checkpoint.*`: by default the three best by `val/loss`
+plus `last.ckpt`, under the Lightning log directory
+(`checkpoint.enabled=false` turns them off). Resume a run, with its
+optimizer state, epoch and step, from a checkpoint (quote paths starting
+with `~` for Hydra):
+
+```bash
+uv run turn-wm train checkpoint.resume_from=/path/to/last.ckpt
+```
+
+With `data.dataset=egocom` only `EGOCOM_MEDIA_ROOT` is needed. An invalid
+override or a configuration rejected by `validate_config` stops with a
+`turn-wm: error: ...` message before any data is loaded.
 
 ## Tests
 
