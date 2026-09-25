@@ -16,6 +16,21 @@ from turn_wm.data.media import (
     validate_modalities,
 )
 
+TRUE_AUDIO_GAP_S = 0.100
+AUDIO_GAP_NUMERICAL_TOLERANCE_S = 1e-6
+
+
+@dataclass(frozen=True)
+class AudioGap:
+    """A decoded local gap on the media file's own timeline."""
+
+    start_time_s: float
+    end_time_s: float
+
+    @property
+    def duration_s(self) -> float:
+        return self.end_time_s - self.start_time_s
+
 
 @dataclass(frozen=True)
 class DecodedAudio:
@@ -23,6 +38,7 @@ class DecodedAudio:
 
     waveform: torch.Tensor  # [channels, samples]
     sample_rate: int
+    audio_gaps: tuple[AudioGap, ...] = ()
 
 
 @dataclass(frozen=True)
@@ -200,6 +216,8 @@ class MediaReader:
 
             chunks: list[torch.Tensor] = []
             sample_rate: int | None = None
+            audio_gaps: list[AudioGap] = []
+            previous_frame_end_s: float | None = None
 
             for frame in container.decode(stream):
                 frame_time_s = self._frame_time_s(
@@ -223,7 +241,39 @@ class MediaReader:
                 frame_end_s = frame_time_s + frame.samples / rate
 
                 if frame_end_s <= start_time_s:
+                    # Keep the immediately preceding frame end so a window
+                    # beginning inside a true gap starts with silence.
+                    previous_frame_end_s = frame_end_s
                     continue
+
+                if previous_frame_end_s is not None:
+                    local_gap_s = frame_time_s - previous_frame_end_s
+
+                    if (
+                        local_gap_s + AUDIO_GAP_NUMERICAL_TOLERANCE_S
+                        >= TRUE_AUDIO_GAP_S
+                    ):
+                        gap = AudioGap(
+                            start_time_s=previous_frame_end_s,
+                            end_time_s=frame_time_s,
+                        )
+                        audio_gaps.append(gap)
+
+                        clipped_start = max(gap.start_time_s, start_time_s)
+                        clipped_end = min(gap.end_time_s, end_time_s)
+
+                        if clipped_end > clipped_start:
+                            silence_samples = round(
+                                (clipped_end - clipped_start) * rate
+                            )
+
+                            if silence_samples:
+                                chunks.append(
+                                    torch.zeros(
+                                        len(frame.layout.channels),
+                                        silence_samples,
+                                    )
+                                )
 
                 if frame_time_s >= end_time_s:
                     break
@@ -241,6 +291,7 @@ class MediaReader:
                 )
 
                 if last_sample <= first_sample:
+                    previous_frame_end_s = frame_end_s
                     continue
 
                 chunks.append(
@@ -251,6 +302,7 @@ class MediaReader:
                         ]
                     )
                 )
+                previous_frame_end_s = frame_end_s
 
         if not chunks or sample_rate is None:
             return None
@@ -258,6 +310,7 @@ class MediaReader:
         return DecodedAudio(
             waveform=torch.cat(chunks, dim=1),
             sample_rate=sample_rate,
+            audio_gaps=tuple(audio_gaps),
         )
 
     @staticmethod
