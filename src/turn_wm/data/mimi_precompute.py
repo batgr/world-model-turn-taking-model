@@ -32,6 +32,8 @@ import torch.nn.functional as F
 
 from turn_wm.data.media import MediaIndex, MediaPaths
 from turn_wm.data.mimi_cache import (
+    MimiAudioGap,
+    MimiCacheExclusion,
     MimiFeatureRecord,
     write_features,
     write_manifest,
@@ -47,11 +49,51 @@ from turn_wm.models.encoders.mimi import (
 # The cache contract is the 10 Hz action grid.
 GRID_RATE_HZ = 10.0
 
-# Audio missing at either end of a recording, beyond which the span and the
-# media disagree too much to fill the gap with silence.
-MAX_AUDIO_GAP_S = 1 / GRID_RATE_HZ
+# Audio missing before a recording's first grid step that may be filled with
+# silence: one grid step (a manifest offset slightly before the media start).
+MAX_AUDIO_PREFIX_GAP_S = 1 / GRID_RATE_HZ
+
+# Audio missing after the last grid step that may be filled with silence.
+# Published grids run to the next whole second past the media (EgoCom: up to
+# 0.998 s, in 144 of 175 recordings), and label those steps UNKNOWN; larger
+# gaps mean the span and the media disagree.
+MAX_AUDIO_TAIL_GAP_S = 1.0
+
+# V1 keeps true local gaps as silence, but these three Ego4D recordings also
+# have a separate, slowly accumulated decoded-sample/PTS discrepancy spanning
+# several 100 ms action-grid cells. The values are maxima measured from decoded
+# frames after true local gaps (>= 100 ms) are classified separately. No clock
+# correction is inferred; the affected recordings are omitted explicitly.
+EGO4D_V1_EXCLUSIONS = (
+    MimiCacheExclusion(
+        dataset="ego4d",
+        recording_id="85506322-449a-45c0-b77a-48a8077b4bbd",
+        reason="audio_annotation_clock_drift",
+        max_drift_s=0.44265625,
+    ),
+    MimiCacheExclusion(
+        dataset="ego4d",
+        recording_id="b3ef3563-ecc0-4a15-9a7b-4feb4558d953",
+        reason="audio_annotation_clock_drift",
+        max_drift_s=0.476,
+    ),
+    MimiCacheExclusion(
+        dataset="ego4d",
+        recording_id="ba5b1882-c9d7-48e7-85fe-2c7b10494fac",
+        reason="audio_annotation_clock_drift",
+        max_drift_s=0.52534375,
+    ),
+)
 
 type Progress = Callable[[int, int, "RecordingSpan"], None]
+
+
+@dataclass(frozen=True)
+class PreparedRecordingAudio:
+    """Exact-duration Mimi input and its canonical true-gap metadata."""
+
+    waveform: torch.Tensor
+    audio_gaps: tuple[MimiAudioGap, ...]
 
 
 @dataclass(frozen=True)
@@ -141,8 +183,8 @@ def _load_recording_audio(
     span: RecordingSpan,
     encoder: FrozenMimiEncoder,
     target_rate: float,
-) -> torch.Tensor:
-    """Mono audio of the span at Mimi's rate, exactly `steps / target_rate` long."""
+) -> PreparedRecordingAudio:
+    """Exact-duration Mimi input and true gaps on the canonical timeline."""
 
     canonical_start = span.start_time_s
     canonical_end = canonical_start + span.steps / target_rate
@@ -156,10 +198,10 @@ def _load_recording_audio(
     prefix_seconds = max(0.0, -media_start)
     read_start = max(0.0, media_start)
 
-    if prefix_seconds > MAX_AUDIO_GAP_S:
+    if prefix_seconds > MAX_AUDIO_PREFIX_GAP_S:
         raise ValueError(
             f"{media.key!r} starts {prefix_seconds:.3f} s before its media; "
-            f"at most {MAX_AUDIO_GAP_S:g} s can be filled with silence"
+            f"at most {MAX_AUDIO_PREFIX_GAP_S:g} s can be filled with silence"
         )
 
     if media_end <= read_start:
@@ -178,6 +220,22 @@ def _load_recording_audio(
     waveform = window.audio.waveform
     sample_rate = window.audio.sample_rate
 
+    audio_gaps = tuple(
+        MimiAudioGap(
+            start_time_s=max(
+                canonical_start,
+                gap.start_time_s - media.media_offset_s,
+            ),
+            end_time_s=min(
+                canonical_end,
+                gap.end_time_s - media.media_offset_s,
+            ),
+        )
+        for gap in window.audio.audio_gaps
+        if gap.end_time_s - media.media_offset_s > canonical_start
+        and gap.start_time_s - media.media_offset_s < canonical_end
+    )
+
     if prefix_seconds > 0:
         waveform = F.pad(waveform, (round(prefix_seconds * sample_rate), 0))
 
@@ -192,10 +250,10 @@ def _load_recording_audio(
     current_samples = resampled.shape[-1]
     missing_s = (expected_samples - current_samples) / encoder.sample_rate
 
-    if missing_s > MAX_AUDIO_GAP_S:
+    if missing_s > MAX_AUDIO_TAIL_GAP_S:
         raise ValueError(
             f"{media.key!r} has {missing_s:.3f} s less audio than its "
-            f"{span.steps} grid steps; at most {MAX_AUDIO_GAP_S:g} s can be "
+            f"{span.steps} grid steps; at most {MAX_AUDIO_TAIL_GAP_S:g} s can be "
             "filled with silence"
         )
 
@@ -204,7 +262,10 @@ def _load_recording_audio(
     elif current_samples > expected_samples:
         resampled = resampled[..., :expected_samples]
 
-    return resampled
+    return PreparedRecordingAudio(
+        waveform=resampled,
+        audio_gaps=audio_gaps,
+    )
 
 
 def _encode_recording(
@@ -243,11 +304,14 @@ def precompute_mimi_cache(
     chunk_seconds: float = 20.0,
     device: str = "cpu",
     progress: Progress | None = None,
+    excluded_recordings: tuple[MimiCacheExclusion, ...] | None = None,
 ) -> Path:
     """Write one feature file per recording and the manifest; return its path.
 
     `output_root` must be absent or empty. `progress(index, total, span)` is
-    called before each recording is encoded.
+    called before each recording is encoded. By default, the evidence-backed
+    Ego4D V1 exclusions are applied when Ego4D is present; callers may pass an
+    explicit tuple for another release or a synthetic test.
     """
 
     if target_rate != GRID_RATE_HZ:
@@ -268,16 +332,52 @@ def precompute_mimi_cache(
             "choose a new cache directory"
         )
 
-    # Check every recording's grid and media before any encoding.
-    jobs: list[tuple[RecordingSpan, MediaPaths]] = []
-
+    corpus_spans: list[tuple[LoadedCorpus, list[RecordingSpan]]] = []
     for corpus in loaded.corpora:
         if corpus.media_manifest is None:
             raise ValueError(f"{corpus.name!r} has no media manifest")
 
+        corpus_spans.append((corpus, _recording_spans(corpus, target_rate=target_rate)))
+
+    canonical_keys = {
+        (span.dataset, span.recording_id) for _, spans in corpus_spans for span in spans
+    }
+    loaded_datasets = {dataset for dataset, _ in canonical_keys}
+    configured_exclusions = (
+        tuple(
+            exclusion
+            for exclusion in EGO4D_V1_EXCLUSIONS
+            if exclusion.dataset in loaded_datasets
+        )
+        if excluded_recordings is None
+        else excluded_recordings
+    )
+    exclusions_by_key: dict[tuple[str, str], MimiCacheExclusion] = {}
+
+    for exclusion in configured_exclusions:
+        key = (exclusion.dataset, exclusion.recording_id)
+        if key in exclusions_by_key:
+            raise ValueError(f"Duplicate Mimi cache exclusion for {key!r}")
+        exclusions_by_key[key] = exclusion
+
+    unknown_exclusions = sorted(set(exclusions_by_key) - canonical_keys)
+    if unknown_exclusions:
+        raise ValueError(
+            f"Mimi cache exclusions are not in the canonical action grid: "
+            f"{unknown_exclusions!r}"
+        )
+
+    # Check every retained recording's media before any encoding.
+    jobs: list[tuple[RecordingSpan, MediaPaths]] = []
+
+    for corpus, spans in corpus_spans:
+        assert corpus.media_manifest is not None
         media_index = MediaIndex.from_manifest(corpus.media_manifest, media_roots)
 
-        for span in _recording_spans(corpus, target_rate=target_rate):
+        for span in spans:
+            if (span.dataset, span.recording_id) in exclusions_by_key:
+                continue
+
             media = media_index.get(
                 dataset=span.dataset,
                 recording_id=span.recording_id,
@@ -304,7 +404,7 @@ def precompute_mimi_cache(
         if progress is not None:
             progress(index, len(jobs), span)
 
-        audio = _load_recording_audio(
+        prepared = _load_recording_audio(
             reader=reader,
             media=media,
             span=span,
@@ -314,7 +414,7 @@ def precompute_mimi_cache(
 
         features = _encode_recording(
             encoder=encoder,
-            audio=audio,
+            audio=prepared.waveform,
             steps=span.steps,
             target_rate=target_rate,
             chunk_seconds=chunk_seconds,
@@ -335,6 +435,7 @@ def precompute_mimi_cache(
                 steps=span.steps,
                 start_index=span.start_index,
                 start_time_s=span.start_time_s,
+                audio_gaps=prepared.audio_gaps,
             )
         )
 
@@ -347,4 +448,7 @@ def precompute_mimi_cache(
         source_dataset_revision=loaded.revision,
         feature_rate_hz=target_rate,
         feature_dim=encoder.output_dim,
+        excluded_recordings=tuple(
+            exclusions_by_key[key] for key in sorted(exclusions_by_key)
+        ),
     )

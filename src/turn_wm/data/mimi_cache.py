@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import math
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
@@ -10,7 +11,41 @@ import torch
 from safetensors import safe_open
 from safetensors.torch import save_file
 
-CACHE_SCHEMA_VERSION = 1
+CACHE_SCHEMA_VERSION = 2
+SUPPORTED_CACHE_SCHEMA_VERSIONS = frozenset({1, CACHE_SCHEMA_VERSION})
+
+
+@dataclass(frozen=True)
+class MimiAudioGap:
+    """A true local media gap on the cache's canonical timeline."""
+
+    start_time_s: float
+    end_time_s: float
+
+    def __post_init__(self) -> None:
+        if not math.isfinite(self.start_time_s) or not math.isfinite(self.end_time_s):
+            raise ValueError("Audio-gap bounds must be finite")
+
+        if self.end_time_s <= self.start_time_s:
+            raise ValueError("Audio-gap end_time_s must be after start_time_s")
+
+    @property
+    def duration_s(self) -> float:
+        return self.end_time_s - self.start_time_s
+
+
+@dataclass(frozen=True)
+class MimiCacheExclusion:
+    """A canonical recording intentionally omitted from a cache release."""
+
+    dataset: str
+    recording_id: str
+    reason: str
+    max_drift_s: float
+
+    def __post_init__(self) -> None:
+        if not math.isfinite(self.max_drift_s) or self.max_drift_s < 0:
+            raise ValueError("max_drift_s must be finite and non-negative")
 
 
 @dataclass(frozen=True)
@@ -21,6 +56,7 @@ class MimiFeatureRecord:
     steps: int
     start_time_s: float
     start_index: int
+    audio_gaps: tuple[MimiAudioGap, ...] = ()
 
 
 def _recording_filename(
@@ -69,6 +105,26 @@ def write_features(
     return path
 
 
+def _audio_gap_from_manifest(row: dict[str, Any]) -> MimiAudioGap:
+    start_time_s = float(row["start_time_s"])
+    duration_s = float(row["duration_s"])
+    end_time_s = float(row.get("end_time_s", start_time_s + duration_s))
+
+    if not math.isclose(
+        end_time_s - start_time_s,
+        duration_s,
+        abs_tol=1e-9,
+    ):
+        raise ValueError(
+            "Audio-gap duration_s does not match end_time_s - start_time_s"
+        )
+
+    return MimiAudioGap(
+        start_time_s=start_time_s,
+        end_time_s=end_time_s,
+    )
+
+
 class MimiFeatureStore:
     """Read precomputed Mimi features aligned to the action grid."""
 
@@ -83,10 +139,10 @@ class MimiFeatureStore:
         with manifest_path.open(encoding="utf-8") as file:
             manifest = json.load(file)
 
-        if manifest["schema_version"] != CACHE_SCHEMA_VERSION:
-            raise ValueError(
-                f"Unsupported Mimi cache schema version: {manifest['schema_version']}"
-            )
+        schema_version = int(manifest["schema_version"])
+
+        if schema_version not in SUPPORTED_CACHE_SCHEMA_VERSIONS:
+            raise ValueError(f"Unsupported Mimi cache schema version: {schema_version}")
 
         self.metadata = manifest
 
@@ -101,9 +157,111 @@ class MimiFeatureStore:
                 steps=int(row["steps"]),
                 start_time_s=float(row["start_time_s"]),
                 start_index=int(row["start_index"]),
+                audio_gaps=tuple(
+                    _audio_gap_from_manifest(gap) for gap in row.get("audio_gaps", [])
+                ),
             )
             for row in manifest["recordings"]
         }
+
+        self._exclusions = tuple(
+            MimiCacheExclusion(
+                dataset=row["dataset"],
+                recording_id=row["recording_id"],
+                reason=row["reason"],
+                max_drift_s=float(row["max_drift_s"]),
+            )
+            for row in manifest.get("excluded_recordings", [])
+        )
+
+    @property
+    def feature_dim(self) -> int:
+        return int(self.metadata["features"]["dim"])
+
+    @property
+    def feature_rate_hz(self) -> float:
+        return float(self.metadata["features"]["rate_hz"])
+
+    @property
+    def dtype(self) -> str:
+        return str(self.metadata["features"]["dtype"])
+
+    @property
+    def model_name(self) -> str:
+        return str(self.metadata["model"]["name"])
+
+    @property
+    def model_revision(self) -> str | None:
+        return self.metadata["model"].get("revision")
+
+    @property
+    def model_resolved_revision(self) -> str | None:
+        return self.metadata["model"].get("resolved_revision")
+
+    @property
+    def source_dataset_revision(self) -> str | None:
+        return self.metadata.get("source_dataset_revision")
+
+    @property
+    def schema_version(self) -> int:
+        return int(self.metadata["schema_version"])
+
+    @property
+    def recording_keys(self) -> frozenset[tuple[str, str]]:
+        return frozenset(self._records)
+
+    @property
+    def exclusions(self) -> tuple[MimiCacheExclusion, ...]:
+        return self._exclusions
+
+    @property
+    def records(self) -> tuple[MimiFeatureRecord, ...]:
+        return tuple(
+            sorted(
+                self._records.values(),
+                key=lambda record: (record.dataset, record.recording_id),
+            )
+        )
+
+    def record(self, *, dataset: str, recording_id: str) -> MimiFeatureRecord:
+        key = (dataset, recording_id)
+
+        try:
+            return self._records[key]
+        except KeyError as error:
+            raise KeyError(f"No Mimi features for {key!r}") from error
+
+    def get_by_index(
+        self,
+        *,
+        dataset: str,
+        recording_id: str,
+        start_index: int,
+        end_index: int,
+    ) -> torch.Tensor:
+        """Features of action-grid `decision_index` in [start_index, end_index).
+
+        Row `k` of a recording's file is `decision_index = start_index + k`
+        of its record; only the requested rows are read from disk.
+        """
+
+        record = self.record(dataset=dataset, recording_id=recording_id)
+        first = record.start_index
+        last = record.start_index + record.steps
+
+        if not first <= start_index <= end_index <= last:
+            raise IndexError(
+                f"decision_index range [{start_index}, {end_index}) is outside "
+                f"recording {recording_id!r} of {dataset!r}, which covers "
+                f"[{first}, {last})"
+            )
+
+        return self.get(
+            dataset=dataset,
+            recording_id=recording_id,
+            start=start_index - first,
+            end=end_index - first,
+        )
 
     def get(
         self,
@@ -113,14 +271,9 @@ class MimiFeatureStore:
         start: int,
         end: int,
     ) -> torch.Tensor:
-        """Read [start:end] from one recording without loading it all."""
+        """Read rows [start:end] of one recording's file without loading it all."""
 
-        key = (dataset, recording_id)
-
-        try:
-            record = self._records[key]
-        except KeyError as error:
-            raise KeyError(f"No Mimi features for {key!r}") from error
+        record = self.record(dataset=dataset, recording_id=recording_id)
 
         if not 0 <= start <= end <= record.steps:
             raise IndexError(
@@ -153,6 +306,7 @@ def write_manifest(
     model_resolved_revision: str | None = None,
     feature_rate_hz: float,
     feature_dim: int,
+    excluded_recordings: tuple[MimiCacheExclusion, ...] = (),
 ) -> Path:
     root.mkdir(parents=True, exist_ok=True)
 
@@ -178,12 +332,43 @@ def write_manifest(
                 "steps": record.steps,
                 "start_time_s": record.start_time_s,
                 "start_index": record.start_index,
+                "audio_gaps": [
+                    {
+                        "start_time_s": gap.start_time_s,
+                        "end_time_s": gap.end_time_s,
+                        "duration_s": gap.duration_s,
+                    }
+                    for gap in sorted(
+                        record.audio_gaps,
+                        key=lambda gap: (
+                            gap.start_time_s,
+                            gap.end_time_s,
+                        ),
+                    )
+                ],
             }
             for record in sorted(
                 recordings,
                 key=lambda record: (
                     record.dataset,
                     record.recording_id,
+                ),
+            )
+        ],
+        "excluded_recordings": [
+            {
+                "dataset": exclusion.dataset,
+                "recording_id": exclusion.recording_id,
+                "reason": exclusion.reason,
+                "max_drift_s": exclusion.max_drift_s,
+            }
+            for exclusion in sorted(
+                excluded_recordings,
+                key=lambda exclusion: (
+                    exclusion.dataset,
+                    exclusion.recording_id,
+                    exclusion.reason,
+                    exclusion.max_drift_s,
                 ),
             )
         ],

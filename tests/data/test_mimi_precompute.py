@@ -11,14 +11,15 @@ from corpora import make_corpus, make_grid, make_manifest
 
 from turn_wm.data import mimi_precompute
 from turn_wm.data.media import MediaPaths
-from turn_wm.data.mimi_cache import MimiFeatureStore
+from turn_wm.data.mimi_cache import MimiCacheExclusion, MimiFeatureStore
 from turn_wm.data.mimi_precompute import (
+    EGO4D_V1_EXCLUSIONS,
     RecordingSpan,
     _load_recording_audio,
     _recording_spans,
     precompute_mimi_cache,
 )
-from turn_wm.data.reader import DecodedAudio, MediaWindow
+from turn_wm.data.reader import AudioGap, DecodedAudio, MediaWindow
 from turn_wm.data.source import LoadedData
 
 MEDIA_RATE = 16_000
@@ -60,8 +61,13 @@ class FrameIndexEncoder:
 class FakeReader:
     """Returns `duration_scale` times the requested audio, recording requests."""
 
-    def __init__(self, duration_scale: float = 1.0) -> None:
+    def __init__(
+        self,
+        duration_scale: float = 1.0,
+        audio_gaps: tuple[AudioGap, ...] = (),
+    ) -> None:
         self.duration_scale = duration_scale
+        self.audio_gaps = audio_gaps
         self.calls: list[dict] = []
 
     def read_window(self, media, *, start_time_s, end_time_s, modalities):
@@ -77,7 +83,11 @@ class FakeReader:
         return MediaWindow(
             start_time_s=start_time_s,
             end_time_s=end_time_s,
-            audio=DecodedAudio(waveform=torch.ones(1, samples), sample_rate=MEDIA_RATE),
+            audio=DecodedAudio(
+                waveform=torch.ones(1, samples),
+                sample_rate=MEDIA_RATE,
+                audio_gaps=self.audio_gaps,
+            ),
             video=None,
         )
 
@@ -100,6 +110,10 @@ def span(steps: int = 40, start_time_s: float = 0.0) -> RecordingSpan:
         start_time_s=start_time_s,
         steps=steps,
     )
+
+
+def load(reader, **kwargs):
+    return prepare(reader, **kwargs).waveform
 
 
 def test_recording_span_covers_the_grid():
@@ -135,7 +149,7 @@ def test_recording_with_irregular_timing_is_rejected():
         _recording_spans(replace(corpus, action_grid=grid), target_rate=10.0)
 
 
-def load(reader, **kwargs):
+def prepare(reader, **kwargs):
     return _load_recording_audio(
         reader=reader,
         media=kwargs.pop("media", media()),
@@ -155,6 +169,21 @@ def test_audio_is_read_on_the_media_timeline_as_audio_only():
     ]
 
 
+def test_audio_gaps_are_mapped_to_the_canonical_cache_timeline():
+    prepared = prepare(
+        FakeReader(audio_gaps=(AudioGap(301.5, 301.75),)),
+        media=media(offset=300.0),
+        span=span(start_time_s=1.0),
+    )
+
+    [gap] = prepared.audio_gaps
+    assert (
+        gap.start_time_s,
+        gap.end_time_s,
+        gap.duration_s,
+    ) == pytest.approx((1.5, 1.75, 0.25))
+
+
 @pytest.mark.parametrize("duration_scale", [0.99, 1.0, 1.1])
 def test_audio_has_the_exact_canonical_duration(duration_scale):
     audio = load(FakeReader(duration_scale))
@@ -171,9 +200,17 @@ def test_slightly_short_audio_is_padded_with_silence_at_the_end():
     assert torch.all(audio[0, 0, 9_450:] == 0)
 
 
+def test_audio_up_to_a_second_short_is_padded_with_silence():
+    # Grids run to the next whole second past the media: up to 1 s of tail.
+    audio = load(FakeReader(0.76))
+
+    assert audio.shape == (1, 1, 9_600)
+    assert torch.all(audio[0, 0, 7_400:] == 0)
+
+
 def test_much_shorter_audio_is_rejected():
-    with pytest.raises(ValueError, match="0.400 s less audio than its 40 grid"):
-        load(FakeReader(0.9))
+    with pytest.raises(ValueError, match="1.200 s less audio than its 40 grid"):
+        load(FakeReader(0.7))
 
 
 def test_audio_slightly_before_the_media_start_is_silence():
@@ -276,6 +313,67 @@ def test_precompute_writes_aligned_features_and_manifest(
         expected = [math.floor(1.25 * (k + 1) + 1e-8) - 1 for k in range(40)]
         assert features.shape == (40, DIM)
         assert features[:, 0].tolist() == expected
+
+
+def test_evidence_backed_ego4d_v1_exclusions_are_explicit():
+    assert [exclusion.recording_id for exclusion in EGO4D_V1_EXCLUSIONS] == [
+        "85506322-449a-45c0-b77a-48a8077b4bbd",
+        "b3ef3563-ecc0-4a15-9a7b-4feb4558d953",
+        "ba5b1882-c9d7-48e7-85fe-2c7b10494fac",
+    ]
+    assert [exclusion.max_drift_s for exclusion in EGO4D_V1_EXCLUSIONS] == [
+        pytest.approx(0.44265625),
+        pytest.approx(0.476),
+        pytest.approx(0.52534375),
+    ]
+    assert {exclusion.reason for exclusion in EGO4D_V1_EXCLUSIONS} == {
+        "audio_annotation_clock_drift"
+    }
+
+
+def test_precompute_omits_explicit_exclusion_and_records_it(
+    fake_models, media_roots, tmp_path
+):
+    exclusion = MimiCacheExclusion(
+        dataset="a",
+        recording_id="r1",
+        reason="audio_annotation_clock_drift",
+        max_drift_s=0.4,
+    )
+    output = tmp_path / "cache"
+
+    precompute_mimi_cache(
+        one_corpus(),
+        media_roots=media_roots,
+        output_root=output,
+        excluded_recordings=(exclusion,),
+    )
+
+    store = MimiFeatureStore(output)
+    assert store.records == ()
+    assert store.exclusions == (exclusion,)
+    assert fake_models.calls == []
+
+
+def test_precompute_rejects_exclusion_outside_canonical_grid(
+    fake_models, media_roots, tmp_path
+):
+    exclusion = MimiCacheExclusion(
+        dataset="a",
+        recording_id="missing",
+        reason="audio_annotation_clock_drift",
+        max_drift_s=0.4,
+    )
+
+    with pytest.raises(ValueError, match="not in the canonical action grid"):
+        precompute_mimi_cache(
+            one_corpus(),
+            media_roots=media_roots,
+            output_root=tmp_path / "cache",
+            excluded_recordings=(exclusion,),
+        )
+
+    assert FrameIndexEncoder.instances == []
 
 
 def test_cache_rate_is_the_action_grid_rate(fake_models, media_roots, tmp_path):
