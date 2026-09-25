@@ -18,16 +18,27 @@ attention stays plain causal attention.
 Latent targets come from the audio of every step, including steps whose
 turn-taking annotation is UNKNOWN or whose action is masked: the observation
 is defined there, and masked actions have their own conditioning id.
+
+The rollout loss is the weighted mean of the per-horizon losses of the
+active horizons. During training a curriculum over optimizer steps activates
+horizons progressively (`prediction.curriculum`); the mean keeps the rollout
+term's magnitude independent of how many horizons are active, so the
+curriculum changes the temporal difficulty only. Validation always evaluates
+every `prediction.rollout_horizons`, so its metrics stay comparable across
+the whole run.
 """
 
 from __future__ import annotations
 
+import math
+from collections.abc import Sequence
 from dataclasses import dataclass
 from typing import Any
 
 import lightning as L
 import torch
 import torch.nn.functional as F
+from lightning.pytorch.utilities.types import OptimizerLRSchedulerConfig
 from omegaconf import DictConfig
 from torch import nn
 
@@ -35,6 +46,7 @@ from turn_wm.data.dataset import WindowConfig
 from turn_wm.models.build import build_model
 from turn_wm.models.lewm.jepa import JEPA
 from turn_wm.models.lewm.sigreg import SIGReg
+from turn_wm.training.scheduler import warmup_cosine_scheduler
 
 
 @dataclass(frozen=True)
@@ -102,6 +114,111 @@ def validate_config(cfg: DictConfig) -> None:
     if missing:
         raise ValueError(f"loss.rollout.horizon_weights has no weight for {missing}")
 
+    non_positive = [
+        h for h in horizons if not cfg.loss.rollout.horizon_weights[str(h)] > 0
+    ]
+
+    if non_positive:
+        raise ValueError(
+            f"loss.rollout.horizon_weights must be positive; got {non_positive}"
+        )
+
+    _validate_scheduler(cfg)
+
+    if cfg.prediction.curriculum.enabled:
+        _validate_curriculum(cfg.prediction.curriculum.stages, horizons=horizons)
+
+
+def _validate_scheduler(cfg: DictConfig) -> None:
+    scheduler = cfg.scheduler
+
+    if scheduler.type != "warmup_cosine":
+        raise ValueError(
+            f"scheduler.type must be 'warmup_cosine', got {scheduler.type!r}"
+        )
+
+    if scheduler.interval != "step":
+        raise ValueError(
+            "scheduler.interval must be 'step' (the schedule and the curriculum "
+            f"follow optimizer steps), got {scheduler.interval!r}"
+        )
+
+    if not 0 <= scheduler.warmup_ratio < 1:
+        raise ValueError(
+            f"scheduler.warmup_ratio must lie in [0, 1), got {scheduler.warmup_ratio}"
+        )
+
+    if not 0 < scheduler.min_lr <= cfg.optimizer.lr:
+        raise ValueError(
+            f"scheduler.min_lr must lie in (0, optimizer.lr={cfg.optimizer.lr}], "
+            f"got {scheduler.min_lr}"
+        )
+
+
+def _validate_curriculum(stages: Sequence[Any], *, horizons: Sequence[int]) -> None:
+    if not stages:
+        raise ValueError("prediction.curriculum.stages needs at least one stage")
+
+    previous_until = 0.0
+    previous: set[int] = set()
+
+    for index, stage in enumerate(stages):
+        until = stage.until
+        active = list(stage.horizons)
+        name = f"prediction.curriculum.stages[{index}]"
+
+        if not previous_until < until <= 1.0:
+            raise ValueError(
+                f"{name}.until must be increasing within (0, 1]; got {until} after "
+                f"{previous_until}"
+            )
+
+        if not active:
+            raise ValueError(f"{name} needs at least one horizon")
+
+        unknown = [h for h in active if h not in horizons]
+
+        if unknown:
+            raise ValueError(
+                f"{name} horizons {unknown} are not in prediction.rollout_horizons "
+                f"{list(horizons)}"
+            )
+
+        if not previous <= set(active):
+            raise ValueError(
+                f"{name} drops horizons {sorted(previous - set(active))}; the "
+                "curriculum is cumulative"
+            )
+
+        previous_until = until
+        previous = set(active)
+
+    if previous_until != 1.0:
+        raise ValueError(
+            f"the last prediction.curriculum stage must end at 1.0, got {previous_until}"
+        )
+
+
+def rollout_horizons_for_progress(cfg: DictConfig, progress: float) -> list[int]:
+    """Rollout horizons active at `progress` in [0, 1] of the optimizer steps.
+
+    A stage covers progress below its `until`; progress 1.0 is in the last
+    stage. Without a curriculum every `prediction.rollout_horizons` is active.
+    """
+
+    curriculum = cfg.prediction.curriculum
+
+    if not curriculum.enabled:
+        return sorted(cfg.prediction.rollout_horizons)
+
+    stages = list(curriculum.stages)
+
+    for stage in stages:
+        if progress < stage.until:
+            return sorted(stage.horizons)
+
+    return sorted(stages[-1].horizons)
+
 
 def trajectories(batch: dict[str, Any]) -> Trajectories:
     """Assemble context + future trajectories from a collated data batch."""
@@ -160,12 +277,25 @@ def lejepa_losses(
     sigreg: nn.Module,
     batch: Trajectories,
     cfg: DictConfig,
+    rollout_horizons: Sequence[int] | None = None,
 ) -> dict[str, torch.Tensor]:
-    """Teacher-forcing, rollout and SIGReg losses for one batch."""
+    """Teacher-forcing, rollout and SIGReg losses for one batch.
+
+    `rollout_horizons` are the active horizons (the training curriculum);
+    by default every `prediction.rollout_horizons`. The rollout only runs up
+    to the largest active horizon.
+    """
 
     rollout_context_size = cfg.prediction.rollout_context_size
-    rollout_horizons = sorted(cfg.prediction.rollout_horizons)
+    rollout_horizons = sorted(
+        cfg.prediction.rollout_horizons
+        if rollout_horizons is None
+        else rollout_horizons
+    )
     rollout_stop_gradient = cfg.prediction.rollout_stop_gradient
+
+    if not rollout_horizons:
+        raise ValueError("At least one rollout horizon must be active")
 
     context_steps = batch.context_steps
     total_steps = batch.total_steps
@@ -250,11 +380,16 @@ def lejepa_losses(
                 dim=1,
             )
 
-    rollout_loss = emb.new_zeros(())
+    # Weighted mean over the active horizons: activating more horizons makes
+    # the task harder without scaling the rollout term up.
+    weights = {
+        h: float(cfg.loss.rollout.horizon_weights[str(h)]) for h in rollout_horizons
+    }
 
-    for h in rollout_horizons:
-        weight = cfg.loss.rollout.horizon_weights[str(h)]
-        rollout_loss = rollout_loss + weight * rollout_losses[h]
+    rollout_loss = sum(
+        (weights[h] * rollout_losses[h] for h in rollout_horizons),
+        emb.new_zeros(()),
+    ) / sum(weights.values())
 
     # =========================================================
     # 3. SIGREG over the trajectory latents, (T, B, D)
@@ -300,10 +435,46 @@ class LeWMModule(L.LightningModule):
         self.sigreg = SIGReg(**cfg.loss.sigreg.kwargs)
 
     def training_step(self, batch: dict[str, Any], batch_idx: int) -> torch.Tensor:
-        return self._step(batch, "train")["loss"]
+        progress = self._training_progress()
+        horizons = rollout_horizons_for_progress(self.cfg, progress)
+
+        # Curriculum state, logged per step next to (not as) the losses.
+        self.log("train/curriculum_progress", progress, on_step=True, on_epoch=False)
+        self.log(
+            "train/max_rollout_horizon",
+            float(max(horizons)),
+            on_step=True,
+            on_epoch=False,
+        )
+
+        return self._step(batch, "train", rollout_horizons=horizons)["loss"]
 
     def validation_step(self, batch: dict[str, Any], batch_idx: int) -> torch.Tensor:
+        # Every horizon, whatever the training curriculum: comparable metrics.
         return self._step(batch, "val")["loss"]
+
+    def _training_progress(self) -> float:
+        """Fraction of the run's optimizer steps done, in [0, 1]."""
+
+        total_steps = self._total_optimizer_steps()
+
+        if total_steps <= 1:
+            return 1.0
+
+        return min(1.0, max(0.0, self.global_step / (total_steps - 1)))
+
+    def _total_optimizer_steps(self) -> int:
+        # Optimizer steps, accounting for gradient accumulation, batch limits,
+        # max_steps and devices, unlike epochs * len(dataloader).
+        total = self.trainer.estimated_stepping_batches
+
+        if not math.isfinite(total):
+            raise ValueError(
+                "The LR schedule and the curriculum need a finite number of "
+                "optimizer steps; set trainer.max_epochs or trainer.max_steps"
+            )
+
+        return int(total)
 
     def transfer_batch_to_device(
         self,
@@ -318,21 +489,48 @@ class LeWMModule(L.LightningModule):
             for key, value in batch.items()
         }
 
-    def configure_optimizers(self) -> torch.optim.Optimizer:
-        optimizer = self.cfg.optimizer
-        optimizer_class = getattr(torch.optim, optimizer.type)
+    def configure_optimizers(self) -> OptimizerLRSchedulerConfig:
+        config = self.cfg.optimizer
+        optimizer_class = getattr(torch.optim, config.type)
 
         # The frozen encoder contributes no trainable parameters.
         parameters = [p for p in self.parameters() if p.requires_grad]
 
-        return optimizer_class(
+        optimizer = optimizer_class(
             parameters,
-            lr=optimizer.lr,
-            weight_decay=optimizer.weight_decay,
+            lr=config.lr,
+            weight_decay=config.weight_decay,
         )
 
-    def _step(self, batch: dict[str, Any], stage: str) -> dict[str, torch.Tensor]:
-        output = lejepa_losses(self.model, self.sigreg, trajectories(batch), self.cfg)
+        scheduler = warmup_cosine_scheduler(
+            optimizer,
+            total_steps=self._total_optimizer_steps(),
+            warmup_ratio=self.cfg.scheduler.warmup_ratio,
+            min_lr=self.cfg.scheduler.min_lr,
+        )
+
+        return {
+            "optimizer": optimizer,
+            "lr_scheduler": {
+                "scheduler": scheduler,
+                "interval": "step",
+                "frequency": 1,
+            },
+        }
+
+    def _step(
+        self,
+        batch: dict[str, Any],
+        stage: str,
+        rollout_horizons: Sequence[int] | None = None,
+    ) -> dict[str, torch.Tensor]:
+        output = lejepa_losses(
+            self.model,
+            self.sigreg,
+            trajectories(batch),
+            self.cfg,
+            rollout_horizons=rollout_horizons,
+        )
 
         self.log_dict(
             {f"{stage}/{name}": value.detach() for name, value in output.items()},

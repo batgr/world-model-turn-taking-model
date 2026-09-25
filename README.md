@@ -92,7 +92,9 @@ selected with `train=xxx`).
 
 ## Training
 
-`turn_wm.training.lewm` holds the objective and a Lightning module.
+`turn_wm.training.lewm` holds the objective and a Lightning module. The
+baseline V1 recipe (AdamW with warmup + cosine per optimizer step, loss
+weights, horizon curriculum) is described in [docs/training.md](docs/training.md).
 
 - **Trajectories.** A sample's context window followed by its future window
   forms one trajectory of `data.context_steps + data.future_steps` steps.
@@ -109,8 +111,11 @@ selected with `train=xxx`).
   latent (without gradient when `prediction.rollout_stop_gradient`), with
   the real future actions. Before each prediction it keeps only the latest
   `prediction.rollout_context_size` states and actions
-  (`<= data.context_steps`). It is supervised at
-  `prediction.rollout_horizons`, each weighted in `loss.rollout`.
+  (`<= data.context_steps`). Its loss is the weighted mean
+  (`loss.rollout.horizon_weights`) over the active horizons: a curriculum
+  over optimizer steps activates `[1]`, then `[1, 5]`, then `[1, 5, 10]`
+  during training, while validation always evaluates every
+  `prediction.rollout_horizons`.
 - `validate_config` checks these sizes against each other and against the
   predictor before any data is read.
 - The total loss weights teacher forcing, rollout and SIGReg

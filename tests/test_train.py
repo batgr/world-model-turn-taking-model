@@ -330,7 +330,7 @@ def test_config_hash_is_stable():
 
 def test_config_hash_changes_with_experiment():
     first = load_config()
-    second = load_config(["optimizer.lr=1e-4"])
+    second = load_config(["optimizer.lr=3e-4"])
 
     assert _config_hash(first) != _config_hash(second)
 

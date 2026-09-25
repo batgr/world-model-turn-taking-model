@@ -1,3 +1,5 @@
+import re
+
 import pytest
 from hydra.utils import get_class
 from omegaconf import DictConfig, OmegaConf
@@ -35,6 +37,7 @@ def test_default_config_selects_every_group():
         "trainer",
         "loader",
         "optimizer",
+        "scheduler",
         "loss",
         "checkpoint",
         "experiment",
@@ -105,3 +108,25 @@ def test_sigreg_kwargs_match_the_regularizer():
 
     assert regularizer.num_proj == cfg.loss.sigreg.kwargs.num_proj
     assert regularizer.t.numel() == cfg.loss.sigreg.kwargs.knots
+
+
+def test_training_docs_match_the_recipe():
+    # Every YAML excerpt in docs/training.md must agree with the composed
+    # configuration, so the documentation cannot drift from the recipe.
+    docs = (CONFIG_DIR.parent / "docs" / "training.md").read_text()
+    blocks = re.findall(r"```yaml\n(.*?)```", docs, flags=re.DOTALL)
+    cfg = OmegaConf.to_container(load_config(), resolve=True)
+
+    assert blocks
+
+    def assert_subset(expected, actual, path="config"):
+        if isinstance(expected, dict):
+            assert isinstance(actual, dict), path
+            for key, value in expected.items():
+                assert key in actual, f"{path}.{key}"
+                assert_subset(value, actual[key], f"{path}.{key}")
+        else:
+            assert expected == actual, path
+
+    for block in blocks:
+        assert_subset(OmegaConf.to_container(OmegaConf.create(block)), cfg)

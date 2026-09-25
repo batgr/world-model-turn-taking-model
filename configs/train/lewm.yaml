@@ -19,7 +19,8 @@ data:
 prediction:
   # Latest states/actions kept before each rollout prediction; <= context_steps.
   rollout_context_size: 10
-  # Future steps at which the rollout is supervised (each <= future_steps).
+  # Every horizon of the experiment (future steps, each <= future_steps; 1 step
+  # = 100 ms). Validation always evaluates all of them.
   rollout_horizons:
     - 1
     - 5
@@ -27,12 +28,33 @@ prediction:
   # Feed predictions back without gradient (truncated backprop).
   rollout_stop_gradient: true
 
+  # Training horizons activated progressively over the optimizer steps. A
+  # stage covers progress below `until`; stages are cumulative and the last
+  # ends at 1.0. Disabled: every rollout_horizons from the first step.
+  curriculum:
+    enabled: true
+    stages:
+      - until: 0.20
+        horizons:
+          - 1
+      - until: 0.50
+        horizons:
+          - 1
+          - 5
+      - until: 1.00
+        horizons:
+          - 1
+          - 5
+          - 10
+
 loss:
   teacher_forcing:
     weight: 1.0
   rollout:
     weight: 1.0
-    # One weight per prediction.rollout_horizons entry (keys are strings).
+    # One positive weight per prediction.rollout_horizons entry (keys are
+    # strings). The rollout loss is their weighted mean over the active
+    # horizons.
     horizon_weights:
       "1": 1.0
       "5": 1.0
@@ -45,8 +67,18 @@ loss:
 
 optimizer:
   type: AdamW
-  lr: 5e-5
+  lr: 1e-4
   weight_decay: 1e-3
+
+scheduler:
+  type: warmup_cosine
+  # Stepped after every optimizer step (not per epoch).
+  interval: step
+  # Fraction of the run's optimizer steps (trainer.estimated_stepping_batches)
+  # spent warming up linearly from min_lr to optimizer.lr.
+  warmup_ratio: 0.05
+  # LR at the first step and at the end of the cosine decay.
+  min_lr: 1e-6
 
 loader:
   batch_size: 32
