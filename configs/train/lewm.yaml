@@ -106,6 +106,17 @@ trainer:
   precision: bf16-mixed
   gradient_clip_val: 1.0
 
+# Validation diagnostics (turn_wm.training.metrics), computed each validation
+# epoch from the tensors of the losses, over prediction.rollout_horizons.
+evaluation:
+  # MSE of copying the last latent, and skill = 1 - MSE_model / MSE_persistence.
+  persistence_baseline: true
+  cosine_similarity: true
+  # latent_std, latent_norm, prediction_norm and effective_rank.
+  latent_health: true
+  # Latents sampled per validation epoch (deterministically) for the rank.
+  latent_rank_samples: 8192
+
 checkpoint:
   enabled: true
   monitor: val/loss

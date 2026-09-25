@@ -592,3 +592,28 @@ def test_no_learning_rate_monitor_without_a_logger(recorder, media_roots):
 
     assert recorder.trainers[0].kwargs["logger"] is False
     assert not any(isinstance(c, LearningRateMonitor) for c in callbacks)
+
+
+def test_fit_never_uses_the_test_split(recorder, media_roots):
+    run(media_roots)
+
+    assert [call["split"] for call in recorder.dataset_calls] == [
+        "train",
+        "validation",
+    ]
+    [trainer] = recorder.trainers
+    [(_, train_loader, val_loader, _)] = trainer.fit_calls
+    assert (train_loader, val_loader) == (
+        "train-dataset-loader",
+        "validation-dataset-loader",
+    )
+    assert "test" not in recorder.events
+    assert not hasattr(trainer, "test_calls")
+
+
+def test_the_module_defines_no_test_step():
+    import lightning as L
+
+    from turn_wm.training.lewm import LeWMModule
+
+    assert LeWMModule.test_step is L.LightningModule.test_step

@@ -41,6 +41,7 @@ def test_default_config_selects_every_group():
         "scheduler",
         "loss",
         "checkpoint",
+        "evaluation",
         "experiment",
         "logging",
     }

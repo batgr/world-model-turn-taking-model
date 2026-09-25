@@ -46,6 +46,7 @@ from turn_wm.data.dataset import WindowConfig
 from turn_wm.models.build import build_model, observation_source
 from turn_wm.models.lewm.jepa import JEPA
 from turn_wm.models.lewm.sigreg import SIGReg
+from turn_wm.training.metrics import ValidationMetrics
 from turn_wm.training.scheduler import warmup_cosine_scheduler
 
 
@@ -316,6 +317,20 @@ def trajectories(batch: dict[str, Any]) -> Trajectories:
     )
 
 
+@dataclass(frozen=True)
+class LeJEPAOutput:
+    """Losses of one batch, with the tensors they were computed from.
+
+    Validation metrics reuse these instead of running the predictor again.
+    """
+
+    losses: dict[str, torch.Tensor]
+    latents: torch.Tensor  # (B, T, D) projected trajectory latents (targets)
+    tf_predictions: torch.Tensor  # (B, C, D), predicting latents[:, 1 : C + 1]
+    rollout_predictions: dict[int, torch.Tensor]  # h -> (B, D), latents[:, C + h - 1]
+    context_steps: int
+
+
 def lejepa_losses(
     model: JEPA,
     sigreg: nn.Module,
@@ -329,6 +344,20 @@ def lejepa_losses(
     by default every `prediction.rollout_horizons`. The rollout only runs up
     to the largest active horizon.
     """
+
+    return lejepa_forward(
+        model, sigreg, batch, cfg, rollout_horizons=rollout_horizons
+    ).losses
+
+
+def lejepa_forward(
+    model: JEPA,
+    sigreg: nn.Module,
+    batch: Trajectories,
+    cfg: DictConfig,
+    rollout_horizons: Sequence[int] | None = None,
+) -> LeJEPAOutput:
+    """`lejepa_losses`, also returning its latents and predictions."""
 
     rollout_context_size = cfg.prediction.rollout_context_size
     rollout_horizons = sorted(
@@ -401,6 +430,7 @@ def lejepa_losses(
     rollout_act = act_emb[:, :context_steps]
 
     rollout_losses: dict[int, torch.Tensor] = {}
+    rollout_predictions: dict[int, torch.Tensor] = {}
 
     for h in range(1, max_horizon + 1):
         # Only the latest `rollout_context_size` states and actions.
@@ -412,6 +442,7 @@ def lejepa_losses(
 
         if h in rollout_horizons:
             target_idx = context_steps + h - 1
+            rollout_predictions[h] = pred[:, 0]
 
             rollout_losses[h] = F.mse_loss(
                 pred,
@@ -467,7 +498,13 @@ def lejepa_losses(
     for h in rollout_horizons:
         output[f"rollout_{h}_loss"] = rollout_losses[h]
 
-    return output
+    return LeJEPAOutput(
+        losses=output,
+        latents=emb,
+        tf_predictions=tf_pred,
+        rollout_predictions=rollout_predictions,
+        context_steps=context_steps,
+    )
 
 
 class LeWMModule(L.LightningModule):
@@ -499,9 +536,55 @@ class LeWMModule(L.LightningModule):
 
         return self._step(batch, "train", rollout_horizons=horizons)["loss"]
 
+    def on_validation_epoch_start(self) -> None:
+        self._validation_metrics = self._new_validation_metrics()
+
+    def _new_validation_metrics(self) -> ValidationMetrics:
+        evaluation = self.cfg.get("evaluation") or {}
+
+        return ValidationMetrics(
+            self.cfg.prediction.rollout_horizons,
+            persistence_baseline=evaluation.get("persistence_baseline", True),
+            cosine_similarity=evaluation.get("cosine_similarity", True),
+            latent_health=evaluation.get("latent_health", True),
+            latent_rank_samples=evaluation.get("latent_rank_samples", 8192),
+        )
+
+    @property
+    def validation_metrics(self) -> ValidationMetrics:
+        """This validation epoch's accumulator (created on first use)."""
+
+        if getattr(self, "_validation_metrics", None) is None:
+            self._validation_metrics = self._new_validation_metrics()
+
+        return self._validation_metrics
+
     def validation_step(self, batch: dict[str, Any], batch_idx: int) -> torch.Tensor:
         # Every horizon, whatever the training curriculum: comparable metrics.
-        return self._step(batch, "val")["loss"]
+        output = lejepa_forward(self.model, self.sigreg, trajectories(batch), self.cfg)
+        self._log_losses(output.losses, "val", batch)
+
+        # Diagnostics from the tensors the losses used; no second forward.
+        self.validation_metrics.update(
+            latents=output.latents,
+            tf_predictions=output.tf_predictions,
+            rollout_predictions=output.rollout_predictions,
+            context_steps=output.context_steps,
+            datasets=batch["dataset"],
+        )
+
+        return output.losses["loss"]
+
+    def on_validation_epoch_end(self) -> None:
+        # Epoch-level ratios of aggregated errors, logged once per epoch.
+        self.log_dict(
+            {
+                f"val/{name}": value
+                for name, value in self.validation_metrics.compute().items()
+            },
+            on_step=False,
+            on_epoch=True,
+        )
 
     def _training_progress(self) -> float:
         """Fraction of the run's optimizer steps done, in [0, 1]."""
@@ -581,7 +664,13 @@ class LeWMModule(L.LightningModule):
             self.cfg,
             rollout_horizons=rollout_horizons,
         )
+        self._log_losses(output, stage, batch)
 
+        return output
+
+    def _log_losses(
+        self, output: dict[str, torch.Tensor], stage: str, batch: dict[str, Any]
+    ) -> None:
         self.log_dict(
             {f"{stage}/{name}": value.detach() for name, value in output.items()},
             on_step=stage == "train",
@@ -589,5 +678,3 @@ class LeWMModule(L.LightningModule):
             sync_dist=True,
             batch_size=len(batch["sample_id"]),
         )
-
-        return output

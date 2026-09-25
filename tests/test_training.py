@@ -91,6 +91,7 @@ def make_batch(context_steps=4, future_steps=3, *, size=2, context_lengths=None)
 
     return {
         "sample_id": [f"s{i}" for i in range(size)],
+        "dataset": ["egocom"] * size,
         "context_lengths": torch.tensor(lengths),
         "context_action": torch.zeros(size, max(lengths), dtype=torch.long),
         "future_action": torch.ones(size, future_steps, dtype=torch.long),
@@ -756,3 +757,104 @@ def test_module_schedule_uses_estimated_stepping_batches_not_epochs():
     assert schedule(40, max_epochs=1)[-1] == pytest.approx(cfg_min_lr())
     assert schedule(40, max_epochs=1)[2] == pytest.approx(cfg_lr())
     assert schedule(80, max_epochs=1)[2] != pytest.approx(cfg_lr())
+
+
+# ---------------------------------------------------------------------------
+# Validation metrics
+# ---------------------------------------------------------------------------
+
+VALIDATION_METRICS = [
+    "tf_mse",
+    "tf_persistence_mse",
+    "tf_skill",
+    "skill_mean",
+    "latent_std",
+    "latent_norm",
+    "prediction_norm",
+    "effective_rank",
+    *(
+        f"{name}_{h}"
+        for h in (1, 5, 10)
+        for name in (
+            "skill",
+            "cosine",
+            "target_delta_norm",
+            "prediction_delta_norm",
+        )
+    ),
+    *(f"rollout_{h}_mse" for h in (1, 5, 10)),
+    *(f"persistence_{h}_mse" for h in (1, 5, 10)),
+    *(
+        f"{corpus}/{name}"
+        for corpus in ("egocom", "ego4d")
+        for name in (
+            "tf_mse",
+            "tf_persistence_mse",
+            "tf_skill",
+            *(f"rollout_{h}_mse" for h in (1, 5, 10)),
+            *(f"persistence_{h}_mse" for h in (1, 5, 10)),
+            *(f"skill_{h}" for h in (1, 5, 10)),
+        )
+    ),
+]
+
+
+def test_validation_metrics_cover_every_horizon_during_the_first_stage():
+    # Training is at stage [1] (progress 0), validation still measures h=1, 3.
+    cfg = small_config()
+    module, logged = logging_module(cfg, global_step=0)
+
+    module.validation_step(make_batch(), 0)
+    module.on_validation_epoch_end()
+
+    for h in (1, 3):
+        for name in ("rollout", "persistence"):
+            assert f"val/{name}_{h}_mse" in logged
+        for name in ("skill", "cosine", "target_delta_norm", "prediction_delta_norm"):
+            assert f"val/{name}_{h}" in logged
+
+
+def test_training_steps_do_not_compute_validation_metrics():
+    cfg = small_config()
+    module, logged = logging_module(cfg, global_step=0)
+
+    module.training_step(make_batch(), 0)
+
+    assert not [name for name in logged if "skill" in name or "persistence" in name]
+    assert getattr(module, "_validation_metrics", None) is None
+
+
+def mixed_batch(cfg, *, size=4):
+    batch = make_batch(cfg.data.context_steps, cfg.data.future_steps, size=size)
+    batch["dataset"] = ["egocom", "ego4d"] * (size // 2)
+    return batch
+
+
+def test_lightning_validation_epoch_logs_every_metric_finite(tmp_path):
+    # Synthetic data only: no cache, no corpus, no test split.
+    cfg = load_config()
+    module = LeWMModule(cfg, model=make_model(cfg))
+    batches = DataLoader([mixed_batch(cfg), mixed_batch(cfg)], batch_size=None)
+
+    trainer = L.Trainer(
+        accelerator="cpu",
+        max_epochs=1,
+        logger=False,
+        enable_checkpointing=False,
+        enable_progress_bar=False,
+        enable_model_summary=False,
+        num_sanity_val_steps=0,
+        default_root_dir=tmp_path,
+    )
+    trainer.fit(module, train_dataloaders=batches, val_dataloaders=batches)
+
+    metrics = trainer.callback_metrics
+
+    for name in VALIDATION_METRICS:
+        assert f"val/{name}" in metrics, name
+        assert torch.isfinite(metrics[f"val/{name}"]), name
+
+    # The existing losses are still there, and nothing touched a test split.
+    for name in ("loss", "tf_loss", "rollout_loss", "sigreg_loss", "rollout_10_loss"):
+        assert f"val/{name}" in metrics
+    assert not [name for name in metrics if name.startswith("test/")]
