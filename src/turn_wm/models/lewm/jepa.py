@@ -1,4 +1,10 @@
-"""JEPA Implementation"""
+"""JEPA Implementation
+
+Observations reach the latent space through one path: encoder features
+`(B, T, D)` go through `project_features` (the trainable projector). Raw
+observations are encoded first (`encode`); precomputed features, e.g. cached
+Mimi features, skip the encoder, which is then `None` and never built.
+"""
 
 from __future__ import annotations
 
@@ -10,7 +16,7 @@ from torch import nn
 class JEPA(nn.Module):
     def __init__(
         self,
-        encoder: nn.Module,
+        encoder: nn.Module | None,
         predictor: nn.Module,
         action_encoder: nn.Module,
         projector: nn.Module | None = None,
@@ -30,6 +36,14 @@ class JEPA(nn.Module):
         observation,
         **encoder_kwargs,
     ):
+        """Encode raw observations, then project them to the latent space."""
+
+        if self.encoder is None:
+            raise ValueError(
+                "Raw observation encoding is unavailable: this model was built "
+                "without an encoder (precomputed features); use project_features"
+            )
+
         features = self.encoder(
             observation,
             **encoder_kwargs,
@@ -37,6 +51,23 @@ class JEPA(nn.Module):
 
         if features.ndim != 3:
             raise ValueError("encoder must return (B, T, D)")
+
+        return self.project_features(features)
+
+    def project_features(self, features: torch.Tensor) -> torch.Tensor:
+        """Project encoder features `(B, T, D)` to latents `(B, T, embed_dim)`."""
+
+        if features.ndim != 3:
+            raise ValueError(
+                f"features must have shape (B, T, D), got {tuple(features.shape)}"
+            )
+
+        # Cached features are stored in float16; match the projector's
+        # parameters (autocast then applies the training precision).
+        parameter = next(self.projector.parameters(), None)
+
+        if parameter is not None and features.dtype != parameter.dtype:
+            features = features.to(parameter.dtype)
 
         b = features.size(0)
 

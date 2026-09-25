@@ -31,7 +31,8 @@ def test_lewm_losses_on_real_egocom_audio():
     if not root:
         pytest.skip("EGOCOM_MEDIA_ROOT is not set; local raw media unavailable")
 
-    cfg = load_config()
+    # The raw-audio path: this test is about decoding and encoding real audio.
+    cfg = load_config(["data.observation_source=raw_audio"])
     data = load_data(EGOCOM)
     dataset = build_dataset(
         data,

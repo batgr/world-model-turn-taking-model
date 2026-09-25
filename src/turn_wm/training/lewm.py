@@ -43,7 +43,7 @@ from omegaconf import DictConfig
 from torch import nn
 
 from turn_wm.data.dataset import WindowConfig
-from turn_wm.models.build import build_model
+from turn_wm.models.build import build_model, observation_source
 from turn_wm.models.lewm.jepa import JEPA
 from turn_wm.models.lewm.sigreg import SIGReg
 from turn_wm.training.scheduler import warmup_cosine_scheduler
@@ -51,13 +51,30 @@ from turn_wm.training.scheduler import warmup_cosine_scheduler
 
 @dataclass(frozen=True)
 class Trajectories:
-    """Model inputs for a batch of context + future trajectories."""
+    """Model inputs for a batch of context + future trajectories.
 
-    waveforms: list[torch.Tensor]  # each (channels, samples), context then future
-    sample_rates: list[int]
+    The observations are either precomputed encoder `features` (B, T, D) or
+    raw `waveforms` with their `sample_rates`, never both.
+    """
+
     actions: torch.Tensor  # (B, T)
     context_steps: int
     future_steps: int
+    features: torch.Tensor | None = None  # (B, T, D), context then future
+    waveforms: list[torch.Tensor] | None = None  # each (channels, samples)
+    sample_rates: list[int] | None = None
+
+    def __post_init__(self) -> None:
+        has_features = self.features is not None
+        has_audio = self.waveforms is not None and self.sample_rates is not None
+
+        if has_features == has_audio or (
+            not has_audio and (self.waveforms or self.sample_rates)
+        ):
+            raise ValueError(
+                "Trajectories need exactly one observation source: features, or "
+                "waveforms with sample_rates"
+            )
 
     @property
     def total_steps(self) -> int:
@@ -122,6 +139,10 @@ def validate_config(cfg: DictConfig) -> None:
         raise ValueError(
             f"loss.rollout.horizon_weights must be positive; got {non_positive}"
         )
+
+    # Raises on an unknown source; the cache root is checked by the runner,
+    # which opens the cache.
+    observation_source(cfg)
 
     _validate_scheduler(cfg)
 
@@ -221,10 +242,19 @@ def rollout_horizons_for_progress(cfg: DictConfig, progress: float) -> list[int]
 
 
 def trajectories(batch: dict[str, Any]) -> Trajectories:
-    """Assemble context + future trajectories from a collated data batch."""
+    """Assemble context + future trajectories from a collated data batch.
 
-    if "context_media" not in batch:
-        raise ValueError("Batch has no media; build the dataset with media_roots")
+    Cached features (`context_features`/`future_features`) are used when the
+    batch has them; otherwise the audio of the media windows.
+    """
+
+    has_features = "context_features" in batch
+
+    if not has_features and "context_media" not in batch:
+        raise ValueError(
+            "Batch has no observations; build the dataset with a mimi_store or "
+            "media_roots"
+        )
 
     lengths = batch["context_lengths"]
 
@@ -236,6 +266,25 @@ def trajectories(batch: dict[str, Any]) -> Trajectories:
 
     context_steps = int(lengths[0])
     future_steps = int(batch["future_action"].shape[1])
+
+    actions = torch.cat(
+        [batch["context_action"][:, :context_steps], batch["future_action"]],
+        dim=1,
+    )
+
+    if has_features:
+        return Trajectories(
+            actions=actions,
+            context_steps=context_steps,
+            future_steps=future_steps,
+            features=torch.cat(
+                [
+                    batch["context_features"][:, :context_steps],
+                    batch["future_features"],
+                ],
+                dim=1,
+            ),
+        )
 
     waveforms = []
     sample_rates = []
@@ -258,17 +307,12 @@ def trajectories(batch: dict[str, Any]) -> Trajectories:
         )
         sample_rates.append(context.audio.sample_rate)
 
-    actions = torch.cat(
-        [batch["context_action"][:, :context_steps], batch["future_action"]],
-        dim=1,
-    )
-
     return Trajectories(
-        waveforms=waveforms,
-        sample_rates=sample_rates,
         actions=actions,
         context_steps=context_steps,
         future_steps=future_steps,
+        waveforms=waveforms,
+        sample_rates=sample_rates,
     )
 
 
@@ -316,11 +360,17 @@ def lejepa_losses(
     # Encode the complete ground-truth trajectory
     # ---------------------------------------------------------
 
-    emb = model.encode(
-        batch.waveforms,
-        sample_rate=batch.sample_rates,
-        target_length=total_steps,
-    )
+    # The only place that knows where observations come from: cached encoder
+    # features go straight to the projector, raw audio through the encoder
+    # first. Everything below sees the same (B, T, D) latents.
+    if batch.features is not None:
+        emb = model.project_features(batch.features)
+    else:
+        emb = model.encode(
+            batch.waveforms,
+            sample_rate=batch.sample_rates,
+            target_length=total_steps,
+        )
     # (B, T, D)
 
     act_emb = model.encode_actions(batch.actions.to(emb.device))

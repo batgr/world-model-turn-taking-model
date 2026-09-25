@@ -12,6 +12,7 @@ from turn_wm.models.lewm.sigreg import SIGReg
 
 # Keeps build tests offline: the real encoder downloads pretrained weights.
 OFFLINE_ENCODER = "model.encoder._target_=torch.nn.Identity"
+RAW_AUDIO = "data.observation_source=raw_audio"
 
 
 def targets(node, path="") -> list[tuple[str, str]]:
@@ -85,7 +86,7 @@ def test_config_dir_is_the_repository_configs():
 
 
 def test_build_model_from_config():
-    model = build_model(load_config([OFFLINE_ENCODER]))
+    model = build_model(load_config([OFFLINE_ENCODER, RAW_AUDIO]))
 
     assert isinstance(model, JEPA)
     assert isinstance(model.encoder, nn.Identity)

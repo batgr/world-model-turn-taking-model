@@ -20,12 +20,15 @@ from datetime import UTC, datetime
 from pathlib import Path
 
 import lightning as L
-from lightning.pytorch.callbacks import ModelCheckpoint
+from lightning.pytorch.callbacks import Callback, LearningRateMonitor, ModelCheckpoint
 from omegaconf import DictConfig, OmegaConf
 
 from turn_wm.data.build import build_dataset
 from turn_wm.data.loader import DataLoaderConfig, build_dataloader
+from turn_wm.data.mimi_cache import MimiFeatureStore
+from turn_wm.data.mimi_precompute import GRID_RATE_HZ
 from turn_wm.data.source import DATASETS, LoadedData, load_data
+from turn_wm.models.build import MIMI_CACHE, observation_source
 from turn_wm.training.lewm import (
     LeWMModule,
     training_window,
@@ -49,16 +52,37 @@ def run(
             f"Unknown dataset {dataset_name!r}; expected one of {sorted(DATASETS)}"
         )
 
+    source = observation_source(cfg)
+    modalities = tuple(cfg.data.modalities)
+
+    if source == MIMI_CACHE and cfg.data.mimi_cache.root is None:
+        raise ValueError(
+            "data.mimi_cache.root is required with data.observation_source="
+            "mimi_cache (create the cache with `turn-wm precompute-mimi`)"
+        )
+
     # One experiment seed governs data order, workers and model initialization.
     L.seed_everything(cfg.seed, workers=True)
 
     loaded = load_data(DATASETS[dataset_name])
 
-    roots = (
-        _resolve_media_roots(loaded)
-        if media_roots is None
-        else _validate_media_roots(loaded, media_roots)
-    )
+    mimi_store = None
+
+    if source == MIMI_CACHE:
+        mimi_store = MimiFeatureStore(Path(cfg.data.mimi_cache.root).expanduser())
+        validate_mimi_cache(mimi_store, loaded, cfg)
+
+    # Cached features replace audio only; other modalities still need media.
+    needs_media = mimi_store is None or any(m != "audio" for m in modalities)
+
+    roots = None
+
+    if needs_media:
+        roots = (
+            _resolve_media_roots(loaded)
+            if media_roots is None
+            else _validate_media_roots(loaded, media_roots)
+        )
 
     # The run directory is created only once the experiment can start, so a
     # rejected configuration or missing media leaves nothing behind.
@@ -73,10 +97,10 @@ def run(
         cfg=cfg,
         git=_git_metadata(),
         dataset_revision=loaded.revision,
+        mimi_store=mimi_store,
     )
 
     window = training_window(cfg)
-    modalities = tuple(cfg.data.modalities)
 
     train_dataset = build_dataset(
         loaded,
@@ -85,6 +109,7 @@ def run(
         training=True,
         media_roots=roots,
         modalities=modalities,
+        mimi_store=mimi_store,
     )
 
     val_dataset = build_dataset(
@@ -94,6 +119,7 @@ def run(
         training=False,
         media_roots=roots,
         modalities=modalities,
+        mimi_store=mimi_store,
     )
 
     train_loader_config = DataLoaderConfig(
@@ -144,6 +170,10 @@ def run(
         run_dir=run_dir,
     )
 
+    if logger is not False:
+        # The warmup/cosine LR per optimizer step, next to the losses.
+        callbacks = [*callbacks, LearningRateMonitor(logging_interval="step")]
+
     trainer = L.Trainer(
         **trainer_kwargs,
         callbacks=callbacks,
@@ -161,6 +191,41 @@ def run(
         val_dataloaders=val_loader,
         ckpt_path=ckpt_path,
     )
+
+
+def validate_mimi_cache(
+    store: MimiFeatureStore,
+    loaded: LoadedData,
+    cfg: DictConfig,
+) -> None:
+    """Refuse a cache that does not match the grid, model or dataset revision."""
+
+    if store.feature_rate_hz != GRID_RATE_HZ:
+        raise ValueError(
+            f"Mimi cache {store.root} has {store.feature_rate_hz:g} Hz features; the "
+            f"action grid is {GRID_RATE_HZ:g} Hz"
+        )
+
+    input_dim = int(cfg.model.projector.input_dim)
+
+    if store.feature_dim != input_dim:
+        raise ValueError(
+            f"Mimi cache {store.root} has {store.feature_dim}-d features; "
+            f"model.projector.input_dim is {input_dim}"
+        )
+
+    cache_revision = store.source_dataset_revision
+
+    if (
+        cache_revision is not None
+        and loaded.revision is not None
+        and cache_revision != loaded.revision
+    ):
+        raise ValueError(
+            f"Mimi cache {store.root} was computed from dataset revision "
+            f"{cache_revision}, but training loaded {loaded.revision}; recompute "
+            "the cache or pin the dataset revision"
+        )
 
 
 def _resolve_media_roots(
@@ -222,7 +287,7 @@ def _build_callbacks(
     cfg: DictConfig,
     *,
     run_dir: Path,
-) -> list[ModelCheckpoint]:
+) -> list[Callback]:
     if not cfg.checkpoint.enabled:
         return []
 
@@ -341,15 +406,30 @@ def _write_metadata(
     cfg: DictConfig,
     git: dict[str, object],
     dataset_revision: str | None,
+    mimi_store: MimiFeatureStore | None = None,
 ) -> None:
-    metadata = {
+    metadata: dict[str, object] = {
         "run_id": run_id,
         "seed": int(cfg.seed),
         "config_hash": config_hash,
         "git": git,
         "dataset": str(cfg.data.dataset),
         "dataset_revision": dataset_revision,
+        "observation_source": observation_source(cfg),
     }
+
+    if mimi_store is not None:
+        # What identifies the cache, not its whole manifest.
+        metadata["mimi_cache"] = {
+            "root": str(mimi_store.root),
+            "schema_version": mimi_store.schema_version,
+            "model_name": mimi_store.model_name,
+            "model_revision": mimi_store.model_revision,
+            "model_resolved_revision": mimi_store.model_resolved_revision,
+            "source_dataset_revision": mimi_store.source_dataset_revision,
+            "feature_rate_hz": mimi_store.feature_rate_hz,
+            "feature_dim": mimi_store.feature_dim,
+        }
 
     path = run_dir / "metadata.json"
 

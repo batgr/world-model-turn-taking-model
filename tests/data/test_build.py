@@ -1,14 +1,17 @@
+import logging
+from dataclasses import replace
 from pathlib import Path
 
 import pytest
-from corpora import make_corpus, make_manifest
-from datasets import Dataset
+from corpora import make_anchors, make_corpus, make_grid, make_manifest
+from datasets import Dataset, DatasetDict, concatenate_datasets
 from synthetic_media import make_audio, make_video, make_video_with_audio
 
 from turn_wm.data import dataset as dataset_module
 from turn_wm.data.build import build_dataset
 from turn_wm.data.dataset import WindowConfig
 from turn_wm.data.loader import DataLoaderConfig, build_dataloader
+from turn_wm.data.mimi_cache import MimiFeatureStore
 from turn_wm.data.reader import MediaWindow
 from turn_wm.data.source import LoadedData
 
@@ -60,6 +63,48 @@ def test_single_corpus_uses_same_api():
     assert dataset.corpora == ("a",)
     assert len(dataset) == 3
     assert dataset.training is True
+
+
+def test_cache_mode_filters_only_anchors_missing_from_the_store(
+    make_mimi_cache,
+    caplog,
+):
+    base = make_corpus("a", state="SILENT", splits={"train": 1})
+    second_grid = make_grid(dataset="a", state="SPEAKING", recording_id="r2")
+    second_anchors = make_anchors(
+        dataset="a",
+        split="train",
+        count=1,
+        recording_id="r2",
+    ).map(lambda row: {"anchor_row": row["anchor_row"] + len(base.action_grid)})
+    corpus = replace(
+        base,
+        model_ready=DatasetDict(
+            {"train": concatenate_datasets([base.model_ready["train"], second_anchors])}
+        ),
+        action_grid=concatenate_datasets([base.action_grid, second_grid]),
+    )
+    store = MimiFeatureStore(make_mimi_cache({("a", "r1"): (0, 40)}))
+    caplog.set_level(logging.INFO, logger="turn_wm.data.build")
+
+    dataset = build_dataset(
+        LoadedData(corpora=(corpus,)),
+        split="train",
+        window=WINDOW,
+        training=False,
+        modalities=("audio",),
+        mimi_store=store,
+    )
+
+    assert len(dataset) == 1
+    assert dataset[0]["recording_id"] == "r1"
+    [child] = dataset.datasets
+    assert child.canonical_anchor_count == 2
+    assert child.cache_filtered_anchor_count == 1
+    assert "canonical recordings: 2" in caplog.text
+    assert "cached recordings: 1" in caplog.text
+    assert "excluded recordings: 1" in caplog.text
+    assert "anchors filtered from train: 1" in caplog.text
 
 
 def test_unpublished_split_fails():

@@ -5,10 +5,11 @@ from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
-from lightning.pytorch.callbacks import ModelCheckpoint
+from lightning.pytorch.callbacks import LearningRateMonitor, ModelCheckpoint
 from omegaconf import OmegaConf
 
 from turn_wm.config import load_config
+from turn_wm.data.mimi_cache import MimiFeatureStore
 from turn_wm.data.source import DATASETS
 from turn_wm.training import train as train_module
 from turn_wm.training.train import (
@@ -115,8 +116,12 @@ def media_roots(tmp_path):
     return roots
 
 
+RAW_AUDIO = "data.observation_source=raw_audio"
+
+
 def run(media_roots, *overrides):
-    cfg = load_config(list(overrides))
+    # The raw-audio path unless a test selects the cache.
+    cfg = load_config([RAW_AUDIO, *overrides])
     train_module.run(cfg, media_roots=media_roots)
     return cfg
 
@@ -237,7 +242,7 @@ def test_missing_media_root_is_rejected(recorder, monkeypatch, tmp_path):
     monkeypatch.delenv("EGO4D_MEDIA_ROOT", raising=False)
 
     with pytest.raises(ValueError, match="EGOCOM_MEDIA_ROOT is not set"):
-        train_module.run(load_config())
+        train_module.run(load_config([RAW_AUDIO]))
 
     assert "module" not in recorder.events
     assert run_dirs(tmp_path) == []
@@ -259,7 +264,7 @@ def test_media_roots_come_from_the_environment(recorder, media_roots, monkeypatc
     monkeypatch.setenv("EGOCOM_MEDIA_ROOT", str(media_roots["egocom"]))
     monkeypatch.setenv("EGO4D_MEDIA_ROOT", str(media_roots["ego4d"]))
 
-    train_module.run(load_config())
+    train_module.run(load_config([RAW_AUDIO]))
 
     assert calls_by_split(recorder)["train"]["media_roots"] == media_roots
 
@@ -403,6 +408,7 @@ def test_write_metadata_records_the_run(tmp_path):
         "git": git,
         "dataset": "full",
         "dataset_revision": "rev-123",
+        "observation_source": "mimi_cache",
     }
 
 
@@ -423,3 +429,166 @@ def test_run_writes_config_and_metadata_into_its_run_directory(
     assert Path(recorder.trainers[0].kwargs["default_root_dir"]) == Path(
         "outputs", "lewm", run_dir.name
     )
+
+
+# ---------------------------------------------------------------------------
+# Cached Mimi features
+# ---------------------------------------------------------------------------
+
+
+def run_cached(cache_root, *overrides, media_roots=None):
+    cfg = load_config(
+        [
+            "data.observation_source=mimi_cache",
+            f"data.mimi_cache.root={cache_root}",
+            *overrides,
+        ]
+    )
+    train_module.run(cfg, media_roots=media_roots)
+    return cfg
+
+
+@pytest.fixture
+def cache_root(make_mimi_cache):
+    return make_mimi_cache({("egocom", "r1"): (0, 50)})
+
+
+def test_cached_run_needs_no_media_roots(recorder, cache_root, monkeypatch):
+    monkeypatch.delenv("EGOCOM_MEDIA_ROOT", raising=False)
+    monkeypatch.delenv("EGO4D_MEDIA_ROOT", raising=False)
+
+    run_cached(cache_root)
+
+    for call in recorder.dataset_calls:
+        assert call["media_roots"] is None
+        assert call["modalities"] == ("audio",)
+        assert isinstance(call["mimi_store"], MimiFeatureStore)
+        assert call["mimi_store"].root == cache_root
+
+    assert recorder.events[-1] == "fit"
+
+
+def test_raw_run_passes_no_store(recorder, media_roots):
+    run(media_roots)
+
+    assert all(call["mimi_store"] is None for call in recorder.dataset_calls)
+
+
+def test_cached_run_still_needs_media_for_other_modalities(
+    recorder, cache_root, monkeypatch
+):
+    monkeypatch.delenv("EGOCOM_MEDIA_ROOT", raising=False)
+
+    with pytest.raises(ValueError, match="EGOCOM_MEDIA_ROOT is not set"):
+        run_cached(cache_root, "data.modalities=[audio,video]")
+
+
+def test_cached_run_requires_a_cache_root(recorder, tmp_path):
+    cfg = load_config(["data.observation_source=mimi_cache"])
+
+    with pytest.raises(ValueError, match="data.mimi_cache.root is required"):
+        train_module.run(cfg)
+
+    assert recorder.events == []
+    assert run_dirs(tmp_path) == []
+
+
+def test_unknown_observation_source_is_rejected(recorder):
+    cfg = load_config(["data.observation_source=video_cache"])
+
+    with pytest.raises(ValueError, match="observation_source must be one of"):
+        train_module.run(cfg)
+
+    assert recorder.events == []
+
+
+def test_missing_cache_is_a_clear_error(recorder, tmp_path):
+    with pytest.raises(FileNotFoundError, match="manifest not found"):
+        run_cached(tmp_path / "nowhere")
+
+
+def test_cache_from_another_dataset_revision_is_refused(
+    recorder, make_mimi_cache, tmp_path
+):
+    root = make_mimi_cache({("egocom", "r1"): (0, 5)}, source_dataset_revision="old")
+
+    with pytest.raises(ValueError, match="dataset revision old, but training loaded"):
+        run_cached(root)
+
+    assert "module" not in recorder.events
+    assert run_dirs(tmp_path) == []
+
+
+def test_cache_without_a_recorded_revision_is_accepted(recorder, make_mimi_cache):
+    root = make_mimi_cache({("egocom", "r1"): (0, 5)}, source_dataset_revision=None)
+
+    run_cached(root)
+
+    assert recorder.events[-1] == "fit"
+
+
+@pytest.mark.parametrize(
+    ("cache", "message"),
+    [
+        ({"rate_hz": 12.5}, "12.5 Hz features; the action grid is 10 Hz"),
+        ({"dim": 256}, "256-d features; model.projector.input_dim is 512"),
+    ],
+)
+def test_incompatible_cache_is_refused(recorder, make_mimi_cache, cache, message):
+    root = make_mimi_cache({("egocom", "r1"): (0, 5)}, **cache)
+
+    with pytest.raises(ValueError, match=message):
+        run_cached(root)
+
+
+def test_cached_run_records_the_cache_in_metadata(recorder, cache_root, tmp_path):
+    run_cached(cache_root)
+
+    [run_dir] = run_dirs(tmp_path)
+    metadata = json.loads((run_dir / "metadata.json").read_text())
+
+    assert metadata["observation_source"] == "mimi_cache"
+    assert metadata["mimi_cache"] == {
+        "root": str(cache_root),
+        "schema_version": 2,
+        "model_name": "kyutai/mimi",
+        "model_revision": "requested-sha",
+        "model_resolved_revision": "resolved-sha",
+        "source_dataset_revision": "rev-123",
+        "feature_rate_hz": 10.0,
+        "feature_dim": 512,
+    }
+
+
+def test_raw_run_records_its_observation_source(recorder, media_roots, tmp_path):
+    run(media_roots)
+
+    [run_dir] = run_dirs(tmp_path)
+    metadata = json.loads((run_dir / "metadata.json").read_text())
+
+    assert metadata["observation_source"] == "raw_audio"
+    assert "mimi_cache" not in metadata
+
+
+def test_learning_rate_is_monitored_when_a_logger_is_active(
+    recorder, media_roots, monkeypatch
+):
+    monkeypatch.setattr(train_module, "_build_logger", lambda cfg, **kwargs: "logger")
+
+    run(media_roots)
+
+    callbacks = recorder.trainers[0].kwargs["callbacks"]
+    monitors = [c for c in callbacks if isinstance(c, LearningRateMonitor)]
+
+    assert len(monitors) == 1
+    assert monitors[0].logging_interval == "step"
+    assert sum(isinstance(c, ModelCheckpoint) for c in callbacks) == 1
+
+
+def test_no_learning_rate_monitor_without_a_logger(recorder, media_roots):
+    run(media_roots)
+
+    callbacks = recorder.trainers[0].kwargs["callbacks"]
+
+    assert recorder.trainers[0].kwargs["logger"] is False
+    assert not any(isinstance(c, LearningRateMonitor) for c in callbacks)

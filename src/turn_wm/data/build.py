@@ -19,6 +19,7 @@ from turn_wm.data.media import (
     MediaModality,
     validate_modalities,
 )
+from turn_wm.data.mimi_cache import MimiFeatureStore
 from turn_wm.data.multi import MultiCorpusDataset
 from turn_wm.data.source import LoadedCorpus, LoadedData
 
@@ -34,13 +35,16 @@ def build_dataset(
     media_roots: Mapping[str, Path] | None = None,
     trainable_only: bool = True,
     modalities: Iterable[MediaModality] = MEDIA_MODALITIES,
+    mimi_store: MimiFeatureStore | None = None,
 ) -> MultiCorpusDataset:
     """Build one dataset over every loaded corpus that publishes `split`.
 
     Corpora without the split are left out rather than substituted. With
     `media_roots` (manifest `dataset` value → local corpus root), samples also
     carry decoded raw media, restricted to `modalities` (audio and video by
-    default) in every corpus alike.
+    default) in every corpus alike. With `mimi_store`, audio comes from its
+    precomputed Mimi features instead of the media; the caller opens the
+    store and decides whether media roots are still needed.
     """
 
     selected = validate_modalities(modalities)
@@ -64,7 +68,29 @@ def build_dataset(
                 None if media_roots is None else _media_index(corpus, media_roots)
             ),
             modalities=selected,
+            mimi_store=mimi_store,
         )
+
+        if mimi_store is not None:
+            canonical_recording_keys = frozenset(
+                zip(
+                    corpus.action_grid["dataset"],
+                    corpus.action_grid["recording_id"],
+                    strict=True,
+                )
+            )
+            cached_recording_keys = canonical_recording_keys & mimi_store.recording_keys
+            logger.info(
+                "Mimi cache coverage for %s: canonical recordings: %d; "
+                "cached recordings: %d; excluded recordings: %d; "
+                "anchors filtered from %s: %d",
+                corpus.name,
+                len(canonical_recording_keys),
+                len(cached_recording_keys),
+                len(canonical_recording_keys - cached_recording_keys),
+                split,
+                dataset.cache_filtered_anchor_count,
+            )
 
         if len(dataset) == 0:
             without_usable.append(corpus.name)

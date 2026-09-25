@@ -9,6 +9,17 @@ seed: 3072
 data:
   # A name in turn_wm.data.source.DATASETS: egocom (public), ego4d, full.
   dataset: full
+
+  # Where audio observations come from:
+  #   mimi_cache: precomputed Mimi features (turn-wm precompute-mimi) under
+  #               mimi_cache.root; no raw audio, Mimi is never loaded.
+  #   raw_audio:  decoded from local media (<DATASET>_MEDIA_ROOT) and encoded
+  #               by frozen Mimi at every step; for debugging.
+  # Both feed the same 512-d features to the same projector.
+  observation_source: mimi_cache
+  mimi_cache:
+    # Required with observation_source: mimi_cache.
+    root: null
   # Ground-truth context: the teacher forcing predicts z1..zC from z0..z(C-1).
   # Training uses this fixed context (training_window(cfg)).
   context_steps: 15

@@ -82,6 +82,22 @@ def collate_turn_taking(
         "sample_class": [sample["sample_class"] for sample in samples],
     }
 
+    has_features = "context_features" in samples[0]
+
+    if any(("context_features" in sample) != has_features for sample in samples):
+        raise ValueError("Cannot collate mixed cached-feature and plain samples")
+
+    if has_features:
+        # [B, C, D] and [B, F, D]; variable contexts are zero-padded in time
+        # like context_state (context_mask marks the real rows).
+        batch["context_features"] = pad_sequence(
+            [sample["context_features"] for sample in samples],
+            batch_first=True,
+        )
+        batch["future_features"] = torch.stack(
+            [sample["future_features"] for sample in samples]
+        )
+
     has_media = "context_media" in samples[0]
 
     if any(("context_media" in sample) != has_media for sample in samples):

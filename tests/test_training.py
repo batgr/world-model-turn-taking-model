@@ -129,7 +129,7 @@ def test_trajectories_need_media():
     batch = make_batch()
     del batch["context_media"]
 
-    with pytest.raises(ValueError, match="no media"):
+    with pytest.raises(ValueError, match="no observations"):
         trajectories(batch)
 
 

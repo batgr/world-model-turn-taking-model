@@ -23,6 +23,7 @@ from turn_wm.data.media import (
     MediaPaths,
     validate_modalities,
 )
+from turn_wm.data.mimi_cache import MimiFeatureStore
 from turn_wm.data.reader import MediaReader, MediaWindow
 from turn_wm.data.window import build_window, validate_against_anchor
 
@@ -69,6 +70,11 @@ class TurnTakingDataset(Dataset):
 
     With a `media_index`, samples also carry `context_media`/`future_media`
     windows in which only the selected `modalities` are decoded.
+
+    With a `mimi_store`, audio comes from precomputed Mimi features instead:
+    samples carry `context_features`/`future_features`, one row per grid
+    step of the window, and audio is never decoded. Other modalities still
+    come from the media.
     """
 
     def __init__(
@@ -82,8 +88,41 @@ class TurnTakingDataset(Dataset):
         media_index: MediaIndex | None = None,
         media_reader: MediaReader | None = None,
         modalities: Iterable[MediaModality] = MEDIA_MODALITIES,
+        mimi_store: MimiFeatureStore | None = None,
     ) -> None:
         self.modalities = validate_modalities(modalities)
+
+        if mimi_store is not None and "audio" not in self.modalities:
+            raise ValueError("mimi_store provides audio; modalities must include audio")
+
+        self.canonical_anchor_count = len(anchors)
+        self.cache_filtered_anchor_count = 0
+
+        if mimi_store is not None:
+            available = mimi_store.recording_keys
+            anchors = anchors.filter(
+                lambda datasets, recording_ids: [
+                    (dataset, recording_id) in available
+                    for dataset, recording_id in zip(
+                        datasets,
+                        recording_ids,
+                        strict=True,
+                    )
+                ],
+                input_columns=["dataset", "recording_id"],
+                batched=True,
+                desc="Filtering anchors to recordings available in the Mimi cache",
+            )
+            self.cache_filtered_anchor_count = self.canonical_anchor_count - len(
+                anchors
+            )
+
+        # Modalities decoded from media; cached audio is not.
+        self.media_modalities: tuple[MediaModality, ...] = tuple(
+            modality
+            for modality in self.modalities
+            if not (modality == "audio" and mimi_store is not None)
+        )
 
         if trainable_only:
             anchors = anchors.filter(
@@ -114,13 +153,14 @@ class TurnTakingDataset(Dataset):
         self.window = window
         self.training = training
 
-        self.media_index = media_index
+        self.mimi_store = mimi_store
+        self.media_index = media_index if self.media_modalities else None
 
         self.media_reader = (
             media_reader
             if media_reader is not None
             else MediaReader()
-            if media_index is not None
+            if self.media_index is not None
             else None
         )
 
@@ -207,6 +247,16 @@ class TurnTakingDataset(Dataset):
             "sample_class": anchor["sample_class"],
         }
 
+        if self.mimi_store is not None:
+            self._attach_features(
+                sample=sample,
+                rows=rows,
+                context_steps=context_steps,
+                anchor_idx=anchor_idx,
+                dataset=anchor["dataset"],
+                recording_id=anchor["recording_id"],
+            )
+
         if self.media_index is not None:
             self._attach_media(
                 sample=sample,
@@ -221,6 +271,39 @@ class TurnTakingDataset(Dataset):
     def sample_classes(self) -> list[str]:
         """Return the sampling class associated with each exposed anchor."""
         return list(self.anchors["sample_class"])
+
+    def _attach_features(
+        self,
+        *,
+        sample: dict[str, Any],
+        rows: dict[str, list[Any]],
+        context_steps: int,
+        anchor_idx: int,
+        dataset: str,
+        recording_id: str,
+    ) -> None:
+        """Cached Mimi rows for exactly the grid rows of the window."""
+
+        assert self.mimi_store is not None
+
+        indices = [int(value) for value in rows["decision_index"]]
+        first, last = indices[0], indices[-1]
+
+        if last - first + 1 != len(indices) or indices[context_steps - 1] != anchor_idx:
+            raise ValueError(
+                f"Grid rows of {recording_id!r} are not the contiguous window "
+                f"around decision_index {anchor_idx}"
+            )
+
+        features = self.mimi_store.get_by_index(
+            dataset=dataset,
+            recording_id=recording_id,
+            start_index=first,
+            end_index=last + 1,
+        )
+
+        sample["context_features"] = features[:context_steps]
+        sample["future_features"] = features[context_steps:]
 
     def _attach_media(
         self,
@@ -285,7 +368,7 @@ class TurnTakingDataset(Dataset):
             media,
             start_time_s=media.to_media_time(start_time_s),
             end_time_s=media.to_media_time(end_time_s),
-            modalities=self.modalities,
+            modalities=self.media_modalities,
         )
 
         return replace(
