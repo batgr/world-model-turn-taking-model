@@ -81,7 +81,9 @@ def make_corpus(
     )
 
 
-def make_manifest(*, dataset: str, media_offset_s: float = 0.0) -> Dataset:
+def make_manifest(
+    *, dataset: str, media_offset_s: float = 0.0, video_has_audio: bool = True
+) -> Dataset:
     return Dataset.from_list(
         [
             {
@@ -90,7 +92,7 @@ def make_manifest(*, dataset: str, media_offset_s: float = 0.0) -> Dataset:
                 "video_path": "videos/r1.mp4",
                 "audio_path": None,
                 "media_offset_s": media_offset_s,
-                "video_has_audio": True,
+                "video_has_audio": video_has_audio,
             }
         ]
     )
