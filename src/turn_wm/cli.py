@@ -4,7 +4,9 @@ Command-line entry point for the turn-taking modelling repository.
 `inspect-data` runs the same data path that training will use (source loading,
 TurnTakingDataset, DataLoader) and prints a structural summary of one batch.
 With `--media-root`, raw media is decoded from a local corpus copy; media is
-never downloaded. `--modalities` restricts what is decoded.
+never downloaded. `--modalities` restricts what is decoded. `train` composes
+the Hydra configuration from its overrides and runs
+`turn_wm.training.train.run`.
 """
 
 from __future__ import annotations
@@ -24,7 +26,9 @@ from huggingface_hub.errors import (
     HfHubHTTPError,
     RepositoryNotFoundError,
 )
+from hydra.errors import HydraException
 
+from turn_wm.config import load_config
 from turn_wm.data.build import build_dataset
 from turn_wm.data.dataset import (
     ACTION_TO_ID,
@@ -51,6 +55,7 @@ from turn_wm.data.source import (
     LoadedData,
     load_data,
 )
+from turn_wm.training.train import run as run_training
 
 SPLITS = ("train", "validation", "test")
 
@@ -154,7 +159,46 @@ def build_parser() -> argparse.ArgumentParser:
     )
     inspect.set_defaults(handler=_inspect_data)
 
+    train = commands.add_parser(
+        "train",
+        help="Train a turn-taking world model.",
+        description=(
+            "Train a world model from the configured dataset and local media. "
+            "Additional arguments are Hydra overrides."
+        ),
+    )
+
+    train.add_argument(
+        "overrides",
+        nargs="*",
+        metavar="OVERRIDE",
+        help=(
+            "Hydra configuration overrides, for example "
+            "'data.dataset=egocom' or 'trainer.max_epochs=10'."
+        ),
+    )
+
+    train.set_defaults(handler=_train)
+
     return parser
+
+
+def _train(
+    args: argparse.Namespace,
+    parser: argparse.ArgumentParser,
+) -> int:
+    try:
+        cfg = load_config(args.overrides)
+    except HydraException as error:
+        parser.error(f"invalid configuration override: {error}")
+
+    try:
+        run_training(cfg)
+    except ValueError as error:
+        # Rejected configuration, unknown dataset or missing media root.
+        raise SystemExit(f"turn-wm: error: {error}") from error
+
+    return 0
 
 
 def _inspect_data(

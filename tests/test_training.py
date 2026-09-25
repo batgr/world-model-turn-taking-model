@@ -360,22 +360,23 @@ def test_lightning_runs_a_training_and_validation_step(tmp_path):
     )
     trainer.fit(module, train_dataloaders=batches, val_dataloaders=batches)
 
-    assert torch.isfinite(trainer.callback_metrics["train/loss"])
+    # Training logs per step and per epoch (`_step`/`_epoch` suffixes);
+    # validation logs per epoch only, under the name ModelCheckpoint monitors.
+    assert torch.isfinite(trainer.callback_metrics["train/loss_epoch"])
     assert torch.isfinite(trainer.callback_metrics["val/loss"])
 
 
-def test_seed_makes_model_initialization_reproducible():
-    # LeWMModule seeds before building the model; Identity avoids loading Mimi.
+def test_module_leaves_seeding_to_the_caller():
+    # The runner seeds; the module must not reseed over it. Identity avoids
+    # loading Mimi.
     cfg = small_config(**{"model.encoder._target_": "torch.nn.Identity"})
 
+    torch.manual_seed(0)
     first = LeWMModule(cfg).model.predictor.pos_embedding
     torch.manual_seed(0)
     second = LeWMModule(cfg).model.predictor.pos_embedding
+    torch.manual_seed(1)
+    other = LeWMModule(cfg).model.predictor.pos_embedding
 
     assert torch.equal(first, second)
-    assert not torch.equal(
-        first,
-        LeWMModule(
-            small_config(seed=1, **{"model.encoder._target_": "torch.nn.Identity"})
-        ).model.predictor.pos_embedding,
-    )
+    assert not torch.equal(first, other)

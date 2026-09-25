@@ -293,9 +293,8 @@ class LeWMModule(L.LightningModule):
 
         validate_config(cfg)
 
-        # Before building the model, so its initialization is reproducible.
-        L.seed_everything(cfg.seed, workers=True)
-
+        # Seeding belongs to the experiment runner (training.train.run), which
+        # seeds before building this module.
         self.cfg = cfg
         self.model = model if model is not None else build_model(cfg)
         self.sigreg = SIGReg(**cfg.loss.sigreg.kwargs)
@@ -337,7 +336,7 @@ class LeWMModule(L.LightningModule):
 
         self.log_dict(
             {f"{stage}/{name}": value.detach() for name, value in output.items()},
-            on_step=True,
+            on_step=stage == "train",
             on_epoch=True,
             sync_dist=True,
             batch_size=len(batch["sample_id"]),

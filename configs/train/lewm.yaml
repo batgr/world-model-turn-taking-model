@@ -2,10 +2,13 @@
 # Training recipe; its keys sit at the root of the composed config, next to
 # `model` and `embed_dim` (see config.yaml). Read by turn_wm.training.lewm.
 
-# Seeds Python, NumPy and PyTorch (LeWMModule) and the data loader order.
+# Seeds Python, NumPy, PyTorch and data loader workers (training.train.run,
+# before the model is built) and the data loader order.
 seed: 3072
 
 data:
+  # A name in turn_wm.data.source.DATASETS: egocom (public), ego4d, full.
+  dataset: full
   # Ground-truth context: the teacher forcing predicts z1..zC from z0..z(C-1).
   # Training uses this fixed context (training_window(cfg)).
   context_steps: 15
@@ -59,3 +62,13 @@ trainer:
   # Mixed precision: parameters and SIGReg stay float32 under autocast.
   precision: bf16-mixed
   gradient_clip_val: 1.0
+
+checkpoint:
+  enabled: true
+  monitor: val/loss
+  mode: min
+  save_top_k: 3
+  save_last: true
+  every_n_epochs: 1
+
+  resume_from: null

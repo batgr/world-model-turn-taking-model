@@ -6,6 +6,7 @@ from turn_wm import cli
 from turn_wm.data import dataset as dataset_module
 from turn_wm.data.reader import DecodedAudio, DecodedVideo, MediaWindow
 from turn_wm.data.source import LoadedCorpus, LoadedData
+from turn_wm.training import train as train_module
 
 
 def make_grid(length: int = 40) -> Dataset:
@@ -471,4 +472,102 @@ def test_multi_corpus_media_needs_named_roots(fake_load, media_root):
             ]
         )
         == 0
+    )
+
+
+def test_train_loads_config_and_runs(monkeypatch):
+    cfg = object()
+    received = {}
+
+    def fake_load_config(overrides):
+        received["overrides"] = list(overrides)
+        return cfg
+
+    def fake_run(received_cfg):
+        received["cfg"] = received_cfg
+
+    monkeypatch.setattr(cli, "load_config", fake_load_config)
+    monkeypatch.setattr(cli, "run_training", fake_run)
+
+    assert (
+        cli.main(
+            [
+                "train",
+                "data.dataset=egocom",
+                "trainer.max_epochs=3",
+            ]
+        )
+        == 0
+    )
+
+    assert received["overrides"] == [
+        "data.dataset=egocom",
+        "trainer.max_epochs=3",
+    ]
+    assert received["cfg"] is cfg
+
+
+def test_train_accepts_no_overrides(monkeypatch):
+    cfg = object()
+    received = {}
+
+    def fake_load_config(overrides):
+        received["overrides"] = list(overrides)
+        return cfg
+
+    monkeypatch.setattr(cli, "load_config", fake_load_config)
+    monkeypatch.setattr(cli, "run_training", lambda _: None)
+
+    assert cli.main(["train"]) == 0
+    assert received["overrides"] == []
+
+
+def test_train_composes_the_real_config(monkeypatch):
+    received = {}
+    monkeypatch.setattr(
+        cli, "run_training", lambda cfg: received.setdefault("cfg", cfg)
+    )
+
+    assert cli.main(["train", "data.dataset=egocom", "loader.batch_size=16"]) == 0
+
+    assert received["cfg"].data.dataset == "egocom"
+    assert received["cfg"].loader.batch_size == 16
+
+
+@pytest.mark.parametrize("override", ["model.nope=1", "train=missing", "==="])
+def test_train_invalid_override_is_a_usage_error(monkeypatch, capsys, override):
+    monkeypatch.setattr(cli, "run_training", lambda _: pytest.fail("must not run"))
+
+    with pytest.raises(SystemExit) as error:
+        cli.main(["train", override])
+
+    assert error.value.code == 2
+    assert "invalid configuration override" in capsys.readouterr().err
+
+
+def test_train_rejected_config_is_a_clear_cli_error(monkeypatch):
+    def reject(cfg):
+        raise ValueError("prediction.rollout_context_size must lie in [1, 15]")
+
+    monkeypatch.setattr(cli, "run_training", reject)
+
+    with pytest.raises(SystemExit) as error:
+        cli.main(["train", "prediction.rollout_context_size=100"])
+
+    assert error.value.code == (
+        "turn-wm: error: prediction.rollout_context_size must lie in [1, 15]"
+    )
+
+
+def test_train_reports_a_real_validation_error(monkeypatch):
+    # No mock of run: validation fails before any data is loaded.
+    monkeypatch.setattr(
+        train_module, "load_data", lambda *_: pytest.fail("must not load")
+    )
+
+    with pytest.raises(SystemExit) as error:
+        cli.main(["train", "prediction.rollout_context_size=100"])
+
+    assert str(error.value.code).startswith(
+        "turn-wm: error: prediction.rollout_context_size must lie in"
     )
