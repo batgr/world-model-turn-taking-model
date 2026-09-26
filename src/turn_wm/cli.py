@@ -8,6 +8,8 @@ never downloaded. `--modalities` restricts what is decoded. `train` composes
 the Hydra configuration from its overrides and runs
 `turn_wm.training.train.run`. `precompute-mimi` writes the frozen Mimi
 features of every recording, aligned to the action grid, to a local cache.
+`extract-latents` writes a finished run's anchor representations for offline
+analysis (`turn_wm.evaluation.latent_analysis`).
 """
 
 from __future__ import annotations
@@ -57,6 +59,11 @@ from turn_wm.data.source import (
     LoadedCorpus,
     LoadedData,
     load_data,
+)
+from turn_wm.evaluation.latent_analysis.run import (
+    DEFAULT_CHECKPOINT,
+    DEFAULT_SPLIT,
+    extract_run,
 )
 from turn_wm.training.train import run as run_training
 
@@ -241,6 +248,72 @@ def build_parser() -> argparse.ArgumentParser:
     )
     precompute.set_defaults(handler=_precompute_mimi)
 
+    extract = commands.add_parser(
+        "extract-latents",
+        help="Extract a trained run's representations for analysis.",
+        description=(
+            "Rebuild a training run's data (config, dataset revision, "
+            "observation source, window) and write the encoder features and "
+            "projected latents at each anchor of a seeded sample of one split."
+        ),
+    )
+    extract.add_argument(
+        "run_dir",
+        type=Path,
+        help="Run directory holding config.yaml, metadata.json and checkpoints/.",
+    )
+    extract.add_argument(
+        "--checkpoint",
+        default=DEFAULT_CHECKPOINT,
+        help="File under checkpoints/, or a path (default: %(default)s).",
+    )
+    extract.add_argument(
+        "--split",
+        choices=SPLITS,
+        default=DEFAULT_SPLIT,
+        help="Split to extract (default: %(default)s).",
+    )
+    extract.add_argument(
+        "--max-samples",
+        type=_positive_int,
+        help="Samples to keep from the seeded order (default: all).",
+    )
+    extract.add_argument(
+        "--seed",
+        type=int,
+        help="Seed of the sample order (default: the run's seed).",
+    )
+    extract.add_argument(
+        "--batch-size",
+        type=_positive_int,
+        help="Batch size; does not change the samples (default: the run's).",
+    )
+    extract.add_argument(
+        "--num-workers",
+        type=int,
+        default=0,
+        help="Data loader workers (default: %(default)s).",
+    )
+    extract.add_argument(
+        "--device",
+        default="cpu",
+        help="Torch device, e.g. cpu, cuda, mps (default: %(default)s).",
+    )
+    extract.add_argument(
+        "--mimi-cache-root",
+        type=Path,
+        help="Where the run's Mimi cache now lives, if it moved.",
+    )
+    extract.add_argument(
+        "--output",
+        type=Path,
+        help=(
+            "Directory to create; must not exist or be empty (default: "
+            "RUN_DIR/latent_analysis/<checkpoint>-<split>)."
+        ),
+    )
+    extract.set_defaults(handler=_extract_latents)
+
     return parser
 
 
@@ -258,6 +331,39 @@ def _train(
     except ValueError as error:
         # Rejected configuration, unknown dataset or missing media root.
         raise SystemExit(f"turn-wm: error: {error}") from error
+
+    return 0
+
+
+def _extract_latents(
+    args: argparse.Namespace,
+    parser: argparse.ArgumentParser,
+) -> int:
+    try:
+        output = extract_run(
+            args.run_dir,
+            output_dir=args.output,
+            checkpoint=args.checkpoint,
+            split=args.split,
+            max_samples=args.max_samples,
+            seed=args.seed,
+            batch_size=args.batch_size,
+            num_workers=args.num_workers,
+            device=args.device,
+            mimi_cache_root=args.mimi_cache_root,
+        )
+    except (ValueError, FileNotFoundError) as error:
+        # Not a run directory, edited config, other data revision or cache,
+        # missing checkpoint or media, or a non-empty output directory.
+        raise SystemExit(f"turn-wm: error: {error}") from error
+
+    manifest = json.loads((output / "manifest.json").read_text(encoding="utf-8"))
+
+    print(f"Representations written to {output}")
+    print(f"samples: {manifest['samples']}")
+
+    for name, spec in manifest["representations"].items():
+        print(f"{name}: {spec['shape']}")
 
     return 0
 
