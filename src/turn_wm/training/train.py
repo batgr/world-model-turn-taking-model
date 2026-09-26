@@ -142,7 +142,9 @@ def run(
 
     val_loader_config = replace(
         train_loader_config,
-        shuffle=False,
+        # Corpora interleaved in one fixed order: every validation (and any
+        # limit_val_batches subset) covers the same mix of EgoCom and Ego4D.
+        shuffle=True,
         drop_last=False,
     )
 

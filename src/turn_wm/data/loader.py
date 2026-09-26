@@ -7,10 +7,11 @@ function. It contains no model or training-loop logic.
 
 from __future__ import annotations
 
+from collections.abc import Iterator
 from dataclasses import dataclass
 
 import torch
-from torch.utils.data import DataLoader
+from torch.utils.data import DataLoader, Sampler
 
 from turn_wm.data.collate import collate_turn_taking
 from turn_wm.data.dataset import TurnTakingDataset
@@ -47,6 +48,25 @@ class DataLoaderConfig:
 
         if self.num_workers == 0 and self.prefetch_factor is not None:
             raise ValueError("prefetch_factor requires num_workers > 0")
+
+
+class FixedPermutationSampler(Sampler[int]):
+    """One seeded permutation, replayed identically at every iteration.
+
+    For evaluation: samples of every corpus are interleaved, and every
+    validation sees them in the same order, so a limited number of
+    validation batches is the same mixed subset each time.
+    """
+
+    def __init__(self, size: int, *, seed: int) -> None:
+        generator = torch.Generator().manual_seed(seed)
+        self.order = torch.randperm(size, generator=generator).tolist()
+
+    def __iter__(self) -> Iterator[int]:
+        return iter(self.order)
+
+    def __len__(self) -> int:
+        return len(self.order)
 
 
 def build_dataloader(
@@ -86,6 +106,11 @@ def build_dataloader(
             raise ValueError("shuffle cannot be combined with a sampling strategy")
 
         shuffle = loader.shuffle and sampler is None
+
+    if shuffle and not dataset.training:
+        # Evaluation order is shuffled once, not anew at every pass.
+        sampler = FixedPermutationSampler(len(dataset), seed=loader.seed)
+        shuffle = False
 
     kwargs = {}
 

@@ -207,9 +207,10 @@ def test_run_propagates_loader_config(recorder, media_roots):
         assert loader.prefetch_factor == cfg.loader.prefetch_factor
         assert loader.seed == cfg.seed
 
-    # Training order comes from the dataset mode; validation stays in order.
+    # Training order comes from the dataset mode; validation is shuffled in
+    # one fixed order so every validation mixes the corpora the same way.
     assert train_loader.shuffle is None
-    assert val_loader.shuffle is False
+    assert val_loader.shuffle is True
     assert val_loader.drop_last is False
 
 

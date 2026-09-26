@@ -266,3 +266,46 @@ def test_single_process_loading_ignores_worker_options():
     assert loader.num_workers == 0
     assert loader.persistent_workers is False
     assert loader.prefetch_factor is None
+
+
+def orders(loader, passes=2):
+    return [
+        [int(i.split("-")[1]) for batch in loader for i in batch["sample_id"]]
+        for _ in range(passes)
+    ]
+
+
+def test_shuffled_evaluation_uses_one_fixed_order():
+    loader = build_dataloader(
+        FakeTurnTakingDataset(training=False, size=40),
+        loader=DataLoaderConfig(batch_size=8, shuffle=True, seed=3),
+    )
+
+    first, second = orders(loader)
+
+    assert first == second  # every validation sees the same order
+    assert first != list(range(40))  # but shuffled
+    assert sorted(first) == list(range(40))
+
+
+def test_fixed_evaluation_order_depends_on_the_seed():
+    def order(seed):
+        loader = build_dataloader(
+            FakeTurnTakingDataset(training=False, size=40),
+            loader=DataLoaderConfig(batch_size=8, shuffle=True, seed=seed),
+        )
+        return orders(loader, passes=1)[0]
+
+    assert order(3) == order(3)
+    assert order(3) != order(4)
+
+
+def test_training_order_changes_every_epoch():
+    loader = build_dataloader(
+        FakeTurnTakingDataset(training=True, size=40),
+        loader=DataLoaderConfig(batch_size=8, seed=3),
+    )
+
+    first, second = orders(loader)
+
+    assert first != second

@@ -224,3 +224,31 @@ def test_build_dataset_matches_manual_composition():
         "b",
         "b",
     ]
+
+
+def test_training_batches_interleave_the_corpora():
+    # Training draws from the combined dataset, not corpus after corpus.
+    corpus_a = child("a", state="SILENT", count=10, training=True)
+    corpus_b = child("b", state="SPEAKING", count=10, training=True)
+    loader = build_dataloader(
+        MultiCorpusDataset({"a": corpus_a, "b": corpus_b}),
+        loader=DataLoaderConfig(batch_size=10, seed=0),
+    )
+
+    first = next(iter(loader))
+
+    assert set(first["dataset"]) == {"a", "b"}
+
+
+def test_validation_batches_interleave_the_corpora_in_a_fixed_order():
+    corpus_a = child("a", state="SILENT", count=10)
+    corpus_b = child("b", state="SPEAKING", count=10)
+    loader = build_dataloader(
+        MultiCorpusDataset({"a": corpus_a, "b": corpus_b}),
+        loader=DataLoaderConfig(batch_size=10, shuffle=True, seed=0),
+    )
+
+    first, again = next(iter(loader)), next(iter(loader))
+
+    assert set(first["dataset"]) == {"a", "b"}
+    assert first["sample_id"] == again["sample_id"]
