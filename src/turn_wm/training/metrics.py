@@ -49,13 +49,25 @@ def effective_rank(latents: torch.Tensor) -> float:
         return float("nan")
 
     centred = latents.double() - latents.double().mean(dim=0)
-    singular = torch.linalg.svdvals(centred)
-    total = singular.sum()
+
+    return entropy_rank(torch.linalg.svdvals(centred))
+
+
+def entropy_rank(weights: torch.Tensor) -> float:
+    """exp(entropy) of non-negative `weights` normalized to sum to 1.
+
+    Scale-free: `weights` and `c * weights` give the same rank. On singular
+    values it is `effective_rank`; on covariance eigenvalues, a variance-based
+    rank. 0 when every weight is (numerically) zero.
+    """
+
+    weights = weights.double()
+    total = weights.sum()
 
     if total <= EPS:
         return 0.0
 
-    p = singular / total
+    p = weights / total
     p = p[p > 0]
 
     return float(torch.exp(-(p * p.log()).sum()))
