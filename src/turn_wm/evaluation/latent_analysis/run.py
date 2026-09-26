@@ -92,6 +92,118 @@ def extract_run(
     `<DATASET>_MEDIA_ROOT` environment variables, as in training.
     """
 
+    opened = open_run(
+        run_dir,
+        checkpoint=checkpoint,
+        split=split,
+        seed=seed,
+        batch_size=batch_size,
+        num_workers=num_workers,
+        mimi_cache_root=mimi_cache_root,
+        media_roots=media_roots,
+    )
+
+    # 3. Extraction.
+    snapshot = extract_snapshot(
+        opened.checkpoint.model,
+        opened.loader,
+        max_samples=max_samples,
+        device=device,
+    )
+
+    if output_dir is None:
+        output_dir = opened.default_output_dir()
+
+    return write_snapshot(
+        snapshot,
+        output_dir,
+        provenance=opened.provenance(
+            max_samples=max_samples, samples=snapshot.samples, device=device
+        ),
+    )
+
+
+@dataclass(frozen=True)
+class OpenedRun:
+    """A run's model and the data of one split, as the run built them."""
+
+    record: RunRecord
+    cfg: DictConfig  # the run's config, with any relocated cache
+    seed: int
+    split: str
+    checkpoint: LoadedCheckpoint
+    loaded: LoadedData
+    observations: RunObservations
+    dataset: Any
+    loader: Any
+
+    def default_output_dir(self, suffix: str = "") -> Path:
+        return (
+            self.record.run_dir
+            / "latent_analysis"
+            / f"{self.checkpoint.path.stem}-{self.split}{suffix}"
+        )
+
+    def provenance(
+        self, *, max_samples: int | None, samples: int, device: str
+    ) -> dict[str, Any]:
+        record, cfg = self.record, self.cfg
+
+        return {
+            "run": {
+                "run_id": record.metadata["run_id"],
+                "run_dir": str(record.run_dir),
+                "config_hash": record.metadata.get("config_hash"),
+                "git": record.metadata.get("git"),
+                "seed": int(cfg.seed),
+            },
+            "data": {
+                "dataset": record.metadata["dataset"],
+                "dataset_revision": self.loaded.revision,
+                "split": self.split,
+                "observation_source": observation_source(cfg),
+                "modalities": list(self.observations.modalities),
+                "feature_caches": _feature_caches(self.observations),
+                "context_steps": int(cfg.data.context_steps),
+                "future_steps": int(cfg.data.future_steps),
+                # Position of the anchor inside the context window.
+                "anchor_step": int(cfg.data.context_steps) - 1,
+                "split_samples": len(self.dataset),
+                "split_samples_by_corpus": self.dataset.corpus_sizes(),
+            },
+            "sampling": {
+                "order": "fixed_permutation",
+                "seed": self.seed,
+                "max_samples": max_samples,
+                "samples": samples,
+            },
+            "checkpoint": {
+                "filename": self.checkpoint.path.name,
+                "sha256": self.checkpoint.sha256,
+                "epoch": self.checkpoint.epoch,
+                "global_step": self.checkpoint.global_step,
+            },
+            "extraction": {
+                "git": _git_metadata(),
+                "device": device,
+                "precision": "float32",
+            },
+        }
+
+
+def open_run(
+    run_dir: Path,
+    *,
+    checkpoint: str | Path = DEFAULT_CHECKPOINT,
+    split: str = DEFAULT_SPLIT,
+    seed: int | None = None,
+    batch_size: int | None = None,
+    num_workers: int = 0,
+    mimi_cache_root: Path | None = None,
+    media_roots: dict[str, Path] | None = None,
+) -> OpenedRun:
+    """Rebuild a run's model and one split's data, in a seeded fixed order."""
+
     # 1. Provenance: the run as it was.
     record = load_run(run_dir)
     cfg = record.cfg
@@ -123,64 +235,16 @@ def extract_run(
         ),
     )
 
-    # 3. Extraction.
-    snapshot = extract_snapshot(
-        loaded_checkpoint.model,
-        loader,
-        max_samples=max_samples,
-        device=device,
-    )
-
-    if output_dir is None:
-        output_dir = (
-            record.run_dir
-            / "latent_analysis"
-            / f"{loaded_checkpoint.path.stem}-{split}"
-        )
-
-    return write_snapshot(
-        snapshot,
-        output_dir,
-        provenance={
-            "run": {
-                "run_id": record.metadata["run_id"],
-                "run_dir": str(record.run_dir),
-                "config_hash": record.metadata.get("config_hash"),
-                "git": record.metadata.get("git"),
-                "seed": int(cfg.seed),
-            },
-            "data": {
-                "dataset": record.metadata["dataset"],
-                "dataset_revision": loaded.revision,
-                "split": split,
-                "observation_source": observation_source(cfg),
-                "modalities": list(observations.modalities),
-                "feature_caches": _feature_caches(observations),
-                "context_steps": int(cfg.data.context_steps),
-                "future_steps": int(cfg.data.future_steps),
-                # Position of the anchor inside the context window.
-                "anchor_step": int(cfg.data.context_steps) - 1,
-                "split_samples": len(dataset),
-                "split_samples_by_corpus": dataset.corpus_sizes(),
-            },
-            "sampling": {
-                "order": "fixed_permutation",
-                "seed": seed,
-                "max_samples": max_samples,
-                "samples": snapshot.samples,
-            },
-            "checkpoint": {
-                "filename": loaded_checkpoint.path.name,
-                "sha256": loaded_checkpoint.sha256,
-                "epoch": loaded_checkpoint.epoch,
-                "global_step": loaded_checkpoint.global_step,
-            },
-            "extraction": {
-                "git": _git_metadata(),
-                "device": device,
-                "precision": "float32",
-            },
-        },
+    return OpenedRun(
+        record=record,
+        cfg=cfg,
+        seed=seed,
+        split=split,
+        checkpoint=loaded_checkpoint,
+        loaded=loaded,
+        observations=observations,
+        dataset=dataset,
+        loader=loader,
     )
 
 

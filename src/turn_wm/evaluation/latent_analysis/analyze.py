@@ -163,6 +163,13 @@ def analyze_snapshot(
         )
 
     snapshot = read_snapshot(path)
+
+    if "rollout" in (snapshot.manifest.get("provenance") or {}):
+        raise ValueError(
+            f"{snapshot.path} is a rollout snapshot; analyze it with "
+            "`turn-wm analyze-rollouts`"
+        )
+
     output_root = (
         snapshot.path / "analysis" if output_root is None else Path(output_root)
     )

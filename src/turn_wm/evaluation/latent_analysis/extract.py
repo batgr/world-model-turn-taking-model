@@ -21,7 +21,7 @@ streams) are added as new named tensors without changing the existing ones.
 from __future__ import annotations
 
 import json
-from collections.abc import Iterable, Mapping
+from collections.abc import Callable, Iterable, Mapping
 from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import Any
@@ -102,11 +102,16 @@ def extract_snapshot(
     *,
     max_samples: int | None = None,
     device: torch.device | str = "cpu",
+    representations: Callable[
+        [JEPA, Trajectories], dict[str, torch.Tensor]
+    ] = anchor_representations,
 ) -> RepresentationSnapshot:
-    """Anchor representations of the first `max_samples` samples of `batches`.
+    """Representations of the first `max_samples` samples of `batches`.
 
     `batches` are collated data batches, in the order to keep; `None` keeps
-    every sample. The model runs in eval mode and float32.
+    every sample. `representations` maps the model and one batch of
+    trajectories to named (B, ...) tensors (by default the anchor
+    representations). The model runs in eval mode and float32.
     """
 
     if max_samples is not None and max_samples <= 0:
@@ -132,8 +137,12 @@ def extract_snapshot(
             if max_samples is not None:
                 take = min(take, max_samples - collected)
 
-            for name, tensor in anchor_representations(model, trajectory).items():
-                chunks.setdefault(name, []).append(tensor[:take].float().cpu())
+            for name, tensor in representations(model, trajectory).items():
+                # Floating tensors in float32; integer ones (ids) as they are.
+                if tensor.is_floating_point():
+                    tensor = tensor.float()
+
+                chunks.setdefault(name, []).append(tensor[:take].cpu())
 
             for column in _BATCH_COLUMNS:
                 values = batch[column][:take]

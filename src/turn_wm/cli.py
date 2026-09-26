@@ -11,6 +11,9 @@ features of every recording, aligned to the action grid, to a local cache.
 `extract-latents` writes a finished run's anchor representations for offline
 analysis (`turn_wm.evaluation.latent_analysis`), and `analyze-latents`
 analyzes such a snapshot (spectral geometry, globally and per corpus).
+`extract-rollouts` writes the validation rollout of a run (anchor, true and
+predicted future latents), and `analyze-rollouts` measures its dynamics on
+stable and changing conversational states.
 """
 
 from __future__ import annotations
@@ -72,6 +75,15 @@ from turn_wm.evaluation.latent_analysis.label_structure import DEFAULT_BALANCED_
 from turn_wm.evaluation.latent_analysis.pca import (
     DEFAULT_MAX_PLOT_SAMPLES,
     DEFAULT_SILHOUETTE_SAMPLES,
+)
+from turn_wm.evaluation.latent_analysis.rollout import (
+    DEFAULT_ROLLOUT_SAMPLES,
+    extract_rollout_run,
+)
+from turn_wm.evaluation.latent_analysis.rollout_dynamics import (
+    DEFAULT_BOOTSTRAP,
+    DEFAULT_TRAJECTORIES,
+    write_rollout_dynamics,
 )
 from turn_wm.evaluation.latent_analysis.run import (
     DEFAULT_CHECKPOINT,
@@ -328,6 +340,108 @@ def build_parser() -> argparse.ArgumentParser:
     )
     extract.set_defaults(handler=_extract_latents)
 
+    rollouts = commands.add_parser(
+        "extract-rollouts",
+        help="Extract a trained run's validation rollout for analysis.",
+        description=(
+            "Run the validation rollout of a training run (the function "
+            "validation uses) on a seeded sample of the validation split and "
+            "write the anchor, true future and predicted future latents and "
+            "the actions the rollout read. The test split is never read."
+        ),
+    )
+    rollouts.add_argument(
+        "run_dir",
+        type=Path,
+        help="Run directory holding config.yaml, metadata.json and checkpoints/.",
+    )
+    rollouts.add_argument(
+        "--checkpoint",
+        default=DEFAULT_CHECKPOINT,
+        help="File under checkpoints/, or a path (default: %(default)s).",
+    )
+    rollouts.add_argument(
+        "--max-samples",
+        type=_positive_int,
+        default=DEFAULT_ROLLOUT_SAMPLES,
+        help="Anchors to keep from the seeded order (default: %(default)s).",
+    )
+    rollouts.add_argument(
+        "--seed",
+        type=int,
+        help="Seed of the sample order (default: the run's seed).",
+    )
+    rollouts.add_argument(
+        "--batch-size",
+        type=_positive_int,
+        help="Batch size; does not change the samples (default: the run's).",
+    )
+    rollouts.add_argument(
+        "--num-workers",
+        type=int,
+        default=0,
+        help="Data loader workers (default: %(default)s).",
+    )
+    rollouts.add_argument(
+        "--device",
+        default="cpu",
+        help="Torch device, e.g. cpu, cuda, mps (default: %(default)s).",
+    )
+    rollouts.add_argument(
+        "--mimi-cache-root",
+        type=Path,
+        help="Where the run's Mimi cache now lives, if it moved.",
+    )
+    rollouts.add_argument(
+        "--output",
+        type=Path,
+        help=(
+            "Directory to create; must not exist or be empty (default: "
+            "RUN_DIR/latent_analysis/<checkpoint>-validation-rollout)."
+        ),
+    )
+    rollouts.set_defaults(handler=_extract_rollouts)
+
+    dynamics = commands.add_parser(
+        "analyze-rollouts",
+        help="Analyze the dynamics of an extracted validation rollout.",
+        description=(
+            "Skill, displacement alignment and movement ratio per horizon, on "
+            "all anchors and on stable and changing joint-speech states (labels "
+            "read from the snapshot's dataset release)."
+        ),
+    )
+    dynamics.add_argument(
+        "snapshot",
+        type=Path,
+        help="Rollout snapshot directory written by extract-rollouts.",
+    )
+    dynamics.add_argument(
+        "--output",
+        type=Path,
+        help="Directory to create (default: SNAPSHOT/analysis/rollout_dynamics).",
+    )
+    dynamics.add_argument(
+        "--labels-revision",
+        help=(
+            "Read the label sidecars at this dataset revision instead of the "
+            "snapshot's; its action grid must be byte-identical."
+        ),
+    )
+    dynamics.add_argument(
+        "--bootstrap",
+        type=_positive_int,
+        default=DEFAULT_BOOTSTRAP,
+        help="Bootstrap resamples per interval (default: %(default)s).",
+    )
+    dynamics.add_argument(
+        "--trajectories",
+        type=int,
+        default=DEFAULT_TRAJECTORIES,
+        help="Transitions drawn as PCA trajectories; 0 skips (default: %(default)s).",
+    )
+    dynamics.set_defaults(handler=_analyze_rollouts)
+
     analyze = commands.add_parser(
         "analyze-latents",
         help="Analyze an extracted representation snapshot.",
@@ -474,6 +588,63 @@ def _analyze_latents(
 
     if args.show and LABELS in outputs:
         show_labels(outputs[LABELS])
+
+    return 0
+
+
+def _extract_rollouts(
+    args: argparse.Namespace,
+    parser: argparse.ArgumentParser,
+) -> int:
+    try:
+        output = extract_rollout_run(
+            args.run_dir,
+            output_dir=args.output,
+            checkpoint=args.checkpoint,
+            max_samples=args.max_samples,
+            seed=args.seed,
+            batch_size=args.batch_size,
+            num_workers=args.num_workers,
+            device=args.device,
+            mimi_cache_root=args.mimi_cache_root,
+        )
+    except (ValueError, FileNotFoundError) as error:
+        raise SystemExit(f"turn-wm: error: {error}") from error
+
+    manifest = json.loads((output / "manifest.json").read_text(encoding="utf-8"))
+
+    print(f"Rollout written to {output}")
+    print(f"samples: {manifest['samples']}")
+
+    for name, spec in manifest["representations"].items():
+        print(f"{name}: {spec['shape']}")
+
+    return 0
+
+
+def _analyze_rollouts(
+    args: argparse.Namespace,
+    parser: argparse.ArgumentParser,
+) -> int:
+    try:
+        output = write_rollout_dynamics(
+            args.snapshot,
+            output_dir=args.output,
+            labels_revision=args.labels_revision,
+            bootstrap=args.bootstrap,
+            trajectories=args.trajectories,
+        )
+    except (GatedRepoError, RepositoryNotFoundError) as error:
+        raise SystemExit(
+            "turn-wm: error: the dataset release is not accessible; private "
+            "datasets require a Hugging Face login (`hf auth login`, or "
+            f"HF_TOKEN): {error}"
+        ) from error
+    except (ValueError, FileNotFoundError, RuntimeError) as error:
+        raise SystemExit(f"turn-wm: error: {error}") from error
+
+    print(f"rollout_dynamics: {output}")
+    print(f"report: {output / 'report.md'}")
 
     return 0
 
