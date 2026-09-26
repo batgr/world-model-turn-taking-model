@@ -90,7 +90,11 @@ from turn_wm.evaluation.latent_analysis.run import (
     DEFAULT_SPLIT,
     extract_run,
 )
-from turn_wm.evaluation.latent_analysis.show import show_labels, show_pca
+from turn_wm.evaluation.latent_analysis.show import (
+    show_labels,
+    show_pca,
+    show_rollouts,
+)
 from turn_wm.training.train import run as run_training
 
 SPLITS = ("train", "validation", "test")
@@ -440,6 +444,14 @@ def build_parser() -> argparse.ArgumentParser:
         default=DEFAULT_TRAJECTORIES,
         help="Transitions drawn as PCA trajectories; 0 skips (default: %(default)s).",
     )
+    dynamics.add_argument(
+        "--show",
+        action="store_true",
+        help=(
+            "Then show the results: inline in a notebook kernel, else a text "
+            "table and the figure paths. Results are unchanged."
+        ),
+    )
     dynamics.set_defaults(handler=_analyze_rollouts)
 
     analyze = commands.add_parser(
@@ -645,6 +657,9 @@ def _analyze_rollouts(
 
     print(f"rollout_dynamics: {output}")
     print(f"report: {output / 'report.md'}")
+
+    if args.show:
+        show_rollouts(output)
 
     return 0
 

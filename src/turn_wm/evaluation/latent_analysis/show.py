@@ -1,5 +1,6 @@
 """
-Display written PCA and label results: tables, then the figures.
+Display written PCA, label and rollout-dynamics results: tables, then the
+figures.
 
 Only reads `summary.json` and the figures an analysis already wrote, so
 showing never changes a result. Standard library only, plus IPython when it
@@ -10,6 +11,7 @@ dependencies),
     from turn_wm.evaluation.latent_analysis.show import show_pca
     show_pca("<snapshot>/analysis/pca")
     show_labels("<snapshot>/analysis/labels")
+    show_rollouts("<rollout-snapshot>/analysis/rollout_dynamics")
 
 renders inline. Elsewhere, including `!turn-wm ... --show` (a subprocess,
 which cannot draw in the notebook), the table is printed as text with the
@@ -187,6 +189,82 @@ def show_labels(output_dir: Path | str, *, out: Callable[[str], None] = print) -
 
             for path in paths:
                 show(image(filename=str(path)))
+
+
+def rollout_diagnostics(summary: dict[str, Any]) -> list[dict[str, Any]]:
+    """One row per (horizon, condition): the three measures and their counts."""
+
+    rows = []
+
+    for h, seconds in zip(
+        summary["horizons_steps"], summary["horizons_s"], strict=True
+    ):
+        for condition, values in summary["metrics"][str(h)].items():
+            rows.append(
+                {
+                    "horizon": f"{seconds:g} s",
+                    "condition": condition,
+                    "n": values["n"],
+                    "recordings": values["n_recordings"],
+                    "skill": _with_interval(values, "skill"),
+                    "alignment": _with_interval(values, "displacement_alignment"),
+                    "alignment rows valid": values["direction_defined_fraction"],
+                    "movement ratio": _with_interval(values, "movement_ratio"),
+                    "ONSET/OFFSET in future tokens": values["future_event_fraction"],
+                }
+            )
+
+    return rows
+
+
+def show_rollouts(
+    output_dir: Path | str, *, out: Callable[[str], None] = print
+) -> None:
+    """Show a written rollout-dynamics analysis, inline in a notebook if possible."""
+
+    output_dir = Path(output_dir)
+    summary = json.loads((output_dir / "summary.json").read_text(encoding="utf-8"))
+    conditioned = any(
+        summary["rollout"]["conditioned_on_ground_truth_future_actions"].values()
+    )
+    note = (
+        "Rollout conditioned on ground-truth future action/event tokens: "
+        f"{'yes' if conditioned else 'no'}. Intervals: 95% cluster bootstrap "
+        "over recordings within each corpus."
+    )
+    rows = rollout_diagnostics(summary)
+    paths = [output_dir / path for path in summary["figures"]]
+    display = _notebook_display()
+
+    if display is None:
+        out(note)
+        out(_rows_text(rows))
+        out("\nFigures:")
+        out("\n".join(f"  {path}" for path in paths))
+        out(f"Report: {output_dir / 'report.md'}")
+        out(
+            "\nFigures are shown inline when show_rollouts() runs in the notebook "
+            "kernel itself (see turn_wm.evaluation.latent_analysis.show)."
+        )
+        return
+
+    show, html_block, image = display
+    show(html_block(f"<p>{html.escape(note)}</p>" + _rows_html(rows)))
+
+    for path in paths:
+        show(image(filename=str(path)))
+
+
+def _with_interval(values: dict[str, Any], name: str) -> str:
+    value, interval = values[name], values[f"{name}_ci"]
+
+    if value is None:
+        return "n/a"
+
+    if interval is None:
+        return f"{value:.3f}"
+
+    return f"{value:.3f} [{interval[0]:.3f}, {interval[1]:.3f}]"
 
 
 def _rows_text(rows: list[dict[str, Any]]) -> str:

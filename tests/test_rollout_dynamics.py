@@ -6,6 +6,8 @@ changing joint-speech states (synthetic run and label sidecars, no network).
 
 import hashlib
 import json
+import sys
+import types
 
 import pyarrow as pa
 import pyarrow.parquet as pq
@@ -52,6 +54,7 @@ from turn_wm.evaluation.latent_analysis.rollout_dynamics import (
     true_latent_projection,
     write_rollout_dynamics,
 )
+from turn_wm.evaluation.latent_analysis.show import show_rollouts
 from turn_wm.models.lewm.sigreg import SIGReg
 from turn_wm.training.lewm import LeWMModule, lejepa_forward, trajectories
 from turn_wm.training.train import build_run_dataset, prepare_observations
@@ -595,3 +598,58 @@ def test_trajectory_selection_is_deterministic_and_order_free(tmp_path):
     # Same samples whatever the row order; the written figure used them.
     assert [ids[i] for i in first] == [ids[order[i]] for i in again] == chosen
     assert trajectory_selection(ids, conditions, 10, count=6, seed=1) != first
+
+
+# ---------------------------------------------------------------------------
+# Showing the results
+# ---------------------------------------------------------------------------
+
+
+def test_cli_show_prints_the_table_and_changes_no_result(tmp_path, monkeypatch, capsys):
+    snapshot = _rollout_snapshot(tmp_path)
+    sources = _label_sources(tmp_path)
+    monkeypatch.setattr(
+        "turn_wm.evaluation.latent_analysis.rollout_dynamics.hub_label_sources",
+        lambda provenance, labels_revision=None: sources,
+    )
+    common = ["analyze-rollouts", str(snapshot), "--bootstrap", "20"]
+
+    main(common)
+    main([*common, "--show", "--output", str(tmp_path / "shown")])
+
+    assert _hashes(snapshot / "analysis" / "rollout_dynamics") == _hashes(
+        tmp_path / "shown"
+    )
+    printed = capsys.readouterr().out
+    assert "ground-truth future action/event tokens: yes" in printed
+    assert "ONSET/OFFSET in future tokens" in printed
+    assert str(tmp_path / "shown" / "figures" / "skill_vs_horizon.png") in printed
+
+
+def test_show_rollouts_in_a_notebook(tmp_path, monkeypatch):
+    output = write_rollout_dynamics(
+        _rollout_snapshot(tmp_path),
+        label_sources=_label_sources(tmp_path),
+        bootstrap=20,
+    )
+    before = _hashes(output)
+    shown = []
+    ipython = types.ModuleType("IPython")
+    ipython.get_ipython = lambda: object()
+    display = types.ModuleType("IPython.display")
+    display.display = shown.append
+    display.HTML = lambda text: ("html", text)
+    display.Image = lambda filename: ("image", filename.rsplit("/", 1)[-1])
+    monkeypatch.setitem(sys.modules, "IPython", ipython)
+    monkeypatch.setitem(sys.modules, "IPython.display", display)
+
+    show_rollouts(output)
+
+    assert shown[0][0] == "html" and "movement ratio" in shown[0][1]
+    assert shown[0][1].count("<tr>") == 1 + 3 * 3  # header, horizons x conditions
+    assert [item[1] for item in shown[1:]] == [
+        "skill_vs_horizon.png",
+        "displacement_vs_horizon.png",
+        "transition_trajectories.png",
+    ]
+    assert _hashes(output) == before
