@@ -46,3 +46,6 @@ markers = [
 wandb = [
     "wandb",
 ]
+analysis = [
+    "matplotlib>=3.11.2",
+]

@@ -9,7 +9,8 @@ the Hydra configuration from its overrides and runs
 `turn_wm.training.train.run`. `precompute-mimi` writes the frozen Mimi
 features of every recording, aligned to the action grid, to a local cache.
 `extract-latents` writes a finished run's anchor representations for offline
-analysis (`turn_wm.evaluation.latent_analysis`).
+analysis (`turn_wm.evaluation.latent_analysis`), and `analyze-latents`
+analyzes such a snapshot (spectral geometry, globally and per corpus).
 """
 
 from __future__ import annotations
@@ -60,6 +61,7 @@ from turn_wm.data.source import (
     LoadedData,
     load_data,
 )
+from turn_wm.evaluation.latent_analysis.analyze import ANALYSES, analyze_snapshot
 from turn_wm.evaluation.latent_analysis.run import (
     DEFAULT_CHECKPOINT,
     DEFAULT_SPLIT,
@@ -314,6 +316,36 @@ def build_parser() -> argparse.ArgumentParser:
     )
     extract.set_defaults(handler=_extract_latents)
 
+    analyze = commands.add_parser(
+        "analyze-latents",
+        help="Analyze an extracted representation snapshot.",
+        description=(
+            "Analyze every representation of a snapshot written by "
+            "extract-latents, globally and per corpus. Reads the snapshot "
+            "only: no checkpoint, dataset or cache."
+        ),
+    )
+    analyze.add_argument(
+        "snapshot",
+        type=Path,
+        help="Snapshot directory holding representations.safetensors.",
+    )
+    analyze.add_argument(
+        "--analysis",
+        action="append",
+        choices=ANALYSES,
+        help="Analysis to run, repeatable (default: all).",
+    )
+    analyze.add_argument(
+        "--output",
+        type=Path,
+        help=(
+            "Root of the results, one directory per analysis "
+            "(default: SNAPSHOT/analysis)."
+        ),
+    )
+    analyze.set_defaults(handler=_analyze_latents)
+
     return parser
 
 
@@ -364,6 +396,26 @@ def _extract_latents(
 
     for name, spec in manifest["representations"].items():
         print(f"{name}: {spec['shape']}")
+
+    return 0
+
+
+def _analyze_latents(
+    args: argparse.Namespace,
+    parser: argparse.ArgumentParser,
+) -> int:
+    try:
+        outputs = analyze_snapshot(
+            args.snapshot,
+            analyses=args.analysis or ANALYSES,
+            output_root=args.output,
+        )
+    except (ValueError, FileNotFoundError, RuntimeError) as error:
+        # Not a snapshot, a non-empty output directory or no matplotlib.
+        raise SystemExit(f"turn-wm: error: {error}") from error
+
+    for name, output in outputs.items():
+        print(f"{name}: {output}")
 
     return 0
 
