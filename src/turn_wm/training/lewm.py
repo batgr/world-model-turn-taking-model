@@ -319,6 +319,29 @@ def trajectories(batch: dict[str, Any]) -> Trajectories:
     )
 
 
+def encode_trajectories(
+    model: JEPA,
+    batch: Trajectories,
+) -> tuple[torch.Tensor, torch.Tensor]:
+    """Encoder features and projected latents of every step, each (B, T, ·).
+
+    The only place that knows where observations come from: cached encoder
+    features are used as they are, raw audio goes through the encoder first.
+    Everything downstream sees the same features and latents.
+    """
+
+    if batch.features is not None:
+        features = batch.features
+    else:
+        features = model.encode_features(
+            batch.waveforms,
+            sample_rate=batch.sample_rates,
+            target_length=batch.total_steps,
+        )
+
+    return features, model.project_features(features)
+
+
 @dataclass(frozen=True)
 class LeJEPAOutput:
     """Losses of one batch, with the tensors they were computed from.
@@ -391,17 +414,7 @@ def lejepa_forward(
     # Encode the complete ground-truth trajectory
     # ---------------------------------------------------------
 
-    # The only place that knows where observations come from: cached encoder
-    # features go straight to the projector, raw audio through the encoder
-    # first. Everything below sees the same (B, T, D) latents.
-    if batch.features is not None:
-        emb = model.project_features(batch.features)
-    else:
-        emb = model.encode(
-            batch.waveforms,
-            sample_rate=batch.sample_rates,
-            target_length=total_steps,
-        )
+    _, emb = encode_trajectories(model, batch)
     # (B, T, D)
 
     act_emb = model.encode_actions(batch.actions.to(emb.device))

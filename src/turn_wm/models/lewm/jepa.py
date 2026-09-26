@@ -38,6 +38,17 @@ class JEPA(nn.Module):
     ):
         """Encode raw observations, then project them to the latent space."""
 
+        return self.project_features(
+            self.encode_features(observation, **encoder_kwargs)
+        )
+
+    def encode_features(
+        self,
+        observation,
+        **encoder_kwargs,
+    ) -> torch.Tensor:
+        """Encoder features `(B, T, D)` of raw observations, before projection."""
+
         if self.encoder is None:
             raise ValueError(
                 "Raw observation encoding is unavailable: this model was built "
@@ -52,7 +63,7 @@ class JEPA(nn.Module):
         if features.ndim != 3:
             raise ValueError("encoder must return (B, T, D)")
 
-        return self.project_features(features)
+        return features
 
     def project_features(self, features: torch.Tensor) -> torch.Tensor:
         """Project encoder features `(B, T, D)` to latents `(B, T, embed_dim)`."""

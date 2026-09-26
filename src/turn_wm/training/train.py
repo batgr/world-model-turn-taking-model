@@ -16,7 +16,7 @@ import os
 import re
 import subprocess
 from collections.abc import Mapping
-from dataclasses import replace
+from dataclasses import dataclass, replace
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import cast
@@ -28,6 +28,7 @@ from omegaconf import DictConfig, OmegaConf
 
 from turn_wm.data.build import build_dataset
 from turn_wm.data.loader import DataLoaderConfig, build_dataloader
+from turn_wm.data.media import MediaModality
 from turn_wm.data.mimi_cache import (
     MimiFeatureCaches,
     MimiFeatureStore,
@@ -35,6 +36,7 @@ from turn_wm.data.mimi_cache import (
     store_datasets,
 )
 from turn_wm.data.mimi_precompute import GRID_RATE_HZ
+from turn_wm.data.multi import MultiCorpusDataset
 from turn_wm.data.source import DATASETS, LoadedCorpus, LoadedData, load_data
 from turn_wm.models.build import MIMI_CACHE, observation_source
 from turn_wm.training.lewm import (
@@ -60,38 +62,15 @@ def run(
             f"Unknown dataset {dataset_name!r}; expected one of {sorted(DATASETS)}"
         )
 
-    source = observation_source(cfg)
-    modalities = tuple(cfg.data.modalities)
-
-    if source == MIMI_CACHE and cfg.data.mimi_cache.root is None:
-        raise ValueError(
-            "data.mimi_cache.root is required with data.observation_source="
-            "mimi_cache (create the cache with `turn-wm precompute-mimi`)"
-        )
+    # Before any download: a cached run without a cache cannot start.
+    _require_mimi_cache_root(cfg)
 
     # One experiment seed governs data order, workers and model initialization.
     L.seed_everything(cfg.seed, workers=True)
 
     loaded = load_data(DATASETS[dataset_name])
 
-    mimi_store = None
-
-    if source == MIMI_CACHE:
-        # One corpus cache, or a release root holding one cache per corpus.
-        mimi_store = open_mimi_cache(Path(cfg.data.mimi_cache.root).expanduser())
-        validate_mimi_cache(mimi_store, loaded, cfg)
-
-    # Cached features replace audio only; other modalities still need media.
-    needs_media = mimi_store is None or any(m != "audio" for m in modalities)
-
-    roots = None
-
-    if needs_media:
-        roots = (
-            _resolve_media_roots(loaded)
-            if media_roots is None
-            else _validate_media_roots(loaded, media_roots)
-        )
+    observations = prepare_observations(cfg, loaded, media_roots=media_roots)
 
     # The run directory is created only once the experiment can start, so a
     # rejected configuration or missing media leaves nothing behind.
@@ -106,29 +85,23 @@ def run(
         cfg=cfg,
         git=_git_metadata(),
         dataset_revision=loaded.revision,
-        mimi_store=mimi_store,
+        mimi_store=observations.mimi_store,
     )
 
-    window = training_window(cfg)
-
-    train_dataset = build_dataset(
+    train_dataset = build_run_dataset(
+        cfg,
         loaded,
+        observations,
         split="train",
-        window=window,
         training=True,
-        media_roots=roots,
-        modalities=modalities,
-        mimi_store=mimi_store,
     )
 
-    val_dataset = build_dataset(
+    val_dataset = build_run_dataset(
+        cfg,
         loaded,
+        observations,
         split="validation",
-        window=window,
         training=False,
-        media_roots=roots,
-        modalities=modalities,
-        mimi_store=mimi_store,
     )
 
     train_loader_config = DataLoaderConfig(
@@ -202,6 +175,109 @@ def run(
         val_dataloaders=val_loader,
         ckpt_path=ckpt_path,
     )
+
+
+@dataclass(frozen=True)
+class RunObservations:
+    """Where the samples of a run get their observations from.
+
+    What `build_dataset` needs beyond a split and a window: the precomputed
+    features standing in for audio, and the local media of whatever is still
+    decoded. Training and post-hoc analysis both build their datasets from it
+    (`build_run_dataset`), so a new observation source is wired here once.
+    """
+
+    modalities: tuple[MediaModality, ...]
+    mimi_store: MimiFeatureCaches | None = None
+    media_roots: dict[str, Path] | None = None
+
+
+def prepare_observations(
+    cfg: DictConfig,
+    loaded: LoadedData,
+    *,
+    media_roots: Mapping[str, Path] | None = None,
+) -> RunObservations:
+    """Open and check what `cfg` observes `loaded` through.
+
+    With `observation_source: mimi_cache`, the cache under
+    `data.mimi_cache.root` is opened and checked against the loaded data.
+    Media roots, when anything is still decoded from media, are
+    `media_roots` or else the `<DATASET>_MEDIA_ROOT` environment variables.
+    """
+
+    modalities = cast(tuple[MediaModality, ...], tuple(cfg.data.modalities))
+    mimi_store = None
+
+    if observation_source(cfg) == MIMI_CACHE:
+        _require_mimi_cache_root(cfg)
+        # One corpus cache, or a release root holding one cache per corpus.
+        mimi_store = open_mimi_cache(Path(cfg.data.mimi_cache.root).expanduser())
+        validate_mimi_cache(mimi_store, loaded, cfg)
+
+    # Cached features replace audio only; other modalities still need media.
+    needs_media = mimi_store is None or any(m != "audio" for m in modalities)
+
+    roots = None
+
+    if needs_media:
+        roots = (
+            _resolve_media_roots(loaded)
+            if media_roots is None
+            else _validate_media_roots(loaded, media_roots)
+        )
+
+    return RunObservations(
+        modalities=modalities,
+        mimi_store=mimi_store,
+        media_roots=roots,
+    )
+
+
+def build_run_dataset(
+    cfg: DictConfig,
+    loaded: LoadedData,
+    observations: RunObservations,
+    *,
+    split: str,
+    training: bool,
+) -> MultiCorpusDataset:
+    """The dataset of `split` exactly as the run `cfg` sees it."""
+
+    return build_dataset(
+        loaded,
+        split=split,
+        window=training_window(cfg),
+        training=training,
+        media_roots=observations.media_roots,
+        modalities=observations.modalities,
+        mimi_store=observations.mimi_store,
+    )
+
+
+def mimi_cache_identity(caches: MimiFeatureCaches) -> dict[str, object]:
+    """What identifies a Mimi cache, per corpus set, not its whole manifest."""
+
+    return {
+        ",".join(sorted(store_datasets(store))): {
+            "schema_version": store.schema_version,
+            "model_name": store.model_name,
+            "model_revision": store.model_revision,
+            "model_resolved_revision": store.model_resolved_revision,
+            "source_dataset_revision": store.source_dataset_revision,
+            "feature_rate_hz": store.feature_rate_hz,
+            "feature_dim": store.feature_dim,
+        }
+        for store in caches.stores
+    }
+
+
+def _require_mimi_cache_root(cfg: DictConfig) -> None:
+    if observation_source(cfg) == MIMI_CACHE and cfg.data.mimi_cache.root is None:
+        raise ValueError(
+            "data.mimi_cache.root is required with data.observation_source="
+            "mimi_cache (create the cache with `turn-wm precompute-mimi`)"
+        )
 
 
 def validate_mimi_cache(
@@ -507,18 +583,7 @@ def _write_metadata(
         # What identifies the cache, not its whole manifest.
         metadata["mimi_cache"] = {
             "root": str(mimi_store.root),
-            "caches": {
-                ",".join(sorted(store_datasets(store))): {
-                    "schema_version": store.schema_version,
-                    "model_name": store.model_name,
-                    "model_revision": store.model_revision,
-                    "model_resolved_revision": store.model_resolved_revision,
-                    "source_dataset_revision": store.source_dataset_revision,
-                    "feature_rate_hz": store.feature_rate_hz,
-                    "feature_dim": store.feature_dim,
-                }
-                for store in mimi_store.stores
-            },
+            "caches": mimi_cache_identity(mimi_store),
         }
 
     path = run_dir / "metadata.json"
