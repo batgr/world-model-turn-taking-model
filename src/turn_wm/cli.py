@@ -76,6 +76,7 @@ from turn_wm.evaluation.latent_analysis.pca import (
     DEFAULT_MAX_PLOT_SAMPLES,
     DEFAULT_SILHOUETTE_SAMPLES,
 )
+from turn_wm.evaluation.latent_analysis.probes import write_probes
 from turn_wm.evaluation.latent_analysis.rollout import (
     DEFAULT_ROLLOUT_SAMPLES,
     extract_rollout_run,
@@ -93,6 +94,7 @@ from turn_wm.evaluation.latent_analysis.run import (
 from turn_wm.evaluation.latent_analysis.show import (
     show_labels,
     show_pca,
+    show_probes,
     show_rollouts,
 )
 from turn_wm.training.train import run as run_training
@@ -454,6 +456,55 @@ def build_parser() -> argparse.ArgumentParser:
     )
     dynamics.set_defaults(handler=_analyze_rollouts)
 
+    probes = commands.add_parser(
+        "probe-latents",
+        help="Linear probes of a run's features and latent.",
+        description=(
+            "Fit linear probes (logistic for categorical labels, ridge for "
+            "continuous ones) on a train-split snapshot and evaluate them on a "
+            "validation-split snapshot of the same checkpoint, for the Mimi "
+            "features and the WM latent: pooled, within and across corpora. "
+            "Refuses shared recordings and the test split."
+        ),
+    )
+    probes.add_argument(
+        "train_snapshot",
+        type=Path,
+        help="Train-split snapshot (extract-latents --split train).",
+    )
+    probes.add_argument(
+        "validation_snapshot",
+        type=Path,
+        help="Validation-split snapshot of the same checkpoint.",
+    )
+    probes.add_argument(
+        "--output",
+        type=Path,
+        help="Directory to create (default: VALIDATION_SNAPSHOT/analysis/probes).",
+    )
+    probes.add_argument(
+        "--labels-revision",
+        help=(
+            "Read the label sidecars at this dataset revision instead of the "
+            "snapshots'; its action grid must be byte-identical."
+        ),
+    )
+    probes.add_argument(
+        "--bootstrap",
+        type=_positive_int,
+        default=DEFAULT_BOOTSTRAP,
+        help="Bootstrap resamples per interval (default: %(default)s).",
+    )
+    probes.add_argument(
+        "--show",
+        action="store_true",
+        help=(
+            "Then show the results: inline in a notebook kernel, else a text "
+            "table and the figure paths. Results are unchanged."
+        ),
+    )
+    probes.set_defaults(handler=_probe_latents)
+
     analyze = commands.add_parser(
         "analyze-latents",
         help="Analyze an extracted representation snapshot.",
@@ -660,6 +711,36 @@ def _analyze_rollouts(
 
     if args.show:
         show_rollouts(output)
+
+    return 0
+
+
+def _probe_latents(
+    args: argparse.Namespace,
+    parser: argparse.ArgumentParser,
+) -> int:
+    try:
+        output = write_probes(
+            args.train_snapshot,
+            args.validation_snapshot,
+            output_dir=args.output,
+            labels_revision=args.labels_revision,
+            bootstrap=args.bootstrap,
+        )
+    except (GatedRepoError, RepositoryNotFoundError) as error:
+        raise SystemExit(
+            "turn-wm: error: the dataset release is not accessible; private "
+            "datasets require a Hugging Face login (`hf auth login`, or "
+            f"HF_TOKEN): {error}"
+        ) from error
+    except (ValueError, FileNotFoundError, RuntimeError) as error:
+        raise SystemExit(f"turn-wm: error: {error}") from error
+
+    print(f"probes: {output}")
+    print(f"report: {output / 'report.md'}")
+
+    if args.show:
+        show_probes(output)
 
     return 0
 

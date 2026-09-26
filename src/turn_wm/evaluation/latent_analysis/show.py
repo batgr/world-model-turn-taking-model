@@ -1,6 +1,6 @@
 """
-Display written PCA, label and rollout-dynamics results: tables, then the
-figures.
+Display written PCA, label, rollout-dynamics and probe results: tables,
+then the figures.
 
 Only reads `summary.json` and the figures an analysis already wrote, so
 showing never changes a result. Standard library only, plus IPython when it
@@ -12,6 +12,7 @@ dependencies),
     show_pca("<snapshot>/analysis/pca")
     show_labels("<snapshot>/analysis/labels")
     show_rollouts("<rollout-snapshot>/analysis/rollout_dynamics")
+    show_probes("<snapshot>/analysis/probes")
 
 renders inline. Elsewhere, including `!turn-wm ... --show` (a subprocess,
 which cannot draw in the notebook), the table is printed as text with the
@@ -255,8 +256,91 @@ def show_rollouts(
         show(image(filename=str(path)))
 
 
-def _with_interval(values: dict[str, Any], name: str) -> str:
-    value, interval = values[name], values[f"{name}_ci"]
+def probe_scores(summary: dict[str, Any]) -> list[dict[str, Any]]:
+    """One row per (task, setting): reference, both scores and their delta."""
+
+    return [
+        {
+            "task": score["task"],
+            "setting": score["setting"],
+            "reference": score["reference"],
+            "N eval": score["n_eval"],
+            "Mimi features": _with_interval(score, "features", suffix="_score"),
+            "WM latent": _with_interval(score, "latent", suffix="_score"),
+            "delta": _with_interval(score, "delta", suffix="_score"),
+            "skipped": score["skipped"],
+        }
+        for score in summary["scores"]
+    ]
+
+
+def probe_deltas(summary: dict[str, Any]) -> list[str]:
+    """Pooled feature-vs-latent deltas, as their interval places them."""
+
+    lines = []
+
+    for score in summary["scores"]:
+        interval = score["delta_ci"]
+
+        if score["setting"] != "pooled" or score["delta_score"] is None:
+            continue
+
+        effect = (
+            "undetermined"
+            if interval is None
+            else "improves"
+            if interval[0] > 0
+            else "degrades"
+            if interval[1] < 0
+            else "preserves"
+        )
+        lines.append(
+            f"{score['task']}: delta {score['delta_score']:+.3f} — the projector "
+            f"{effect} linear accessibility"
+        )
+
+    return lines
+
+
+def show_probes(output_dir: Path | str, *, out: Callable[[str], None] = print) -> None:
+    """Show a written probe analysis, inline in a notebook when possible."""
+
+    output_dir = Path(output_dir)
+    summary = json.loads((output_dir / "summary.json").read_text(encoding="utf-8"))
+    rows = probe_scores(summary)
+    deltas = probe_deltas(summary)
+    paths = [output_dir / path for path in summary["figures"]]
+    display = _notebook_display()
+
+    if display is None:
+        out(_rows_text(rows))
+        out("\nKey deltas (pooled, latent − features):")
+        out("\n".join(f"  {line}" for line in deltas) or "  (none)")
+        out("\nFigures:")
+        out("\n".join(f"  {path}" for path in paths))
+        out(f"Report: {output_dir / 'report.md'}")
+        out(
+            "\nFigures are shown inline when show_probes() runs in the notebook "
+            "kernel itself (see turn_wm.evaluation.latent_analysis.show)."
+        )
+        return
+
+    show, html_block, image = display
+    show(html_block("<h4>Probe scores</h4>" + _rows_html(rows)))
+    show(
+        html_block(
+            "<h4>Key deltas (pooled, latent − features)</h4><ul>"
+            + "".join(f"<li>{html.escape(line)}</li>" for line in deltas)
+            + "</ul>"
+        )
+    )
+
+    for path in paths:
+        show(image(filename=str(path)))
+
+
+def _with_interval(values: dict[str, Any], name: str, *, suffix: str = "") -> str:
+    value, interval = values[f"{name}{suffix}"], values[f"{name}_ci"]
 
     if value is None:
         return "n/a"
