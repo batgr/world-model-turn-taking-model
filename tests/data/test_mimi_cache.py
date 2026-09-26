@@ -364,3 +364,47 @@ def test_store_keeps_read_compatibility_with_schema_v1(make_mimi_cache):
     assert store.recording_keys == frozenset({("egocom", "r1")})
     assert store.record(dataset="egocom", recording_id="r1").audio_gaps == ()
     assert store.exclusions == ()
+
+
+def test_open_mimi_cache_reads_one_cache_or_a_release(make_mimi_cache, tmp_path):
+    from turn_wm.data.mimi_cache import open_mimi_cache
+
+    single = open_mimi_cache(make_mimi_cache({("egocom", "r1"): (0, 5)}))
+    assert single.recording_keys == {("egocom", "r1")}
+
+    release = tmp_path / "release"
+    make_mimi_cache({("egocom", "r1"): (0, 5)}, root=release / "egocom")
+    make_mimi_cache({("ego4d", "r1"): (100, 5)}, root=release / "ego4d")
+    (release / "release_manifest.json").write_text(
+        json.dumps({"corpora": {"egocom": {}, "ego4d": {}}})
+    )
+
+    caches = open_mimi_cache(release)
+
+    assert caches.recording_keys == {("egocom", "r1"), ("ego4d", "r1")}
+    rows = caches.get_by_index(
+        dataset="ego4d", recording_id="r1", start_index=101, end_index=103
+    )
+    assert rows[:, 0].tolist() == [101.0, 102.0]
+    assert caches.record(dataset="egocom", recording_id="r1").steps == 5
+
+
+def test_open_mimi_cache_refuses_a_directory_without_manifest(tmp_path):
+    from turn_wm.data.mimi_cache import open_mimi_cache
+
+    with pytest.raises(FileNotFoundError, match="release_manifest.json"):
+        open_mimi_cache(tmp_path)
+
+
+def test_a_recording_in_two_caches_is_refused(make_mimi_cache, tmp_path):
+    from turn_wm.data.mimi_cache import MimiFeatureCaches
+
+    first = MimiFeatureStore(
+        make_mimi_cache({("egocom", "r1"): (0, 5)}, root=tmp_path / "a")
+    )
+    second = MimiFeatureStore(
+        make_mimi_cache({("egocom", "r1"): (0, 5)}, root=tmp_path / "b")
+    )
+
+    with pytest.raises(ValueError, match="in several Mimi caches"):
+        MimiFeatureCaches(tmp_path, [first, second])

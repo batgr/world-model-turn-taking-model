@@ -74,11 +74,19 @@ uv run turn-wm train data.mimi_cache.root=/path/to/cache                 # cache
 uv run turn-wm train data.observation_source=raw_audio                   # raw audio
 ```
 
+`data.mimi_cache.root` is either one corpus cache (its `manifest.json`) or a
+release root (`release_manifest.json` and one cache per corpus, as on the
+Hub), which serves every corpus of `data.dataset=full`.
+
 Before training, the runner refuses a cache whose feature rate is not 10 Hz,
-whose dimension differs from `model.projector.input_dim`, or whose source
-dataset revision differs from the loaded dataset's (when both are known). The
-run's `metadata.json` records the observation source and the cache identity
-(root, schema, Mimi model and revisions, source dataset revision, rate, dim).
+whose dimension differs from `model.projector.input_dim`, or that does not
+cover a loaded corpus. A cache computed from the loaded dataset revision is
+accepted as is; otherwise (the release's EgoCom cache comes from the public
+EgoCom repository, while `full` loads EgoCom from the private one) each cached
+recording must have exactly the loaded grid's `start_index`, steps and
+`start_time_s`, and every loaded recording must be cached or excluded. The
+run's `metadata.json` records the observation source and each cache's identity
+(schema, Mimi model and revisions, source dataset revision, rate, dim).
 
 ### Optimization
 

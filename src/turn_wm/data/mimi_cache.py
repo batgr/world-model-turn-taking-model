@@ -3,6 +3,7 @@ from __future__ import annotations
 import hashlib
 import json
 import math
+from collections.abc import Sequence
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
@@ -387,3 +388,100 @@ def write_manifest(
     )
 
     return path
+
+
+class MimiFeatureCaches:
+    """Several Mimi caches read as one, e.g. the per-corpus caches of a release.
+
+    Offers the reading interface of `MimiFeatureStore`; each recording is
+    served by the cache that holds it.
+    """
+
+    def __init__(self, root: Path, stores: Sequence[MimiFeatureStore]) -> None:
+        if not stores:
+            raise ValueError(f"No Mimi cache under {root}")
+
+        self.root = Path(root)
+        self.stores = tuple(stores)
+        self._by_key: dict[tuple[str, str], MimiFeatureStore] = {}
+
+        for store in self.stores:
+            for key in store.recording_keys:
+                if key in self._by_key:
+                    raise ValueError(f"Recording {key!r} is in several Mimi caches")
+
+                self._by_key[key] = store
+
+    @property
+    def recording_keys(self) -> frozenset[tuple[str, str]]:
+        return frozenset(self._by_key)
+
+    @property
+    def exclusions(self) -> tuple[MimiCacheExclusion, ...]:
+        return tuple(e for store in self.stores for e in store.exclusions)
+
+    def record(self, *, dataset: str, recording_id: str) -> MimiFeatureRecord:
+        return self._store(dataset, recording_id).record(
+            dataset=dataset, recording_id=recording_id
+        )
+
+    def get_by_index(
+        self,
+        *,
+        dataset: str,
+        recording_id: str,
+        start_index: int,
+        end_index: int,
+    ) -> torch.Tensor:
+        return self._store(dataset, recording_id).get_by_index(
+            dataset=dataset,
+            recording_id=recording_id,
+            start_index=start_index,
+            end_index=end_index,
+        )
+
+    def _store(self, dataset: str, recording_id: str) -> MimiFeatureStore:
+        try:
+            return self._by_key[(dataset, recording_id)]
+        except KeyError as error:
+            raise KeyError(
+                f"No Mimi features for {(dataset, recording_id)!r}"
+            ) from error
+
+
+def store_datasets(store: MimiFeatureStore) -> frozenset[str]:
+    """Corpora a cache covers: those of its recordings and exclusions."""
+
+    return frozenset(
+        {dataset for dataset, _ in store.recording_keys}
+        | {exclusion.dataset for exclusion in store.exclusions}
+    )
+
+
+def open_mimi_cache(root: Path) -> MimiFeatureCaches:
+    """Open one cache (`manifest.json`) or a release (`release_manifest.json`).
+
+    A release root holds one cache per corpus, listed in its release manifest.
+    """
+
+    root = Path(root)
+
+    if (root / "manifest.json").is_file():
+        return MimiFeatureCaches(root, [MimiFeatureStore(root)])
+
+    release = root / "release_manifest.json"
+
+    if release.is_file():
+        corpora = sorted(json.loads(release.read_text(encoding="utf-8"))["corpora"])
+
+        return MimiFeatureCaches(
+            root, [MimiFeatureStore(root / name) for name in corpora]
+        )
+
+    raise FileNotFoundError(
+        f"No Mimi cache at {root}: expected manifest.json (one cache) or "
+        "release_manifest.json (a release of per-corpus caches)"
+    )
+
+
+type MimiFeatures = MimiFeatureStore | MimiFeatureCaches

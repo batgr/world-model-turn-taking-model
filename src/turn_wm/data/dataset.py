@@ -23,7 +23,7 @@ from turn_wm.data.media import (
     MediaPaths,
     validate_modalities,
 )
-from turn_wm.data.mimi_cache import MimiFeatureStore
+from turn_wm.data.mimi_cache import MimiFeatures
 from turn_wm.data.reader import MediaReader, MediaWindow
 from turn_wm.data.window import build_window, validate_against_anchor
 
@@ -88,7 +88,7 @@ class TurnTakingDataset(Dataset):
         media_index: MediaIndex | None = None,
         media_reader: MediaReader | None = None,
         modalities: Iterable[MediaModality] = MEDIA_MODALITIES,
-        mimi_store: MimiFeatureStore | None = None,
+        mimi_store: MimiFeatures | None = None,
     ) -> None:
         self.modalities = validate_modalities(modalities)
 

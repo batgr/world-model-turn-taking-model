@@ -19,7 +19,7 @@ from turn_wm.data.media import (
     MediaModality,
     validate_modalities,
 )
-from turn_wm.data.mimi_cache import MimiFeatureStore
+from turn_wm.data.mimi_cache import MimiFeatures
 from turn_wm.data.multi import MultiCorpusDataset
 from turn_wm.data.source import LoadedCorpus, LoadedData
 
@@ -35,7 +35,7 @@ def build_dataset(
     media_roots: Mapping[str, Path] | None = None,
     trainable_only: bool = True,
     modalities: Iterable[MediaModality] = MEDIA_MODALITIES,
-    mimi_store: MimiFeatureStore | None = None,
+    mimi_store: MimiFeatures | None = None,
 ) -> MultiCorpusDataset:
     """Build one dataset over every loaded corpus that publishes `split`.
 

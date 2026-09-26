@@ -11,6 +11,7 @@ from __future__ import annotations
 import hashlib
 import importlib.util
 import json
+import math
 import os
 import re
 import subprocess
@@ -18,16 +19,23 @@ from collections.abc import Mapping
 from dataclasses import replace
 from datetime import UTC, datetime
 from pathlib import Path
+from typing import cast
 
 import lightning as L
+import pyarrow as pa
 from lightning.pytorch.callbacks import Callback, LearningRateMonitor, ModelCheckpoint
 from omegaconf import DictConfig, OmegaConf
 
 from turn_wm.data.build import build_dataset
 from turn_wm.data.loader import DataLoaderConfig, build_dataloader
-from turn_wm.data.mimi_cache import MimiFeatureStore
+from turn_wm.data.mimi_cache import (
+    MimiFeatureCaches,
+    MimiFeatureStore,
+    open_mimi_cache,
+    store_datasets,
+)
 from turn_wm.data.mimi_precompute import GRID_RATE_HZ
-from turn_wm.data.source import DATASETS, LoadedData, load_data
+from turn_wm.data.source import DATASETS, LoadedCorpus, LoadedData, load_data
 from turn_wm.models.build import MIMI_CACHE, observation_source
 from turn_wm.training.lewm import (
     LeWMModule,
@@ -69,7 +77,8 @@ def run(
     mimi_store = None
 
     if source == MIMI_CACHE:
-        mimi_store = MimiFeatureStore(Path(cfg.data.mimi_cache.root).expanduser())
+        # One corpus cache, or a release root holding one cache per corpus.
+        mimi_store = open_mimi_cache(Path(cfg.data.mimi_cache.root).expanduser())
         validate_mimi_cache(mimi_store, loaded, cfg)
 
     # Cached features replace audio only; other modalities still need media.
@@ -194,37 +203,111 @@ def run(
 
 
 def validate_mimi_cache(
-    store: MimiFeatureStore,
+    caches: MimiFeatureCaches,
     loaded: LoadedData,
     cfg: DictConfig,
 ) -> None:
-    """Refuse a cache that does not match the grid, model or dataset revision."""
+    """Refuse caches that do not match the grid, the model or the loaded data.
 
-    if store.feature_rate_hz != GRID_RATE_HZ:
-        raise ValueError(
-            f"Mimi cache {store.root} has {store.feature_rate_hz:g} Hz features; the "
-            f"action grid is {GRID_RATE_HZ:g} Hz"
-        )
+    Every loaded corpus must be covered by a cache. A cache computed from the
+    loaded dataset revision is accepted as is; otherwise (e.g. the EgoCom
+    cache built from the public repository, used by the private `full`
+    release) each of its recordings must have exactly the loaded grid's span
+    (start_index, steps, start_time_s), and every loaded recording must be
+    cached or explicitly excluded: the features are then those of the grid.
+    """
 
     input_dim = int(cfg.model.projector.input_dim)
 
-    if store.feature_dim != input_dim:
-        raise ValueError(
-            f"Mimi cache {store.root} has {store.feature_dim}-d features; "
-            f"model.projector.input_dim is {input_dim}"
+    for store in caches.stores:
+        if store.feature_rate_hz != GRID_RATE_HZ:
+            raise ValueError(
+                f"Mimi cache {store.root} has {store.feature_rate_hz:g} Hz features; "
+                f"the action grid is {GRID_RATE_HZ:g} Hz"
+            )
+
+        if store.feature_dim != input_dim:
+            raise ValueError(
+                f"Mimi cache {store.root} has {store.feature_dim}-d features; "
+                f"model.projector.input_dim is {input_dim}"
+            )
+
+    for corpus in loaded.corpora:
+        stores = [
+            store for store in caches.stores if corpus.name in store_datasets(store)
+        ]
+
+        if not stores:
+            raise ValueError(
+                f"Mimi cache {caches.root} has no features for corpus {corpus.name!r}"
+            )
+
+        for store in stores:
+            if (
+                store.source_dataset_revision is not None
+                and store.source_dataset_revision == loaded.revision
+            ):
+                continue
+
+            _require_grid_spans(store, corpus, loaded_revision=loaded.revision)
+
+
+def _require_grid_spans(
+    store: MimiFeatureStore,
+    corpus: LoadedCorpus,
+    *,
+    loaded_revision: str | None,
+) -> None:
+    """The cache's recordings of `corpus` must be exactly the loaded grid's."""
+
+    table = cast(
+        pa.Table,
+        corpus.action_grid.select_columns(
+            ["dataset", "recording_id", "decision_index", "decision_time_s"]
+        ).with_format("arrow")[:],
+    )
+    spans = {
+        (row["dataset"], row["recording_id"]): (
+            int(row["decision_index_min"]),
+            int(row["decision_index_count"]),
+            float(row["decision_time_s_min"]),
         )
+        for row in table.group_by(["dataset", "recording_id"])
+        .aggregate(
+            [
+                ("decision_index", "min"),
+                ("decision_index", "count"),
+                ("decision_time_s", "min"),
+            ]
+        )
+        .to_pylist()
+    }
+    cached = {
+        key: store.record(dataset=key[0], recording_id=key[1])
+        for key in store.recording_keys
+        if key[0] == corpus.name
+    }
+    excluded = {
+        (e.dataset, e.recording_id)
+        for e in store.exclusions
+        if e.dataset == corpus.name
+    }
+    mismatched = sorted(
+        key
+        for key, record in cached.items()
+        if key not in spans
+        or spans[key][:2] != (record.start_index, record.steps)
+        or not math.isclose(spans[key][2], record.start_time_s, abs_tol=1e-6)
+    )
+    uncovered = sorted(set(spans) - set(cached) - excluded)
 
-    cache_revision = store.source_dataset_revision
-
-    if (
-        cache_revision is not None
-        and loaded.revision is not None
-        and cache_revision != loaded.revision
-    ):
+    if mismatched or uncovered:
         raise ValueError(
-            f"Mimi cache {store.root} was computed from dataset revision "
-            f"{cache_revision}, but training loaded {loaded.revision}; recompute "
-            "the cache or pin the dataset revision"
+            f"Mimi cache {store.root} (dataset revision "
+            f"{store.source_dataset_revision}) does not match corpus {corpus.name!r} "
+            f"as loaded (revision {loaded_revision}): {len(mismatched)} recordings "
+            f"differ from the grid (e.g. {mismatched[:3]}), {len(uncovered)} are "
+            f"missing (e.g. {uncovered[:3]}); recompute the cache"
         )
 
 
@@ -406,7 +489,7 @@ def _write_metadata(
     cfg: DictConfig,
     git: dict[str, object],
     dataset_revision: str | None,
-    mimi_store: MimiFeatureStore | None = None,
+    mimi_store: MimiFeatureCaches | None = None,
 ) -> None:
     metadata: dict[str, object] = {
         "run_id": run_id,
@@ -422,13 +505,18 @@ def _write_metadata(
         # What identifies the cache, not its whole manifest.
         metadata["mimi_cache"] = {
             "root": str(mimi_store.root),
-            "schema_version": mimi_store.schema_version,
-            "model_name": mimi_store.model_name,
-            "model_revision": mimi_store.model_revision,
-            "model_resolved_revision": mimi_store.model_resolved_revision,
-            "source_dataset_revision": mimi_store.source_dataset_revision,
-            "feature_rate_hz": mimi_store.feature_rate_hz,
-            "feature_dim": mimi_store.feature_dim,
+            "caches": {
+                ",".join(sorted(store_datasets(store))): {
+                    "schema_version": store.schema_version,
+                    "model_name": store.model_name,
+                    "model_revision": store.model_revision,
+                    "model_resolved_revision": store.model_resolved_revision,
+                    "source_dataset_revision": store.source_dataset_revision,
+                    "feature_rate_hz": store.feature_rate_hz,
+                    "feature_dim": store.feature_dim,
+                }
+                for store in mimi_store.stores
+            },
         }
 
     path = run_dir / "metadata.json"

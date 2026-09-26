@@ -143,10 +143,13 @@ raw media is needed then, only the cache:
 
 ```bash
 uv run turn-wm train \
-    data.dataset=egocom \
+    data.dataset=full \
     data.observation_source=mimi_cache \
-    data.mimi_cache.root=/path/to/cache
+    data.mimi_cache.root=/path/to/mimi-features
 ```
+
+`data.mimi_cache.root` is the downloaded release root (one cache per corpus)
+or a single corpus cache.
 
 `data.observation_source=raw_audio` decodes the raw audio and encodes it with
 frozen Mimi at every step instead (debugging); it needs the media roots:
