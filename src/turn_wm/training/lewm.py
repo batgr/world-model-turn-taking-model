@@ -278,10 +278,12 @@ def trajectories(batch: dict[str, Any]) -> Trajectories:
             actions=actions,
             context_steps=context_steps,
             future_steps=future_steps,
+            # Cached features are float16; float32 before any op, as CPU
+            # autocast (bf16-mixed) rejects float16 inputs.
             features=torch.cat(
                 [
-                    batch["context_features"][:, :context_steps],
-                    batch["future_features"],
+                    batch["context_features"][:, :context_steps].float(),
+                    batch["future_features"].float(),
                 ],
                 dim=1,
             ),

@@ -328,3 +328,17 @@ def test_lightning_trains_on_cached_features_without_mimi(
     assert torch.isfinite(trainer.callback_metrics["val/loss"])
     # The projector trained on the cached features.
     assert any(not torch.equal(b, a) for b, a in zip(before, after, strict=True))
+
+
+def test_cached_losses_run_under_cpu_bf16_autocast(no_mimi, cache_root):
+    # bf16-mixed on CPU rejected the float16 cached features in torch.cat.
+    cfg = cached_config(cache_root)
+    module = LeWMModule(cfg)
+    batch = next(iter(cached_loader(cfg, cache_root)))
+
+    assert batch["context_features"].dtype == torch.float16
+
+    with torch.autocast("cpu", dtype=torch.bfloat16):
+        output = lejepa_losses(module.model, module.sigreg, trajectories(batch), cfg)
+
+    assert torch.isfinite(output["loss"].float())
