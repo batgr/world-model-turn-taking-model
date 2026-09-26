@@ -5,8 +5,10 @@ written results, on synthetic snapshots and label sidecars (no network).
 
 import hashlib
 import json
+import math
 import sys
 import types
+from typing import Any
 
 import pyarrow as pa
 import pyarrow.parquet as pq
@@ -28,16 +30,22 @@ from turn_wm.evaluation.latent_analysis.label_source import (
     CorpusLabelSource,
 )
 from turn_wm.evaluation.latent_analysis.probes import (
+    LOGISTIC_C_GRID,
+    RIDGE_ALPHA_GRID,
     ProbeData,
     Setting,
     Standardizer,
     analyze_probes,
     balanced_accuracy,
     check_no_recording_leakage,
+    choose_regularization,
+    fit_probe,
     probe_predictions,
     probe_settings,
     r2,
+    recording_folds,
     run_probe,
+    select_regularization,
     write_probes,
 )
 from turn_wm.evaluation.latent_analysis.show import show_probes
@@ -174,7 +182,7 @@ def _snapshot_parts(split, recordings, *, seed):
     provenance = {
         "run": {"run_id": "run-1", "config_hash": "cfg"},
         "data": {"dataset": "full", "dataset_revision": "rev", "split": split},
-        "sampling": {"seed": 3072},
+        "sampling": {"order": "fixed_permutation", "seed": 3072},
         "checkpoint": {
             "filename": "step-9000.ckpt",
             "global_step": 9000,
@@ -273,7 +281,9 @@ def test_trivial_references():
     assert balanced_accuracy(y, torch.zeros_like(y), 3) == pytest.approx(1 / 3)
 
     target = torch.tensor([1.0, 2.0, 4.0, 7.0])
-    assert r2(target, torch.full_like(target, target.mean())) == pytest.approx(0.0)
+    assert r2(target, torch.full_like(target, float(target.mean()))) == pytest.approx(
+        0.0
+    )
     assert r2(target, target) == pytest.approx(1.0)
 
 
@@ -286,20 +296,31 @@ def test_preprocessing_is_fitted_on_train_only():
     standardizer = Standardizer.fit(train_x)
     assert torch.allclose(standardizer.mean, train_x.double().mean(0))
 
-    alone = probe_predictions(CATEGORICAL, train_x, train_y, eval_x, classes=2)
-    # Far-off extra evaluation rows would move eval-fitted statistics.
+    recordings = [f"x/r{i // 20}" for i in range(200)]
+    alone = probe_predictions(
+        CATEGORICAL, train_x, train_y, eval_x, recordings=recordings, classes=2
+    )
+    # Far-off extra evaluation rows would move eval-fitted statistics or an
+    # eval-tuned penalty.
     more = probe_predictions(
         CATEGORICAL,
         train_x,
         train_y,
         torch.cat([eval_x, eval_x + 1_000]),
+        recordings=recordings,
         classes=2,
     )
     assert torch.equal(alone, more[:50])
 
-    ridge_alone = probe_predictions(CONTINUOUS, train_x, train_x[:, 1], eval_x)
+    ridge_alone = probe_predictions(
+        CONTINUOUS, train_x, train_x[:, 1], eval_x, recordings=recordings
+    )
     ridge_more = probe_predictions(
-        CONTINUOUS, train_x, train_x[:, 1], torch.cat([eval_x, eval_x * 100])
+        CONTINUOUS,
+        train_x,
+        train_x[:, 1],
+        torch.cat([eval_x, eval_x * 100]),
+        recordings=recordings,
     )
     assert torch.allclose(ridge_alone, ridge_more[:50])
 
@@ -331,10 +352,11 @@ def _data(values, corpora, recordings, x):
         values=values,
         corpora=corpora,
         recordings=recordings,
+        sample_ids=[f"s{i:05d}" for i in range(len(values))],
     )
 
 
-def test_a_class_missing_in_one_domain_is_excluded_explicitly():
+def test_a_class_missing_in_one_domain_makes_the_setting_unsupported():
     generator = torch.Generator().manual_seed(0)
     # "both" never occurs in ego4d.
     values = [STATES[i % 4] for i in range(400)]
@@ -356,9 +378,12 @@ def test_a_class_missing_in_one_domain_is_excluded_explicitly():
         bootstrap=20,
         seed=0,
     )
-    assert within["classes"] == ["silence", "ego_only", "others_only"]
-    assert within["excluded_classes"] == {"both": {"train": 0, "eval": 0}}
-    assert within["reference"] == pytest.approx(1 / 3)
+    # Never silently reduced to a 3-class task with a 1/3 reference.
+    assert within["classes"] == list(STATES)
+    assert within["reference"] == pytest.approx(0.25)
+    assert within["unsupported_classes"] == {"both": {"train": 0, "eval": 0}}
+    assert within["skipped"].startswith("unsupported: both (train 0, eval 0)")
+    assert within["features_score"] is None and within["features_ci"] is None
 
     pooled = run_probe(
         CATEGORICAL,
@@ -380,11 +405,13 @@ def test_intervals_resample_recordings():
     values = ["true" if v else "false" for v in values]
     setting = Setting("pooled", "pooled", ("egocom",), ("egocom",))
 
+    # Training rows from ten recordings, so the grouped CV can choose C.
+    train_recordings = [f"egocom/t{i // 30}" for i in range(300)]
     one = run_probe(
         CATEGORICAL,
         ("false", "true"),
         setting,
-        _data(values, ["egocom"] * 300, ["egocom/r1"] * 300, x),
+        _data(values, ["egocom"] * 300, train_recordings, x),
         _data(values, ["egocom"] * 300, ["egocom/r1"] * 300, x),
         bootstrap=50,
         seed=0,
@@ -396,7 +423,7 @@ def test_intervals_resample_recordings():
         CATEGORICAL,
         ("false", "true"),
         setting,
-        _data(values, ["egocom"] * 300, ["egocom/r1"] * 300, x),
+        _data(values, ["egocom"] * 300, train_recordings, x),
         _data(values, ["egocom"] * 300, [f"egocom/r{i // 30}" for i in range(300)], x),
         bootstrap=50,
         seed=0,
@@ -564,9 +591,9 @@ def test_show_changes_no_artifact(tmp_path, snapshots, monkeypatch, capsys):
     # In a notebook: the table, the deltas, then the four figures.
     before = _hashes(plain)
     shown = []
-    ipython = types.ModuleType("IPython")
+    ipython: Any = types.ModuleType("IPython")
     ipython.get_ipython = lambda: object()
-    display = types.ModuleType("IPython.display")
+    display: Any = types.ModuleType("IPython.display")
     display.display = shown.append
     display.HTML = lambda text: ("html", text)
     display.Image = lambda filename: ("image", filename.rsplit("/", 1)[-1])
@@ -583,3 +610,204 @@ def test_show_changes_no_artifact(tmp_path, snapshots, monkeypatch, capsys):
         "cross_domain.png",
     ]
     assert _hashes(plain) == before
+
+
+# ---------------------------------------------------------------------------
+# Regularization: predeclared grid, recording-grouped CV inside probe-train
+# ---------------------------------------------------------------------------
+
+
+def test_cv_folds_hold_whole_recordings_in_a_seeded_order():
+    recordings = [f"x/r{i % 7}" for i in range(70)]
+
+    fold, count = recording_folds(recordings, folds=5, seed=1)
+
+    assert count == 5
+    for r in set(recordings):
+        assert len({int(fold[i]) for i in range(70) if recordings[i] == r}) == 1
+    # Each fold's recordings do not depend on the row order.
+    reordered, _ = recording_folds(list(reversed(recordings)), folds=5, seed=1)
+    assert torch.equal(reordered, fold.flip(0))
+    assert recording_folds(recordings, folds=5, seed=2)[0].tolist() != fold.tolist()
+    # Fewer recordings than folds: one fold per recording.
+    assert recording_folds(["a", "b", "a"], folds=5, seed=0)[1] == 2
+
+
+def test_ties_go_to_the_stronger_regularization():
+    equal = dict.fromkeys(LOGISTIC_C_GRID, 0.7)
+    # Logistic C: smaller C is stronger L2.
+    assert choose_regularization(equal, kind=CATEGORICAL) == min(LOGISTIC_C_GRID)
+
+    equal = dict.fromkeys(RIDGE_ALPHA_GRID, 0.3)
+    # Ridge alpha: larger alpha is stronger.
+    assert choose_regularization(equal, kind=CONTINUOUS) == max(RIDGE_ALPHA_GRID)
+
+    # Within numerical tolerance is a tie; beyond it, the better score wins.
+    near = {1e-4: 0.5, 1e-2: 0.5 + 1e-12, 1.0: 0.4}
+    assert choose_regularization(near, kind=CATEGORICAL) == 1e-4
+    better = {1e-4: 0.5, 1e-2: 0.6, 1.0: 0.4}
+    assert choose_regularization(better, kind=CATEGORICAL) == 1e-2
+
+
+def test_ridge_grid_spans_several_orders_of_magnitude():
+    assert max(RIDGE_ALPHA_GRID) / min(RIDGE_ALPHA_GRID) >= 1e8
+    assert list(LOGISTIC_C_GRID) == [1e-4, 1e-3, 1e-2, 1e-1, 1.0]
+
+
+def test_ridge_cv_picks_strong_regularization_on_noise_and_weak_on_signal():
+    generator = torch.Generator().manual_seed(0)
+    recordings = [f"x/r{i // 20}" for i in range(400)]
+    signal = torch.randn(400, 1, generator=generator)
+    y = signal[:, 0] * 3
+
+    noise = select_regularization(
+        CONTINUOUS,
+        torch.randn(400, 30, generator=generator),
+        y,
+        recordings,
+        classes=None,
+        seed=0,
+    )
+    assert noise.selected == max(RIDGE_ALPHA_GRID)
+    assert noise.valid_folds == [0, 1, 2, 3, 4]
+
+    clean = fit_probe(
+        CONTINUOUS,
+        torch.cat([signal, 0.01 * torch.randn(400, 3, generator=generator)], 1),
+        y,
+        recordings,
+    )
+    assert clean.cv.selected is not None
+    assert clean.cv.selected < max(RIDGE_ALPHA_GRID)
+    assert max(clean.cv.mean_scores.values()) > 0.99
+
+
+def _cv_labels(recordings, present_in_folds, seed=0):
+    """Class 2 only in recordings of `present_in_folds`; classes 0, 1 everywhere."""
+
+    fold, _ = recording_folds(recordings, folds=5, seed=seed)
+
+    return torch.tensor(
+        [
+            2 if int(fold[i]) in present_in_folds and i % 3 == 0 else i % 2
+            for i in range(len(recordings))
+        ]
+    )
+
+
+def test_a_fold_missing_a_canonical_class_is_invalid_not_k_minus_1():
+    generator = torch.Generator().manual_seed(0)
+    recordings = [f"x/r{i // 30}" for i in range(600)]
+    y = _cv_labels(recordings, {0, 1, 2, 3})
+    x = torch.randn(600, 4, generator=generator)
+
+    cv = select_regularization(CATEGORICAL, x, y, recordings, classes=3, seed=0)
+
+    # Fold 4's held-out part has no class 2: invalid, never scored on 2 classes.
+    assert cv.invalid_folds == {
+        4: "a canonical class is absent from the fold's train or held-out part"
+    }
+    assert cv.fold_class_counts is not None
+    assert cv.fold_class_counts[4]["held_out"][2] == 0
+    assert cv.valid_folds == [0, 1, 2, 3]
+    # Every candidate C is scored on exactly the same valid folds.
+    assert {tuple(sorted(f)) for f in cv.fold_scores.values()} == {(0, 1, 2, 3)}
+    assert cv.selected in LOGISTIC_C_GRID
+    provenance = cv.provenance()
+    assert provenance["requested_cv_folds"] == 5
+    assert provenance["valid_cv_folds"] == [0, 1, 2, 3]
+    assert provenance["regularization_parameter"] == "C"
+    assert set(provenance["fold_scores_by_c"]) == {f"{v:g}" for v in LOGISTIC_C_GRID}
+
+    # A K-class balanced accuracy never falls back to K - 1.
+    assert math.isnan(balanced_accuracy(torch.tensor([0, 1]), torch.tensor([0, 1]), 3))
+
+
+def test_too_few_valid_folds_make_the_setting_unsupported():
+    generator = torch.Generator().manual_seed(0)
+    recordings = [f"egocom/r{i // 30}" for i in range(600)]
+    # Class "c" in two recordings only (20 rows): whatever the fold
+    # assignment, at most two grouped folds see it on both sides.
+    values = ["c" if i < 60 and i % 3 == 0 else ("a", "b")[i % 2] for i in range(600)]
+    x = torch.randn(600, 4, generator=generator)
+    data = _data(values, ["egocom"] * 600, recordings, x)
+    evaluation = _data(
+        values, ["egocom"] * 600, [f"egocom/v{i // 30}" for i in range(600)], x
+    )
+
+    result = run_probe(
+        CATEGORICAL,
+        ("a", "b", "c"),
+        Setting("pooled", "pooled", ("egocom",), ("egocom",)),
+        data,
+        evaluation,
+        bootstrap=20,
+        seed=0,
+    )
+
+    # Globally supported (>= 20 rows of every class on both sides) ...
+    assert not result["unsupported_classes"]
+    # ... but not selectable by grouped CV: no validation performance at all.
+    assert result["skipped"].startswith("insufficient_grouped_cv_class_support")
+    for name in ("features", "latent", "delta"):
+        assert result[f"{name}_score"] is None and result[f"{name}_ci"] is None
+    assert result["features_selected_regularization"] is None
+
+
+def test_selected_regularization_is_recorded_and_shared_by_settings(
+    tmp_path, snapshots
+):
+    output = write_probes(*snapshots, label_sources=_sources(tmp_path), bootstrap=20)
+    summary = json.loads((output / "summary.json").read_text())
+    within = _score(summary, "instantaneous.ego_speaking", "within:egocom")
+    cross = _score(summary, "instantaneous.ego_speaking", "egocom->ego4d")
+
+    # within:egocom and egocom->ego4d share the probe trained on egocom.
+    assert within["regularization_parameter"] == "C"
+    for name in ("features", "latent"):
+        assert within[f"{name}_selected_regularization"] in LOGISTIC_C_GRID
+        assert (
+            within[f"{name}_selected_regularization"]
+            == cross[f"{name}_selected_regularization"]
+        )
+
+    # One fitted probe per (task, representation, training domain).
+    probes = [
+        p
+        for p in summary["fitted_probes"]
+        if p["task"] == "instantaneous.ego_speaking"
+        and p["training_domain"] == ["egocom"]
+    ]
+    assert sorted(p["representation"] for p in probes) == ["features", "latent"]
+    cv = probes[0]["cv"]
+    assert cv["grouping"] == "(dataset, recording_id)"
+    assert cv["candidate_c"] == list(LOGISTIC_C_GRID)
+    assert cv["valid_cv_folds"] == [0, 1, 2, 3]  # four training recordings
+    assert cv["invalid_cv_folds"] == {
+        "4": "no recording: fewer training recordings than folds"
+    }
+
+    ridge = next(
+        p for p in summary["fitted_probes"] if p["task"] == "timing.silence_duration"
+    )["cv"]
+    assert ridge["candidate_alphas"] == list(RIDGE_ALPHA_GRID)
+    assert ridge["selected_alpha"] in RIDGE_ALPHA_GRID
+    assert set(ridge["fold_scores_by_alpha"]) == {f"{v:g}" for v in RIDGE_ALPHA_GRID}
+
+    report = (output / "report.md").read_text()
+    assert "smaller values mean stronger L2 regularization" in report
+    assert "| ego speaking | egocom | WM latent | logistic | C=" in report
+    assert (
+        "| silence duration | ego4d + egocom | Mimi features | ridge | alpha=" in report
+    )
+    assert "4/5 |" in report
+
+
+def test_balanced_or_unordered_snapshots_are_refused(tmp_path):
+    train = _write(
+        tmp_path, "train", "train", TRAIN, seed=1, sampling__order="balanced"
+    )
+    validation = _write(tmp_path, "validation", "validation", VALIDATION, seed=2)
+
+    with pytest.raises(ValueError, match="not a seeded fixed permutation"):
+        write_probes(train, validation, label_sources={})

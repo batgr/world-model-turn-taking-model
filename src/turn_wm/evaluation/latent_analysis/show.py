@@ -259,19 +259,32 @@ def show_rollouts(
 def probe_scores(summary: dict[str, Any]) -> list[dict[str, Any]]:
     """One row per (task, setting): reference, both scores and their delta."""
 
-    return [
-        {
+    rows = []
+
+    for score in summary["scores"]:
+        row: dict[str, Any] = {
             "task": score["task"],
             "setting": score["setting"],
             "reference": score["reference"],
             "N eval": score["n_eval"],
-            "Mimi features": _with_interval(score, "features", suffix="_score"),
-            "WM latent": _with_interval(score, "latent", suffix="_score"),
-            "delta": _with_interval(score, "delta", suffix="_score"),
-            "skipped": score["skipped"],
         }
-        for score in summary["scores"]
-    ]
+
+        for column, name in (
+            ("Mimi features", "features"),
+            ("WM latent", "latent"),
+            ("delta", "delta"),
+        ):
+            # Unsupported settings have no performance value at all.
+            row[column] = (
+                "not evaluable"
+                if score["skipped"]
+                else _with_interval(score, name, suffix="_score")
+            )
+
+        row["reason"] = score["skipped"]
+        rows.append(row)
+
+    return rows
 
 
 def probe_deltas(summary: dict[str, Any]) -> list[str]:

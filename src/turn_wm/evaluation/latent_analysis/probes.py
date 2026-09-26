@@ -15,13 +15,23 @@ Protocol:
 - probes are fitted on a TRAIN-split snapshot and evaluated on a
   VALIDATION-split snapshot of the same checkpoint; no (dataset,
   recording_id) may occur in both, and no test-split snapshot is read;
-- every preprocessing step (standardization, class weights, class
-  selection) is fitted on probe-train rows only;
+- both snapshots are seeded fixed permutations of their split, with no
+  class or corpus balancing: probes see the natural distribution;
+- every preprocessing step (standardization, class weights) and the
+  regularization are fitted on probe-train rows only: logistic C (smaller =
+  stronger L2) and ridge alpha (larger = stronger), scikit-learn semantics,
+  are chosen from predeclared log-spaced grids by recording-grouped CV
+  inside probe-train (mean out-of-fold primary score, ties to the stronger
+  regularization), separately for each representation, task and training
+  set, then frozen before validation. A categorical CV fold is valid only
+  if every canonical class is in both its parts; fewer than 3 valid folds
+  make the configuration unsupported;
 - categorical labels: multinomial logistic regression, class-balanced
-  weights, fixed L2 (`LOGISTIC_L2`); score = balanced accuracy, reference
-  1 / K for the K classes probed;
-- continuous labels: ridge regression, fixed penalty (`RIDGE_ALPHA`);
-  score = R^2 on the evaluated rows, reference 0 (predicting their mean);
+  weights; score = balanced accuracy, reference 1 / K over the task's
+  canonical K classes. A setting where any of the K classes lacks support
+  (train or evaluation) is marked unsupported, never reduced to K - 1;
+- continuous labels: ridge regression; score = R^2 on the evaluated rows,
+  reference 0 (predicting their mean);
 - settings: pooled, within each corpus and, for categorical labels,
   across corpora (train on one, evaluate on the other);
 - 95% intervals: seeded percentile bootstrap over validation recordings,
@@ -130,14 +140,27 @@ TASKS = (
 )
 SELECTION = tuple(dict.fromkeys((task.section, task.label) for task in TASKS))
 
-# Fixed, documented regularization; never tuned on validation. Both act on
-# standardized representations, per sample:
-#   logistic: weighted mean cross-entropy + LOGISTIC_L2 / 2 * ||W||^2
-#   ridge:    mean squared error + RIDGE_ALPHA * ||w||^2
-LOGISTIC_L2 = 1e-3
-RIDGE_ALPHA = 1e-2
+# Predeclared regularization grids, with scikit-learn's semantics, on
+# standardized inputs (intercepts unpenalized):
+#   logistic, C:  minimize 1/2 ||W||^2 + C * sum_i s_i CE_i  (s_i: balanced
+#                 class weights); SMALLER C = STRONGER L2 regularization
+#   ridge, alpha: minimize ||y - b - X w||^2 + alpha ||w||^2;
+#                 LARGER alpha = STRONGER regularization
+# One value is chosen by recording-grouped CV inside probe-train, ties going
+# to the stronger regularization, then frozen; validation never sees it.
+LOGISTIC_C_GRID = (1e-4, 1e-3, 1e-2, 1e-1, 1.0)
+RIDGE_ALPHA_GRID = (1e-4, 1e-2, 1.0, 1e2, 1e4)
+CV_FOLDS = 5
+# Model selection needs at least this many valid grouped folds.
+MIN_VALID_CV_FOLDS = 3
+# Mean CV scores this close count as a tie.
+CV_TIE_TOLERANCE = 1e-9
+CV_GROUPING = "(dataset, recording_id)"
+INSUFFICIENT_CV_CLASS_SUPPORT = "insufficient_grouped_cv_class_support"
+INSUFFICIENT_CV_SUPPORT = "insufficient_grouped_cv_support"
 LBFGS_MAX_ITER = 500
-# A class is probed only with at least this many rows on both sides.
+# A categorical setting is evaluable only if every canonical class has at
+# least this many rows in probe-train and in the evaluated rows.
 MIN_CLASS_SUPPORT = 20
 # A setting is probed only with at least this many training rows.
 MIN_TRAIN_ROWS = 50
@@ -171,6 +194,19 @@ def check_snapshots(train: Snapshot, validation: Snapshot) -> None:
             "Probes are fitted on a train-split snapshot and evaluated on a "
             f"validation-split snapshot; got {splits}"
         )
+
+    for which, provenance in (
+        ("probe-train", train_provenance),
+        ("probe-validation", validation_provenance),
+    ):
+        order = (provenance.get("sampling") or {}).get("order")
+
+        if order != "fixed_permutation":
+            raise ValueError(
+                f"The {which} snapshot's rows are not a seeded fixed permutation "
+                f"of its split (sampling.order={order!r}); probes need the "
+                "split's natural distribution, without class or corpus balancing"
+            )
 
     for section, key in (
         ("checkpoint", "sha256"),
@@ -257,11 +293,17 @@ def balanced_class_weights(y: torch.Tensor, classes: int) -> torch.Tensor:
 
 
 def fit_logistic(
-    x: torch.Tensor, y: torch.Tensor, classes: int, *, l2: float = LOGISTIC_L2
+    x: torch.Tensor, y: torch.Tensor, classes: int, *, c: float
 ) -> tuple[torch.Tensor, torch.Tensor]:
-    """Multinomial logistic regression, class-balanced; (W (D, K), b (K,))."""
+    """Class-balanced multinomial logistic regression; (W (D, K), b (K,)).
+
+    scikit-learn's objective, 1/2 ||W||^2 + C * sum_i s_i CE_i with
+    s_i = n / (K n_class), solved divided by C * n for conditioning: the
+    minimizer is the same. Smaller C = stronger regularization.
+    """
 
     weights = balanced_class_weights(y, classes)
+    n = len(y)
     w = torch.zeros(x.shape[1], classes, dtype=torch.float64, requires_grad=True)
     b = torch.zeros(classes, dtype=torch.float64, requires_grad=True)
     optimizer = torch.optim.LBFGS(
@@ -276,26 +318,305 @@ def fit_logistic(
 
     def closure():
         optimizer.zero_grad()
-        loss = (F.cross_entropy(x @ w + b, y, reduction="none") * weights).sum()
-        loss = loss / weights.sum() + 0.5 * l2 * w.pow(2).sum()
+        loss = (F.cross_entropy(x @ w + b, y, reduction="none") * weights).sum() / n
+        loss = loss + w.pow(2).sum() / (2 * c * n)
         loss.backward()
         return loss
 
     with torch.enable_grad():
-        optimizer.step(closure)
+        optimizer.step(closure)  # pyright: ignore[reportArgumentType]
 
     return w.detach(), b.detach()
 
 
 def fit_ridge(
-    x: torch.Tensor, y: torch.Tensor, *, alpha: float = RIDGE_ALPHA
+    x: torch.Tensor, y: torch.Tensor, *, alpha: float
 ) -> tuple[torch.Tensor, torch.Tensor]:
-    """Ridge regression on centred targets; (w (D,), intercept)."""
+    """scikit-learn's ridge, ||y - b - X w||^2 + alpha ||w||^2; (w, b).
+
+    Larger alpha = stronger regularization.
+    """
 
     intercept = y.mean()
-    gram = x.T @ x + len(x) * alpha * torch.eye(x.shape[1], dtype=x.dtype)
+    centred = x - x.mean(dim=0)
+    gram = centred.T @ centred + alpha * torch.eye(x.shape[1], dtype=x.dtype)
+    w = torch.linalg.solve(gram, centred.T @ (y - intercept))
 
-    return torch.linalg.solve(gram, x.T @ (y - intercept)), intercept
+    return w, intercept - x.mean(dim=0) @ w
+
+
+@dataclass(frozen=True)
+class LinearProbe:
+    """A probe frozen after selection: train-fitted scaler and weights."""
+
+    kind: str
+    standardizer: Standardizer
+    weight: torch.Tensor
+    bias: torch.Tensor
+
+    @classmethod
+    def fit(
+        cls, kind: str, x: torch.Tensor, y: torch.Tensor, *, classes, value: float
+    ) -> LinearProbe:
+        standardizer = Standardizer.fit(x)
+        x = standardizer.transform(x)
+
+        if kind == CATEGORICAL:
+            weight, bias = fit_logistic(x, y, classes, c=value)
+        else:
+            weight, bias = fit_ridge(x, y.double(), alpha=value)
+
+        return cls(kind, standardizer, weight, bias)
+
+    def predict(self, x: torch.Tensor) -> torch.Tensor:
+        output = self.standardizer.transform(x) @ self.weight + self.bias
+
+        return output.argmax(dim=1) if self.kind == CATEGORICAL else output
+
+
+def recording_folds(
+    recordings: Sequence[str], *, folds: int, seed: int
+) -> tuple[torch.Tensor, int]:
+    """Fold of each row: whole recordings, dealt in seeded key order.
+
+    `recordings` are "<dataset>/<recording_id>" keys, so the corpus is part
+    of the grouping.
+    """
+
+    unique = sorted(set(recordings), key=lambda r: (_seed(seed, r), r))
+    count = min(folds, len(unique))
+    fold_of = {r: i % count for i, r in enumerate(unique)}
+
+    return torch.tensor([fold_of[r] for r in recordings]), count
+
+
+def regularization_parameter(kind: str) -> str:
+    return "C" if kind == CATEGORICAL else "alpha"
+
+
+def candidates(kind: str) -> tuple[float, ...]:
+    return LOGISTIC_C_GRID if kind == CATEGORICAL else RIDGE_ALPHA_GRID
+
+
+def strongest_first(kind: str) -> list[float]:
+    """The grid from strongest to weakest regularization."""
+
+    # Smaller C is stronger; larger alpha is stronger.
+    return sorted(candidates(kind), reverse=kind != CATEGORICAL)
+
+
+def choose_regularization(
+    mean_scores: Mapping[float, float], *, kind: str
+) -> float | None:
+    """Best mean CV score; ties (within tolerance) to the stronger value."""
+
+    finite = {v: s for v, s in mean_scores.items() if not math.isnan(s)}
+
+    if not finite:
+        return None
+
+    best = max(finite.values())
+
+    return next(
+        v
+        for v in strongest_first(kind)
+        if v in finite and finite[v] >= best - CV_TIE_TOLERANCE
+    )
+
+
+@dataclass(frozen=True)
+class CrossValidation:
+    """Recording-grouped model selection inside probe-train."""
+
+    kind: str
+    requested_folds: int
+    valid_folds: list[int]
+    invalid_folds: dict[int, str]
+    fold_class_counts: dict[int, dict[str, list[int]]] | None
+    fold_scores: dict[float, dict[int, float]]  # candidate -> fold -> score
+    mean_scores: dict[float, float]
+    selected: float | None
+    unsupported: str | None
+
+    def provenance(self) -> dict[str, Any]:
+        name = "c" if self.kind == CATEGORICAL else "alpha"
+        plural = "c" if self.kind == CATEGORICAL else "alphas"
+
+        return {
+            "grouping": CV_GROUPING,
+            "regularization_parameter": regularization_parameter(self.kind),
+            "direction": (
+                "smaller C = stronger L2 regularization"
+                if self.kind == CATEGORICAL
+                else "larger alpha = stronger regularization"
+            ),
+            "criterion": (
+                "mean out-of-fold balanced accuracy over the canonical classes"
+                if self.kind == CATEGORICAL
+                else "mean out-of-fold R^2"
+            ),
+            "tie_break": "stronger regularization",
+            "requested_cv_folds": self.requested_folds,
+            "valid_cv_folds": self.valid_folds,
+            "invalid_cv_folds": {str(f): r for f, r in self.invalid_folds.items()},
+            "fold_class_counts": (
+                None
+                if self.fold_class_counts is None
+                else {str(f): c for f, c in self.fold_class_counts.items()}
+            ),
+            f"candidate_{plural}": list(candidates(self.kind)),
+            f"selected_{name}": self.selected,
+            f"mean_score_by_{name}": {f"{v:g}": s for v, s in self.mean_scores.items()},
+            f"fold_scores_by_{name}": {
+                f"{v:g}": {str(f): s for f, s in by_fold.items()}
+                for v, by_fold in self.fold_scores.items()
+            },
+            "unsupported": self.unsupported,
+        }
+
+
+def _fold_checks(kind, y, fold, count, classes):
+    """Valid folds, invalid ones with a reason, per-fold class counts."""
+
+    valid, invalid = [], {}
+    counts = {} if kind == CATEGORICAL else None
+
+    for f in range(CV_FOLDS):
+        if f >= count:
+            invalid[f] = "no recording: fewer training recordings than folds"
+            continue
+
+        held = fold == f
+
+        if kind == CATEGORICAL:
+            train_counts = torch.bincount(y[~held], minlength=classes).tolist()
+            held_counts = torch.bincount(y[held], minlength=classes).tolist()
+            assert counts is not None
+            counts[f] = {"train": train_counts, "held_out": held_counts}
+
+            # Every canonical class on both sides, never a K - 1 class fold.
+            if min(train_counts) == 0 or min(held_counts) == 0:
+                invalid[f] = (
+                    "a canonical class is absent from the fold's train or held-out part"
+                )
+                continue
+        elif int(held.sum()) < 2 or float(y[held].double().var()) == 0:
+            invalid[f] = "held-out part has no target variance"
+            continue
+
+        valid.append(f)
+
+    return valid, invalid, counts
+
+
+def select_regularization(
+    kind: str,
+    x: torch.Tensor,
+    y: torch.Tensor,
+    recordings: Sequence[str],
+    *,
+    classes: int | None,
+    seed: int,
+) -> CrossValidation:
+    """Choose C or alpha by recording-grouped CV inside probe-train.
+
+    Each fold standardizes on its own training part. Every candidate is
+    scored on exactly the same valid folds; the criterion is the mean
+    out-of-fold primary score (balanced accuracy over the K canonical
+    classes, or R^2). Fewer than MIN_VALID_CV_FOLDS valid folds: no choice.
+    """
+
+    fold, count = recording_folds(recordings, folds=CV_FOLDS, seed=seed)
+    valid, invalid, class_counts = _fold_checks(kind, y, fold, count, classes)
+
+    def result(fold_scores, mean_scores, selected, unsupported):
+        return CrossValidation(
+            kind=kind,
+            requested_folds=CV_FOLDS,
+            valid_folds=valid,
+            invalid_folds=invalid,
+            fold_class_counts=class_counts,
+            fold_scores=fold_scores,
+            mean_scores=mean_scores,
+            selected=selected,
+            unsupported=unsupported,
+        )
+
+    if len(valid) < MIN_VALID_CV_FOLDS:
+        reason = (
+            INSUFFICIENT_CV_CLASS_SUPPORT
+            if kind == CATEGORICAL
+            else INSUFFICIENT_CV_SUPPORT
+        )
+        return result(
+            {},
+            {},
+            None,
+            f"{reason}: {len(valid)} of {CV_FOLDS} grouped folds valid, "
+            f"{MIN_VALID_CV_FOLDS} needed",
+        )
+
+    fold_scores: dict[float, dict[int, float]] = {}
+
+    for value in candidates(kind):
+        fold_scores[value] = {}
+
+        for f in valid:
+            held = fold == f
+            probe = LinearProbe.fit(
+                kind, x[~held], y[~held], classes=classes, value=value
+            )
+            pred = probe.predict(x[held])
+            fold_scores[value][f] = (
+                balanced_accuracy(y[held], pred, classes)
+                if classes is not None
+                else r2(y[held], pred)
+            )
+
+    mean_scores = {
+        v: sum(by_fold.values()) / len(by_fold) for v, by_fold in fold_scores.items()
+    }
+    selected = choose_regularization(mean_scores, kind=kind)
+
+    return result(
+        fold_scores,
+        mean_scores,
+        selected,
+        None if selected is not None else "no finite CV score",
+    )
+
+
+@dataclass(frozen=True)
+class FittedProbe:
+    """Selection and, when selection succeeded, the frozen probe."""
+
+    cv: CrossValidation
+    probe: LinearProbe | None
+
+    def predict(self, x: torch.Tensor) -> torch.Tensor:
+        assert self.probe is not None
+        return self.probe.predict(x)
+
+
+def fit_probe(
+    kind: str,
+    x: torch.Tensor,
+    y: torch.Tensor,
+    recordings: Sequence[str],
+    *,
+    classes: int | None = None,
+    seed: int = 0,
+) -> FittedProbe:
+    """Select C / alpha inside probe-train, then fit on all of it and freeze."""
+
+    cv = select_regularization(kind, x, y, recordings, classes=classes, seed=seed)
+
+    if cv.selected is None:
+        return FittedProbe(cv, None)
+
+    return FittedProbe(
+        cv, LinearProbe.fit(kind, x, y, classes=classes, value=cv.selected)
+    )
 
 
 def probe_predictions(
@@ -304,25 +625,22 @@ def probe_predictions(
     train_y: torch.Tensor,
     eval_x: torch.Tensor,
     *,
+    recordings: Sequence[str],
     classes: int | None = None,
+    seed: int = 0,
 ) -> torch.Tensor:
-    """Fit on train rows only (standardization included); predict eval rows."""
+    """Fit on train rows only (C / alpha and standardization); predict eval rows."""
 
-    standardizer = Standardizer.fit(train_x)
-    train_x = standardizer.transform(train_x)
-    eval_x = standardizer.transform(eval_x)
-
-    if kind == CATEGORICAL:
-        assert classes is not None
-        w, b = fit_logistic(train_x, train_y, classes)
-        return (eval_x @ w + b).argmax(dim=1)
-
-    w, intercept = fit_ridge(train_x, train_y.double())
-    return eval_x @ w + intercept
+    return fit_probe(
+        kind, train_x, train_y, recordings, classes=classes, seed=seed
+    ).predict(eval_x)
 
 
 def balanced_accuracy(y: torch.Tensor, pred: torch.Tensor, classes: int) -> float:
-    """Mean recall over the classes present in `y`."""
+    """Mean recall over the K canonical classes; nan if one is absent from `y`.
+
+    The denominator is always K: a missing class never makes it K - 1.
+    """
 
     return float(_balanced_accuracy(_class_sums(y, pred, classes).sum(0)))
 
@@ -343,10 +661,11 @@ def _class_sums(y, pred, classes) -> torch.Tensor:
 
 def _balanced_accuracy(sums: torch.Tensor) -> torch.Tensor:
     total, correct = sums[..., 0], sums[..., 1]
-    present = total > 0
-    recall = torch.where(present, correct / total.clamp_min(1e-300), 0.0)
+    recall = correct / total.clamp_min(1e-300)
+    score = recall.mean(-1)
 
-    return recall.sum(-1) / present.sum(-1)
+    # Undefined unless every canonical class is present.
+    return torch.where((total > 0).all(-1), score, torch.nan)
 
 
 def _regression_sums(y, pred) -> torch.Tensor:
@@ -403,6 +722,7 @@ class ProbeData:
     values: list[Any]  # label per row, None when missing
     corpora: list[str]
     recordings: list[str]  # "<dataset>/<recording_id>"
+    sample_ids: list[str]  # canonical row order: fits never see file order
 
 
 def probe_data(snapshot: Snapshot, values: list[Any]) -> ProbeData:
@@ -416,6 +736,7 @@ def probe_data(snapshot: Snapshot, values: list[Any]) -> ProbeData:
             f"{d}/{r}"
             for d, r in zip(corpora, snapshot.metadata["recording_id"], strict=True)
         ],
+        sample_ids=[str(i) for i in snapshot.metadata["sample_id"]],
     )
 
 
@@ -428,17 +749,29 @@ def run_probe(
     *,
     bootstrap: int,
     seed: int,
+    fitted: dict[Any, FittedProbe] | None = None,
 ) -> dict[str, Any]:
-    """Scores of both representations and their delta in one setting."""
+    """Scores of both representations and their delta in one setting.
+
+    `fitted` caches probes by (representation, training corpora): a probe
+    depends only on its training rows, so e.g. within:egocom and
+    egocom->ego4d share one.
+    """
+
+    fitted = {} if fitted is None else fitted
 
     def rows(data: ProbeData, corpora) -> list[int]:
-        return [
-            i
-            for i, (value, corpus) in enumerate(
-                zip(data.values, data.corpora, strict=True)
-            )
-            if value is not None and corpus in corpora
-        ]
+        # In sample-id order: the snapshot's row order changes nothing.
+        return sorted(
+            (
+                i
+                for i, (value, corpus) in enumerate(
+                    zip(data.values, data.corpora, strict=True)
+                )
+                if value is not None and corpus in corpora
+            ),
+            key=lambda i: data.sample_ids[i],
+        )
 
     train_rows, eval_rows = (
         rows(train, setting.train),
@@ -455,36 +788,35 @@ def run_probe(
         assert classes is not None
         train_counts = _counts(train.values, train_rows, classes)
         eval_counts = _counts(validation.values, eval_rows, classes)
-        kept = [
-            c
+        unsupported = {
+            c: {"train": train_counts[c], "eval": eval_counts[c]}
             for c in classes
-            if train_counts[c] >= MIN_CLASS_SUPPORT
-            and eval_counts[c] >= MIN_CLASS_SUPPORT
-        ]
-        # Explicit, never silent: a class too rare on either side is not
-        # probed, and its rows are counted as excluded.
-        result |= {
-            "classes": kept,
-            "excluded_classes": {
-                c: {"train": train_counts[c], "eval": eval_counts[c]}
-                for c in classes
-                if c not in kept
-            },
-            "train_class_counts": {c: train_counts[c] for c in kept},
-            "eval_class_counts": {c: eval_counts[c] for c in kept},
-            "reference": 1 / len(kept) if kept else None,
+            if train_counts[c] < MIN_CLASS_SUPPORT or eval_counts[c] < MIN_CLASS_SUPPORT
         }
-        train_rows = [i for i in train_rows if train.values[i] in kept]
-        eval_rows = [i for i in eval_rows if validation.values[i] in kept]
+        # The task keeps its canonical K classes and 1 / K reference; if one
+        # of them cannot be evaluated here, neither can the setting.
+        result |= {
+            "classes": list(classes),
+            "unsupported_classes": unsupported,
+            "train_class_counts": train_counts,
+            "eval_class_counts": eval_counts,
+            "reference": 1 / len(classes),
+        }
 
-        if len(kept) < 2:
+        if unsupported:
             return result | _skipped(
-                f"fewer than 2 classes with >= {MIN_CLASS_SUPPORT} rows on both sides",
+                "unsupported: "
+                + ", ".join(
+                    f"{c} (train {n['train']}, eval {n['eval']})"
+                    for c, n in unsupported.items()
+                )
+                + f" below {MIN_CLASS_SUPPORT} rows; the {len(classes)}-class task "
+                "is not evaluable in this setting",
                 train_rows,
                 eval_rows,
             )
 
-        index = {c: k for k, c in enumerate(kept)}
+        index = {c: k for k, c in enumerate(classes)}
         train_y = torch.tensor([index[train.values[i]] for i in train_rows])
         eval_y = torch.tensor([index[validation.values[i]] for i in eval_rows])
     else:
@@ -497,6 +829,34 @@ def run_probe(
             f"fewer than {MIN_TRAIN_ROWS} training rows or no evaluation rows",
             train_rows,
             eval_rows,
+        )
+
+    # Selection and fit on probe-train only, one scaler per representation.
+    probes: dict[str, FittedProbe] = {}
+
+    for name in REPRESENTATIONS:
+        key = (name, setting.train)
+
+        if key not in fitted:
+            fitted[key] = fit_probe(
+                task_kind,
+                train.representations[name][train_rows],
+                train_y,
+                [train.recordings[i] for i in train_rows],
+                classes=len(classes) if classes is not None else None,
+                seed=_seed(seed, "cv", *setting.train),
+            )
+
+        probes[name] = fitted[key]
+        result[f"{name}_selected_regularization"] = probes[name].cv.selected
+
+    result["regularization_parameter"] = regularization_parameter(task_kind)
+    unsupported = [p.cv.unsupported for p in probes.values() if p.cv.unsupported]
+
+    if unsupported:
+        # No validation score, interval or delta without a CV-selected probe.
+        return result | _skipped(
+            unsupported[0], train_rows, eval_rows, keep_regularization=True
         )
 
     recordings = [validation.recordings[i] for i in eval_rows]
@@ -518,16 +878,10 @@ def run_probe(
     resampled: dict[str, torch.Tensor] = {}
 
     for name in REPRESENTATIONS:
-        pred = probe_predictions(
-            task_kind,
-            train.representations[name][train_rows],
-            train_y,
-            validation.representations[name][eval_rows],
-            classes=len(result.get("classes") or []) or None,
-        )
+        pred = probes[name].predict(validation.representations[name][eval_rows])
 
-        if task_kind == CATEGORICAL:
-            sums = _class_sums(eval_y, pred, len(result["classes"]))
+        if classes is not None:
+            sums = _class_sums(eval_y, pred, len(classes))
             per_cluster = torch.zeros(
                 len(clusters), *sums.shape[1:], dtype=torch.float64
             )
@@ -565,7 +919,15 @@ def run_probe(
     }
 
 
-def _skipped(reason, train_rows, eval_rows) -> dict[str, Any]:
+def _skipped(
+    reason, train_rows, eval_rows, *, keep_regularization: bool = False
+) -> dict[str, Any]:
+    regularization = (
+        {}
+        if keep_regularization
+        else {f"{name}_selected_regularization": None for name in REPRESENTATIONS}
+    )
+
     return {
         "skipped": reason,
         "n_train": len(train_rows),
@@ -576,6 +938,7 @@ def _skipped(reason, train_rows, eval_rows) -> dict[str, Any]:
             for name in (*REPRESENTATIONS, "delta")
             for key in (f"{name}_score", f"{name}_ci")
         },
+        **regularization,
     }
 
 
@@ -622,6 +985,7 @@ def analyze_probes(
     corpora = sorted(set(map(str, validation.metadata["dataset"])))
     tasks: dict[str, Any] = {}
     scores: list[dict[str, Any]] = []
+    fitted_probes: list[dict[str, Any]] = []
 
     for task in TASKS:
         variable = validation_variables.get(task.variable)
@@ -641,12 +1005,14 @@ def analyze_probes(
         tasks[task.variable] = {
             "group": task.group,
             "kind": variable.kind,
-            "classes": list(variable.classes) if categorical else None,
+            "classes": list(variable.classes or ()) if categorical else None,
             "context": _context(
                 variable.classes if categorical else None,
                 {"probe-train": train_data, "probe-validation": validation_data},
             ),
         }
+
+        fitted: dict[Any, FittedProbe] = {}
 
         for setting in probe_settings(corpora, cross_domain=categorical):
             scores.append(
@@ -662,13 +1028,30 @@ def analyze_probes(
                         validation_data,
                         bootstrap=bootstrap,
                         seed=_seed(seed, task.variable),
+                        fitted=fitted,
                     ),
                 }
             )
 
+        # Model-selection provenance, once per fitted probe.
+        fitted_probes += [
+            {
+                "task": task.variable,
+                "task_type": variable.kind,
+                "representation": name,
+                "training_domain": list(train_corpora),
+                "canonical_classes": (
+                    list(variable.classes or ()) if categorical else None
+                ),
+                "cv": probe.cv.provenance(),
+            }
+            for (name, train_corpora), probe in fitted.items()
+        ]
+
     return {
         "tasks": tasks,
         "scores": scores,
+        "fitted_probes": fitted_probes,
         "corpora": corpora,
         "labels": {
             "corpora": {c: a.provenance for c, a in audits.items()},
@@ -681,13 +1064,32 @@ def analyze_probes(
                 "multinomial logistic regression, class-balanced weights "
                 "n / (K n_class), L-BFGS, float64"
             ),
-            "logistic_l2": LOGISTIC_L2,
+            "logistic_c_grid": list(LOGISTIC_C_GRID),
             "continuous_probe": "ridge regression on centred targets, float64",
-            "ridge_alpha": RIDGE_ALPHA,
+            "ridge_alpha_grid": list(RIDGE_ALPHA_GRID),
             "regularization": (
-                "fixed, per sample on standardized inputs; not tuned on validation"
+                "scikit-learn semantics on standardized inputs, intercepts "
+                "unpenalized. Logistic regression uses C, where smaller values "
+                "mean stronger L2 regularization. Ridge uses alpha, where larger "
+                "values mean stronger regularization. The value is chosen from the "
+                f"predeclared grid by {CV_FOLDS}-fold CV grouped by "
+                f"{CV_GROUPING} inside probe-train (criterion: mean out-of-fold "
+                "primary score over the same valid folds for every candidate; at "
+                f"least {MIN_VALID_CV_FOLDS} valid folds; a categorical fold is "
+                "valid only if every canonical class is in both its train and "
+                "held-out parts). Ties are resolved in favor of stronger "
+                "regularization (smaller C for logistic regression, larger alpha "
+                "for ridge). Selected separately per representation, task and "
+                "training set, then frozen before validation"
             ),
-            "categorical_score": "balanced accuracy; reference 1 / K classes probed",
+            "sampling": (
+                "both snapshots: seeded fixed permutation of the split, no class "
+                "or corpus balancing"
+            ),
+            "categorical_score": (
+                "balanced accuracy; reference 1 / K over the task's canonical K "
+                "classes; a setting where a class lacks support is unsupported"
+            ),
             "continuous_score": "R^2 on the evaluated rows; reference 0",
             "min_class_support": MIN_CLASS_SUPPORT,
             "min_train_rows": MIN_TRAIN_ROWS,
@@ -811,6 +1213,13 @@ def scores_table(scores: Sequence[Mapping[str, Any]]) -> pa.Table:
             )
         }
         row["classes"] = ",".join(score.get("classes") or []) or None
+        row["regularization_parameter"] = score.get("regularization_parameter")
+        row |= {
+            f"{name}_selected_regularization": score.get(
+                f"{name}_selected_regularization"
+            )
+            for name in REPRESENTATIONS
+        }
 
         for name in (*REPRESENTATIONS, "delta"):
             interval = score[f"{name}_ci"] or [None, None]
@@ -877,7 +1286,13 @@ def _comparison_panel(ax, scores: Sequence[Mapping[str, Any]], title: str) -> No
 
         if score["skipped"]:
             ax.annotate(
-                "skipped", (x, reference or 0), ha="center", fontsize=7, color=MUTED
+                "not evaluable",
+                (x, reference or 0),
+                xytext=(0, 6),
+                textcoords="offset points",
+                ha="center",
+                fontsize=7,
+                color=MUTED,
             )
             continue
 
@@ -1042,7 +1457,7 @@ def _score_table(scores: Sequence[Mapping[str, Any]]) -> list[str]:
         if s["skipped"]:
             lines.append(
                 f"| {_short(s['task'])} | {s['setting']} | – | "
-                f"{s['n_train']:,} / {s['n_eval']:,} | skipped: {s['skipped']} | | |"
+                f"{s['n_train']:,} / {s['n_eval']:,} | not evaluable: {s['skipped']} | | |"
             )
             continue
 
@@ -1253,6 +1668,40 @@ def _context_table(summary: Mapping[str, Any]) -> list[str]:
     return lines
 
 
+def _grid(values: Sequence[float]) -> str:
+    return "{" + ", ".join(f"{v:g}" for v in values) + "}"
+
+
+def _regularization_table(fitted_probes: Sequence[Mapping[str, Any]]) -> list[str]:
+    """One row per fitted probe: its CV-selected C or alpha."""
+
+    lines = [
+        (
+            "| task | train domain | representation | model | selected "
+            "regularization | valid folds |"
+        ),
+        "|---|---|---|---|---|---|",
+    ]
+
+    for entry in fitted_probes:
+        cv = entry["cv"]
+        categorical = entry["task_type"] == CATEGORICAL
+        selected = cv["selected_c" if categorical else "selected_alpha"]
+        value = (
+            f"not evaluable ({cv['unsupported']})"
+            if selected is None
+            else f"{'C' if categorical else 'alpha'}={selected:g}"
+        )
+        lines.append(
+            f"| {_short(entry['task'])} | {' + '.join(entry['training_domain'])} | "
+            f"{_NAMES[entry['representation']]} | "
+            f"{'logistic' if categorical else 'ridge'} | {value} | "
+            f"{len(cv['valid_cv_folds'])}/{cv['requested_cv_folds']} |"
+        )
+
+    return lines
+
+
 def _hypotheses(scores: Sequence[Mapping[str, Any]]) -> list[str]:
     pooled = {
         s["task"]: s for s in scores if s["setting"] == POOLED and not s["skipped"]
@@ -1377,13 +1826,16 @@ def probe_report(summary: Mapping[str, Any]) -> str:
             ),
             "",
             (
-                f"Probes: {settings['categorical_probe']}, L2 {settings['logistic_l2']:g}; "
-                f"{settings['continuous_probe']}, alpha {settings['ridge_alpha']:g}; "
+                f"Probes: {settings['categorical_probe']}, C grid "
+                f"{_grid(settings['logistic_c_grid'])}; {settings['continuous_probe']}, "
+                f"alpha grid {_grid(settings['ridge_alpha_grid'])}. Regularization: "
                 f"{settings['regularization']}. Standardization: "
-                f"{settings['standardization']}. Scores: {settings['categorical_score']}; "
-                f"{settings['continuous_score']}. Classes need ≥ "
-                f"{settings['min_class_support']} rows in both probe-train and the "
-                "evaluated rows of a setting, otherwise they are excluded and reported. "
+                f"{settings['standardization']}. Sampling: {settings['sampling']}. "
+                f"Scores: {settings['categorical_score']}; "
+                f"{settings['continuous_score']}. Every canonical class needs ≥ "
+                f"{settings['min_class_support']} rows in probe-train and in the "
+                "evaluated rows of a setting; otherwise the setting is reported as "
+                "unsupported. "
                 f"Intervals: {int(100 * settings['confidence'])}% "
                 f"{settings['interval']} ({settings['bootstrap_resamples']} resamples, "
                 "seeded)."
@@ -1392,6 +1844,18 @@ def probe_report(summary: Mapping[str, Any]) -> str:
             "### Data context (not performance)",
             "",
             *_context_table(summary),
+            "",
+            "### Selected regularization (probe-train CV, frozen before validation)",
+            "",
+            (
+                "Logistic regression uses C, where smaller values mean stronger L2 "
+                "regularization. Ridge uses alpha, where larger values mean "
+                "stronger regularization. Ties are resolved in favor of stronger "
+                "regularization (smaller C for logistic regression, larger alpha "
+                "for ridge)."
+            ),
+            "",
+            *_regularization_table(summary["fitted_probes"]),
             "",
             "## Current conversational state",
             "",
