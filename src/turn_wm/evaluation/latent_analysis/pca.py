@@ -280,7 +280,10 @@ def group_structure(
     condition: str,
     silhouette_samples: int,
 ) -> GroupStructure:
-    """Centroids, variances and silhouette of `x` (N, D) grouped by `labels`."""
+    """Centroids, variances and silhouette of `x` (N, D) grouped by `labels`.
+
+    `silhouette_samples=0` skips the silhouette.
+    """
 
     classes = sorted(set(labels))
     index = {label: i for i, label in enumerate(classes)}
@@ -311,9 +314,13 @@ def group_structure(
     ]
 
     sampled = select_by_key(keys, silhouette_samples)
-    value, by_class, reason = silhouette(
-        x[sampled], [labels[i] for i in sampled.tolist()]
-    )
+
+    if silhouette_samples == 0:
+        value, by_class, reason = None, {}, "not computed"
+    else:
+        value, by_class, reason = silhouette(
+            x[sampled], [labels[i] for i in sampled.tolist()]
+        )
 
     return GroupStructure(
         grouping=grouping,

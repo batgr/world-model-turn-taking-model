@@ -63,9 +63,12 @@ from turn_wm.data.source import (
 )
 from turn_wm.evaluation.latent_analysis.analyze import (
     ANALYSES,
+    DEFAULT_ANALYSES,
+    LABELS,
     PCA,
     analyze_snapshot,
 )
+from turn_wm.evaluation.latent_analysis.label_structure import DEFAULT_BALANCED_CAP
 from turn_wm.evaluation.latent_analysis.pca import (
     DEFAULT_MAX_PLOT_SAMPLES,
     DEFAULT_SILHOUETTE_SAMPLES,
@@ -75,7 +78,7 @@ from turn_wm.evaluation.latent_analysis.run import (
     DEFAULT_SPLIT,
     extract_run,
 )
-from turn_wm.evaluation.latent_analysis.show import show_pca
+from turn_wm.evaluation.latent_analysis.show import show_labels, show_pca
 from turn_wm.training.train import run as run_training
 
 SPLITS = ("train", "validation", "test")
@@ -343,7 +346,10 @@ def build_parser() -> argparse.ArgumentParser:
         "--analysis",
         action="append",
         choices=ANALYSES,
-        help="Analysis to run, repeatable (default: all).",
+        help=(
+            "Analysis to run, repeatable (default: spectrum and pca; labels "
+            "reads the Hub and runs only when named)."
+        ),
     )
     analyze.add_argument(
         "--output",
@@ -366,11 +372,24 @@ def build_parser() -> argparse.ArgumentParser:
         help="Rows drawn in the PCA figures (default: %(default)s).",
     )
     analyze.add_argument(
+        "--balanced-cap",
+        type=_positive_int,
+        default=DEFAULT_BALANCED_CAP,
+        help="Rows per class of the balanced silhouette (default: %(default)s).",
+    )
+    analyze.add_argument(
+        "--labels-revision",
+        help=(
+            "Read the label sidecars at this dataset revision instead of the "
+            "snapshot's; its action grid must be byte-identical."
+        ),
+    )
+    analyze.add_argument(
         "--show",
         action="store_true",
         help=(
-            "Then show the PCA results: inline in a notebook kernel, else "
-            "a text table and the figure paths. Results are unchanged."
+            "Then show the PCA and label results: inline in a notebook kernel, "
+            "else a text table and the figure paths. Results are unchanged."
         ),
     )
     analyze.set_defaults(handler=_analyze_latents)
@@ -436,10 +455,12 @@ def _analyze_latents(
     try:
         outputs = analyze_snapshot(
             args.snapshot,
-            analyses=args.analysis or ANALYSES,
+            analyses=args.analysis or DEFAULT_ANALYSES,
             output_root=args.output,
             silhouette_samples=args.silhouette_samples,
             max_plot_samples=args.max_plot_samples,
+            balanced_cap=args.balanced_cap,
+            labels_revision=args.labels_revision,
         )
     except (ValueError, FileNotFoundError, RuntimeError) as error:
         # Not a snapshot, a non-empty output directory or no matplotlib.
@@ -450,6 +471,9 @@ def _analyze_latents(
 
     if args.show and PCA in outputs:
         show_pca(outputs[PCA])
+
+    if args.show and LABELS in outputs:
+        show_labels(outputs[LABELS])
 
     return 0
 

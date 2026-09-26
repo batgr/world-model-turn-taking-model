@@ -1,5 +1,5 @@
 """
-Display written PCA results: a diagnostics table, then the figures.
+Display written PCA and label results: tables, then the figures.
 
 Only reads `summary.json` and the figures an analysis already wrote, so
 showing never changes a result. Standard library only, plus IPython when it
@@ -9,6 +9,7 @@ dependencies),
     import sys; sys.path.insert(0, "<repo>/src")
     from turn_wm.evaluation.latent_analysis.show import show_pca
     show_pca("<snapshot>/analysis/pca")
+    show_labels("<snapshot>/analysis/labels")
 
 renders inline. Elsewhere, including `!turn-wm ... --show` (a subprocess,
 which cannot draw in the notebook), the table is printed as text with the
@@ -93,6 +94,134 @@ def show_pca(output_dir: Path | str, *, out: Callable[[str], None] = print) -> N
 
             for path in paths:
                 show(image(filename=str(path)))
+
+
+_LABEL_SECTIONS = (
+    ("conversational_state", "Conversational state"),
+    ("temporal_state", "Temporal state"),
+    ("future", "Future structure"),
+    ("nuisance", "Nuisance controls"),
+)
+
+
+def label_coverage(summary: dict[str, Any]) -> list[dict[str, Any]]:
+    return [
+        {
+            "variable": row["variable"],
+            "corpus": row["dataset"],
+            "snapshot rows": row["n_snapshot"],
+            "joined": row["n_joined"],
+            "valid": row["n_valid"],
+            "coverage": row["coverage_fraction"],
+        }
+        for row in summary["coverage"]
+    ]
+
+
+def label_diagnostics(summary: dict[str, Any]) -> list[dict[str, Any]]:
+    """Per variable: strength (between-group variance fraction) and structure."""
+
+    rows = []
+
+    for name, variable in summary["variables"].items():
+        row: dict[str, Any] = {"variable": name}
+
+        for representation, by_condition in variable["representations"].items():
+            for condition, metrics in by_condition.items():
+                row[f"{representation} | {condition}"] = metrics.get(
+                    "between_bin_variance_fraction",
+                    metrics.get("between_variance_fraction"),
+                )
+
+        change = ((variable.get("features_to_latent") or {}).get("all") or {}).get(
+            "change"
+        )
+        row["features→latent"] = change
+        domain = (variable.get("domain_structure") or {}).get("latent") or {}
+        row["latent domain"] = domain.get("class")
+        rows.append(row)
+
+    return rows
+
+
+def show_labels(output_dir: Path | str, *, out: Callable[[str], None] = print) -> None:
+    """Show a written label analysis, inline in a notebook when possible."""
+
+    output_dir = Path(output_dir)
+    summary = json.loads((output_dir / "summary.json").read_text(encoding="utf-8"))
+    tables = [
+        ("Coverage", label_coverage(summary)),
+        ("Between-group variance fraction", label_diagnostics(summary)),
+    ]
+    sections = [
+        (title, [output_dir / path for path in summary["figures"].get(key, [])])
+        for key, title in _LABEL_SECTIONS
+    ]
+    display = _notebook_display()
+
+    if display is None:
+        for title, rows in tables:
+            out(f"{title}:")
+            out(_rows_text(rows))
+            out("")
+
+        for title, paths in sections:
+            if paths:
+                out(f"{title}:")
+                out("\n".join(f"  {path}" for path in paths))
+
+        out(
+            "\nFigures are shown inline when show_labels() runs in the notebook "
+            "kernel itself (see turn_wm.evaluation.latent_analysis.show)."
+        )
+        return
+
+    show, html_block, image = display
+
+    for title, rows in tables:
+        show(html_block(f"<h4>{html.escape(title)}</h4>" + _rows_html(rows)))
+
+    for title, paths in sections:
+        if paths:
+            show(html_block(f"<h4>{html.escape(title)}</h4>"))
+
+            for path in paths:
+                show(image(filename=str(path)))
+
+
+def _rows_text(rows: list[dict[str, Any]]) -> str:
+    """One line per row, one column per key."""
+
+    if not rows:
+        return "(none)"
+
+    columns = list(dict.fromkeys(key for row in rows for key in row))
+    cells = [[_format(row.get(column)) for column in columns] for row in rows]
+    widths = [
+        max(len(column), *(len(line[i]) for line in cells))
+        for i, column in enumerate(columns)
+    ]
+
+    return "\n".join(
+        "  ".join(value.ljust(width) for value, width in zip(line, widths, strict=True))
+        for line in [columns, *cells]
+    )
+
+
+def _rows_html(rows: list[dict[str, Any]]) -> str:
+    if not rows:
+        return "<p>(none)</p>"
+
+    columns = list(dict.fromkeys(key for row in rows for key in row))
+    head = "".join(f"<th>{html.escape(c)}</th>" for c in columns)
+    body = "".join(
+        "<tr>"
+        + "".join(f"<td>{html.escape(_format(row.get(c)))}</td>" for c in columns)
+        + "</tr>"
+        for row in rows
+    )
+
+    return f"<table><thead><tr>{head}</tr></thead><tbody>{body}</tbody></table>"
 
 
 def _notebook_display():

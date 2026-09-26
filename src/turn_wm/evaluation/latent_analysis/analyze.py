@@ -18,7 +18,7 @@ from __future__ import annotations
 import hashlib
 import importlib.util
 import json
-from collections.abc import Sequence
+from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
@@ -28,6 +28,12 @@ import pyarrow.parquet as pq
 import torch
 from safetensors.torch import load_file
 
+from turn_wm.evaluation.latent_analysis.label_report import write_labels
+from turn_wm.evaluation.latent_analysis.label_source import (
+    CorpusLabelSource,
+    hub_label_sources,
+)
+from turn_wm.evaluation.latent_analysis.label_structure import DEFAULT_BALANCED_CAP
 from turn_wm.evaluation.latent_analysis.pca import (
     ACTION,
     DATASET,
@@ -36,6 +42,17 @@ from turn_wm.evaluation.latent_analysis.pca import (
     PcaAnalysis,
     RepresentationPca,
     analyze_pca,
+)
+from turn_wm.evaluation.latent_analysis.rendering import (
+    INK,
+    SECONDARY_INK,
+    SERIES,
+    SURFACE,
+    close,
+    colors,
+    limits,
+    percent,
+    style,
 )
 from turn_wm.evaluation.latent_analysis.spectrum import (
     ALL,
@@ -52,28 +69,14 @@ SCHEMA_VERSION = 1
 
 SPECTRUM = "spectrum"
 PCA = "pca"
-ANALYSES = (SPECTRUM, PCA)
+LABELS = "labels"
+ANALYSES = (SPECTRUM, PCA, LABELS)
+# Run without --analysis: those reading the snapshot alone. The label
+# analysis also reads the Hub, so it runs only when asked for.
+DEFAULT_ANALYSES = (SPECTRUM, PCA)
 
 # Metadata column whose values define the per-group analyses.
 GROUP_COLUMN = "dataset"
-
-# Reference palette: categorical slots in fixed order, then chart ink.
-_SERIES = (
-    "#2a78d6",
-    "#eb6834",
-    "#1baf7a",
-    "#eda100",
-    "#e87ba4",
-    "#008300",
-    "#4a3aa7",
-    "#e34948",
-)
-_SURFACE = "#fcfcfb"
-_INK = "#0b0b0b"
-_SECONDARY_INK = "#52514e"
-_MUTED = "#898781"
-_GRID = "#e1e0d9"
-_AXIS = "#c3c2b7"
 
 
 @dataclass(frozen=True)
@@ -132,14 +135,19 @@ def read_snapshot(path: Path) -> Snapshot:
 def analyze_snapshot(
     path: Path,
     *,
-    analyses: Sequence[str] = ANALYSES,
+    analyses: Sequence[str] = DEFAULT_ANALYSES,
     output_root: Path | None = None,
     silhouette_samples: int = DEFAULT_SILHOUETTE_SAMPLES,
     max_plot_samples: int = DEFAULT_MAX_PLOT_SAMPLES,
+    balanced_cap: int = DEFAULT_BALANCED_CAP,
+    labels_revision: str | None = None,
+    label_sources: Mapping[str, CorpusLabelSource] | None = None,
 ) -> dict[str, Path]:
     """Run `analyses` on a snapshot; return each analysis's output directory.
 
-    The snapshot itself is only read.
+    The snapshot itself is only read. The label analysis reads the label
+    sidecars of the snapshot's dataset revision from the Hub (or
+    `labels_revision`, explicitly), unless `label_sources` are given.
     """
 
     unknown = [name for name in analyses if name not in ANALYSES]
@@ -171,6 +179,25 @@ def analyze_snapshot(
                 snapshot,
                 output_dir,
                 silhouette_samples=silhouette_samples,
+                max_plot_samples=max_plot_samples,
+            )
+        elif name == LABELS:
+            write_labels(
+                snapshot.representations,
+                snapshot.metadata,
+                output_dir,
+                source=_source(snapshot),
+                sources=(
+                    label_sources
+                    if label_sources is not None
+                    else hub_label_sources(
+                        snapshot.manifest.get("provenance") or {},
+                        labels_revision=labels_revision,
+                    )
+                ),
+                seed=snapshot.seed,
+                silhouette_samples=silhouette_samples,
+                balanced_cap=balanced_cap,
                 max_plot_samples=max_plot_samples,
             )
 
@@ -243,8 +270,8 @@ def write_spectrum(snapshot: Snapshot, output_dir: Path) -> None:
     pq.write_table(spectrum_table(spectra), output_dir / "spectrum.parquet")
 
     for name, figure in spectrum_figures(spectra).items():
-        figure.savefig(output_dir / f"{name}.png", dpi=150, facecolor=_SURFACE)
-        _close(figure)
+        figure.savefig(output_dir / f"{name}.png", dpi=150, facecolor=SURFACE)
+        close(figure)
 
 
 # ---------------------------------------------------------------------------
@@ -290,17 +317,17 @@ def _spectrum_figure(
     representations = list(dict.fromkeys(s.representation for s in spectra))
     groups = list(dict.fromkeys(s.group for s in spectra))
 
-    if len(representations) > len(_SERIES):
+    if len(representations) > len(SERIES):
         raise ValueError(
-            f"At most {len(_SERIES)} representations per figure, "
+            f"At most {len(SERIES)} representations per figure, "
             f"got {len(representations)}"
         )
 
-    colors = dict(zip(representations, _SERIES, strict=False))
+    colors = dict(zip(representations, SERIES, strict=False))
     # Every representation has the same rows, so a group has one N.
     samples = {s.group: s.samples for s in spectra}
 
-    figure = Figure(figsize=(4.2 * len(groups), 3.6), facecolor=_SURFACE)
+    figure = Figure(figsize=(4.2 * len(groups), 3.6), facecolor=SURFACE)
     axes = figure.subplots(1, len(groups), sharey=True, squeeze=False)[0]
 
     for ax, group in zip(axes, groups, strict=True):
@@ -332,36 +359,18 @@ def _spectrum_figure(
 
         ax.set_title(
             f"{group} (N={samples[group]:,})",
-            color=_SECONDARY_INK,
+            color=SECONDARY_INK,
             fontsize=10,
         )
-        ax.set_xlabel("Component", color=_SECONDARY_INK)
-        _style(ax)
+        ax.set_xlabel("Component", color=SECONDARY_INK)
+        style(ax)
 
-    axes[0].set_ylabel(ylabel, color=_SECONDARY_INK)
-    axes[0].legend(frameon=False, labelcolor=_INK, fontsize=9)
-    figure.suptitle(title, color=_INK, fontsize=12)
+    axes[0].set_ylabel(ylabel, color=SECONDARY_INK)
+    axes[0].legend(frameon=False, labelcolor=INK, fontsize=9)
+    figure.suptitle(title, color=INK, fontsize=12)
     figure.tight_layout()
 
     return figure
-
-
-def _style(ax) -> None:
-    ax.set_facecolor(_SURFACE)
-    ax.grid(True, which="major", color=_GRID, linewidth=0.6)
-    ax.set_axisbelow(True)
-    ax.tick_params(colors=_MUTED, labelcolor=_SECONDARY_INK, labelsize=8)
-
-    for side in ("top", "right"):
-        ax.spines[side].set_visible(False)
-
-    for side in ("left", "bottom"):
-        ax.spines[side].set_color(_AXIS)
-
-
-def _close(figure: Figure) -> None:
-    # Figures built from `Figure` are not tracked by pyplot; drop the canvas.
-    figure.clear()
 
 
 # ---------------------------------------------------------------------------
@@ -580,8 +589,8 @@ def pca_report(summary: dict[str, Any]) -> str:
     def pcs(name: str) -> str:
         pca = representations[name]["pca"]
         return (
-            f"{_percent(pca['pc1_explained_variance'])} and "
-            f"{_percent(pca['pc2_explained_variance'])}"
+            f"{percent(pca['pc1_explained_variance'])} and "
+            f"{percent(pca['pc2_explained_variance'])}"
         )
 
     first, others = names[0], names[1:]
@@ -621,7 +630,7 @@ def pca_report(summary: dict[str, Any]) -> str:
             f"In `{name}`, the {a} and {b} centroids are separated by "
             f"{pair['distance']:.4g} units, corresponding to "
             f"{_times(separation)} the pooled within-dataset RMS dispersion. "
-            f"Between-dataset variance is {_percent(dataset['between_variance_fraction'])} "
+            f"Between-dataset variance is {percent(dataset['between_variance_fraction'])} "
             f"of the total variance (between-to-within variance ratio "
             f"{_number(dataset['between_to_within_variance_ratio'])}); the dataset "
             f"silhouette is {_silhouette(dataset)}."
@@ -643,7 +652,7 @@ def pca_report(summary: dict[str, Any]) -> str:
 
     for condition, distribution in summary["action_distribution"].items():
         counts = ", ".join(
-            f"{action} {count:,} ({_percent(distribution['fractions'][action])})"
+            f"{action} {count:,} ({percent(distribution['fractions'][action])})"
             for action, count in distribution["counts"].items()
         )
         lines.append(f"- Action counts, {condition}: {counts}.")
@@ -771,10 +780,6 @@ def _silhouette(structure: dict[str, Any]) -> str:
     )
 
 
-def _percent(value: float | None) -> str:
-    return "n/a" if value is None else f"{100 * value:.1f}%"
-
-
 def _times(value: float | None) -> str:
     return "n/a" if value is None else f"{value:.2f} times"
 
@@ -798,8 +803,8 @@ def pca_figures(analysis: PcaAnalysis) -> dict[str, dict[str, Figure]]:
     metadata = analysis.metadata
     datasets = [str(d) for d in metadata[DATASET]] if DATASET in metadata else None
     actions = [str(a) for a in metadata[ACTION]] if ACTION in metadata else None
-    dataset_colors = _colors(sorted(set(datasets or [])))
-    action_colors = _colors(_action_order(metadata) if actions else [])
+    dataset_colors = colors(sorted(set(datasets or [])))
+    action_colors = colors(_action_order(metadata) if actions else [])
     plotted = analysis.plotted
     sections: dict[str, dict[str, Figure]] = {
         DATASET: {},
@@ -809,7 +814,7 @@ def pca_figures(analysis: PcaAnalysis) -> dict[str, dict[str, Figure]]:
 
     for result in analysis.representations:
         name = result.representation
-        limits = _limits(result.projection.coordinates[plotted])
+        bounds = limits(result.projection.coordinates[plotted])
         every = plotted.nonzero().squeeze(1)
 
         if datasets is not None:
@@ -820,7 +825,7 @@ def pca_figures(analysis: PcaAnalysis) -> dict[str, dict[str, Figure]]:
                 colors=dataset_colors,
                 counts=_counts(datasets),
                 title="colored by dataset",
-                limits=limits,
+                limits=bounds,
             )
 
         if actions is None:
@@ -833,7 +838,7 @@ def pca_figures(analysis: PcaAnalysis) -> dict[str, dict[str, Figure]]:
             colors=action_colors,
             counts=_counts(actions),
             title="colored by action",
-            limits=limits,
+            limits=bounds,
         )
 
         for dataset in sorted(set(datasets or [])):
@@ -852,7 +857,7 @@ def pca_figures(analysis: PcaAnalysis) -> dict[str, dict[str, Figure]]:
                     ]
                 ),
                 title=f"colored by action · {dataset} only",
-                limits=limits,
+                limits=bounds,
             )
 
     return sections
@@ -880,8 +885,8 @@ def _projection_scatter(
         title=f"{result.representation} · {title}",
         subtitle=(
             f"N = {len(rows):,} plotted of {sum(counts.values()):,} · "
-            f"PC1 {_percent(pcs['pc1_explained_variance'])} · "
-            f"PC2 {_percent(pcs['pc2_explained_variance'])}"
+            f"PC1 {percent(pcs['pc1_explained_variance'])} · "
+            f"PC2 {percent(pcs['pc2_explained_variance'])}"
         ),
         limits=limits,
     )
@@ -900,7 +905,7 @@ def _scatter(
     from matplotlib.figure import Figure
     from matplotlib.lines import Line2D
 
-    figure = Figure(figsize=(6.4, 5.6), facecolor=_SURFACE)
+    figure = Figure(figsize=(6.4, 5.6), facecolor=SURFACE)
     ax = figure.subplots()
     total = sum(counts.values())
 
@@ -929,30 +934,23 @@ def _scatter(
             linestyle="",
             markersize=6,
             color=colors[label],
-            label=f"{label}  {counts[label]:,} ({_percent(counts[label] / total)})",
+            label=f"{label}  {counts[label]:,} ({percent(counts[label] / total)})",
         )
         for label in colors
         if counts.get(label)
     ]
 
-    ax.legend(handles=handles, frameon=False, labelcolor=_INK, fontsize=9)
+    ax.legend(handles=handles, frameon=False, labelcolor=INK, fontsize=9)
     ax.set_xlim(*limits[0])
     ax.set_ylim(*limits[1])
-    ax.set_xlabel("PC1", color=_SECONDARY_INK)
-    ax.set_ylabel("PC2", color=_SECONDARY_INK)
-    ax.set_title(subtitle, color=_SECONDARY_INK, fontsize=9)
-    figure.suptitle(title, color=_INK, fontsize=12)
-    _style(ax)
+    ax.set_xlabel("PC1", color=SECONDARY_INK)
+    ax.set_ylabel("PC2", color=SECONDARY_INK)
+    ax.set_title(subtitle, color=SECONDARY_INK, fontsize=9)
+    figure.suptitle(title, color=INK, fontsize=12)
+    style(ax)
     figure.tight_layout()
 
     return figure
-
-
-def _colors(labels: list[str]) -> dict[str, str]:
-    if len(labels) > len(_SERIES):
-        raise ValueError(f"At most {len(_SERIES)} categories per figure: {labels}")
-
-    return dict(zip(labels, _SERIES, strict=False))
 
 
 def _counts(labels: list[str]) -> dict[str, int]:
@@ -962,15 +960,6 @@ def _counts(labels: list[str]) -> dict[str, int]:
         counts[label] = counts.get(label, 0) + 1
 
     return counts
-
-
-def _limits(coordinates: torch.Tensor):
-    low = coordinates.min(dim=0).values
-    high = coordinates.max(dim=0).values
-    pad = (high - low).clamp_min(1e-12) * 0.03
-    low, high = (low - pad).tolist(), (high + pad).tolist()
-
-    return (low[0], high[0]), (low[1], high[1]) if len(low) > 1 else (-1.0, 1.0)
 
 
 def write_pca(
@@ -1015,8 +1004,8 @@ def write_pca(
 
     for items in figures.values():
         for name, figure in items.items():
-            figure.savefig(output_dir / "figures" / name, dpi=150, facecolor=_SURFACE)
-            _close(figure)
+            figure.savefig(output_dir / "figures" / name, dpi=150, facecolor=SURFACE)
+            close(figure)
 
 
 # ---------------------------------------------------------------------------
