@@ -702,3 +702,21 @@ def test_label_source_module_keeps_its_selection():
     sections = {section for section, _ in label_source_module.SELECTION}
 
     assert sections == set(label_source_module.SECTIONS)
+
+
+def test_cli_explains_a_missing_hub_login(snapshot_dir, monkeypatch):
+    import httpx
+    from huggingface_hub.errors import RepositoryNotFoundError
+
+    def hub(provenance, *, labels_revision=None):
+        request = httpx.Request("GET", "https://huggingface.co/api/datasets/x")
+        raise RepositoryNotFoundError(
+            "401 Client Error", response=httpx.Response(401, request=request)
+        )
+
+    monkeypatch.setattr(
+        "turn_wm.evaluation.latent_analysis.analyze.hub_label_sources", hub
+    )
+
+    with pytest.raises(SystemExit, match="require a Hugging Face login"):
+        main(["analyze-latents", str(snapshot_dir), "--analysis", "labels"])

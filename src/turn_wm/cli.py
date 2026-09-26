@@ -639,6 +639,13 @@ def _analyze_latents(
             balanced_cap=args.balanced_cap,
             labels_revision=args.labels_revision,
         )
+    except (GatedRepoError, RepositoryNotFoundError) as error:
+        # The label analysis reads the (private) dataset release.
+        raise SystemExit(
+            "turn-wm: error: the dataset release is not accessible; private "
+            "datasets require a Hugging Face login (`hf auth login`, or "
+            f"HF_TOKEN): {error}"
+        ) from error
     except (ValueError, FileNotFoundError, RuntimeError) as error:
         # Not a snapshot, a non-empty output directory or no matplotlib.
         raise SystemExit(f"turn-wm: error: {error}") from error
