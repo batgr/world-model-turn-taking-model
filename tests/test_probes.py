@@ -811,3 +811,33 @@ def test_balanced_or_unordered_snapshots_are_refused(tmp_path):
 
     with pytest.raises(ValueError, match="not a seeded fixed permutation"):
         write_probes(train, validation, label_sources={})
+
+
+# ---------------------------------------------------------------------------
+# Progress display
+# ---------------------------------------------------------------------------
+
+
+def test_progress_is_shown_and_changes_no_result(
+    tmp_path, snapshots, capsys, monkeypatch
+):
+    sources = _sources(tmp_path)
+
+    shown = write_probes(
+        *snapshots, output_dir=tmp_path / "shown", label_sources=sources, bootstrap=20
+    )
+    stderr = capsys.readouterr().err
+    # A bar over fits, and one line per fitted probe with its selection.
+    assert "probes" in stderr and "fit" in stderr
+    assert "ego speaking | trained on egocom | Mimi features: C=" in stderr
+    assert "(4/5 folds)" in stderr
+    assert f"probes: probe-train {snapshots[0]} (" in stderr
+    assert f"probes: validation {snapshots[1]} (" in stderr
+    assert "probes: done in" in stderr
+
+    monkeypatch.setenv("TURN_WM_PROGRESS", "0")
+    quiet = write_probes(
+        *snapshots, output_dir=tmp_path / "quiet", label_sources=sources, bootstrap=20
+    )
+    assert capsys.readouterr().err == ""
+    assert _hashes(shown) == _hashes(quiet)

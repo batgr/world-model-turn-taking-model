@@ -37,7 +37,8 @@ import hashlib
 import importlib.util
 import json
 import math
-from collections.abc import Mapping, Sequence
+import time
+from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
@@ -46,7 +47,11 @@ import pyarrow as pa
 import pyarrow.parquet as pq
 import torch
 
-from turn_wm.evaluation.latent_analysis.analyze import Snapshot, read_snapshot
+from turn_wm.evaluation.latent_analysis.analyze import (
+    Snapshot,
+    describe_snapshot,
+    read_snapshot,
+)
 from turn_wm.evaluation.latent_analysis.label_source import (
     CONVERSATIONAL_STATE,
     FUTURE,
@@ -73,6 +78,7 @@ from turn_wm.evaluation.latent_analysis.rollout import (
     ROLLOUT_TENSORS,
     TRUE_FUTURE_LATENT,
 )
+from turn_wm.progress import log, progress
 from turn_wm.training.metrics import skill_score
 
 if TYPE_CHECKING:
@@ -380,11 +386,13 @@ def analyze_rollout_dynamics(
     corpora: Sequence[str],
     seed: int,
     bootstrap: int = DEFAULT_BOOTSTRAP,
+    tick: Callable[[], Any] | None = None,
 ) -> RolloutDynamics:
     """The three measures per horizon and condition, with the event diagnostic.
 
     `rollout` is the snapshot's rollout provenance; `recordings` (unique per
     corpus) and `corpora` give each row's bootstrap cluster and stratum.
+    `tick` is called after every condition's bootstrap (progress display only).
     """
 
     horizons_steps = [int(h) for h in rollout["horizons_steps"]]
@@ -426,6 +434,9 @@ def analyze_rollout_dynamics(
                 with_event / values["n"] if values["n"] else None
             )
             metrics[h][name] = values
+
+            if tick is not None:
+                tick()
 
     return RolloutDynamics(
         horizons_steps=horizons_steps,
@@ -610,34 +621,49 @@ def write_rollout_dynamics(
     if output_dir.exists() and any(output_dir.iterdir()):
         raise ValueError(f"Output directory is not empty: {output_dir}")
 
+    start = time.perf_counter()
     horizons_steps = [int(h) for h in rollout["horizons_steps"]]
     horizons_s = dict(
         zip(horizons_steps, map(float, rollout["horizons_s"]), strict=True)
     )
+    log(f"analyze-rollouts: {describe_snapshot(snapshot)}; output {output_dir}")
 
     sources = (
         label_sources
         if label_sources is not None
         else hub_label_sources(provenance, labels_revision=labels_revision)
     )
+    log("analyze-rollouts: joining labels")
     audits = {corpus: audit_corpus(source) for corpus, source in sources.items()}
     joined = join_labels(snapshot.metadata, audits, sources, selection=SELECTION)
     conditions = rollout_conditions(joined.variables, horizons_s)
-    corpora = [str(d) for d in snapshot.metadata["dataset"]]
-    dynamics = analyze_rollout_dynamics(
-        snapshot.representations,
-        conditions,
-        rollout,
-        # Recording ids are unique within a corpus only.
-        recordings=[
-            f"{d}/{r}"
-            for d, r in zip(corpora, snapshot.metadata["recording_id"], strict=True)
-        ],
-        corpora=corpora,
-        seed=snapshot.seed,
-        bootstrap=bootstrap,
+    log(
+        f"analyze-rollouts: measuring {len(horizons_steps)} horizons x "
+        f"{len(CONDITIONS)} conditions ({bootstrap} bootstrap resamples each)"
     )
+    corpora = [str(d) for d in snapshot.metadata["dataset"]]
 
+    with progress(
+        total=len(horizons_steps) * len(CONDITIONS),
+        desc="analyze-rollouts",
+        unit="bootstrap",
+    ) as bar:
+        dynamics = analyze_rollout_dynamics(
+            snapshot.representations,
+            conditions,
+            rollout,
+            # Recording ids are unique within a corpus only.
+            recordings=[
+                f"{d}/{r}"
+                for d, r in zip(corpora, snapshot.metadata["recording_id"], strict=True)
+            ],
+            corpora=corpora,
+            seed=snapshot.seed,
+            bootstrap=bootstrap,
+            tick=bar.update,
+        )
+
+    log("analyze-rollouts: writing figures, tables and report")
     figures_dir = output_dir / "figures"
     figures_dir.mkdir(parents=True, exist_ok=True)
     figures = {
@@ -711,6 +737,7 @@ def write_rollout_dynamics(
         json.dumps(summary, indent=2) + "\n", encoding="utf-8"
     )
     (output_dir / "report.md").write_text(rollout_report(summary), encoding="utf-8")
+    log(f"analyze-rollouts: done in {time.perf_counter() - start:.0f}s")
 
     return output_dir
 

@@ -125,6 +125,13 @@ def test_raw_observations_go_through_the_encoder():
     assert torch.equal(representations[LATENT], expected[:, :2])
 
 
+def test_extraction_shows_its_progress_in_anchors(capsys):
+    extract_snapshot(_model(), [_batch(0), _batch(1)], total=4)
+
+    stderr = capsys.readouterr().err
+    assert "extract" in stderr and "4/4" in stderr and "anchor" in stderr
+
+
 def test_max_samples_keeps_the_first_samples_in_order():
     snapshot = extract_snapshot(_model(), [_batch(0), _batch(100)], max_samples=3)
 
@@ -357,12 +364,19 @@ def _read(output):
     ids=["v1", "longer-context", "batchnorm-projector"],
 )
 def test_run_extracts_the_trained_model_on_validation(
-    tmp_path, cache_root, loads, overrides
+    tmp_path, cache_root, loads, overrides, capsys
 ):
     cfg = _config(cache_root, *overrides)
     run_dir, model = _make_run(tmp_path, cfg)
+    capsys.readouterr()
 
     output = extract_run(run_dir, max_samples=7, batch_size=3)
+
+    # What runs, where it goes and how long it took, on stderr.
+    stderr = capsys.readouterr().err
+    assert f"run: {run_dir}" in stderr and "split: validation" in stderr
+    assert "device cpu, max samples 7" in stderr and f"output {output}" in stderr
+    assert "extract-latents: written in" in stderr
 
     tensors, metadata, manifest = _read(output)
 

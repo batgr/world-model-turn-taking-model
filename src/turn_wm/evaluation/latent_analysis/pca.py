@@ -46,6 +46,7 @@ from typing import Any
 import torch
 
 from turn_wm.evaluation.latent_analysis.spectrum import ALL
+from turn_wm.progress import progress
 
 DATASET = "dataset"
 ACTION = "action"
@@ -180,7 +181,12 @@ def analyze_pca(
 
     results = []
 
-    for name, rows in representations.items():
+    for name, rows in progress(
+        representations.items(),
+        total=len(representations),
+        desc="pca",
+        unit="representation",
+    ):
         if len(rows) != len(keys):
             raise ValueError(
                 f"{name!r} has {len(rows)} rows for {len(keys)} metadata rows"

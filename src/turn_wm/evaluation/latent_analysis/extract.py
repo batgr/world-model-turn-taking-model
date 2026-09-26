@@ -33,6 +33,7 @@ from safetensors.torch import save_file
 
 from turn_wm.data.dataset import ACTION_TO_ID, MASKED_ACTION_ID
 from turn_wm.models.lewm.jepa import JEPA
+from turn_wm.progress import progress
 from turn_wm.training.lewm import Trajectories, encode_trajectories, trajectories
 
 SCHEMA_VERSION = 1
@@ -105,13 +106,15 @@ def extract_snapshot(
     representations: Callable[
         [JEPA, Trajectories], dict[str, torch.Tensor]
     ] = anchor_representations,
+    total: int | None = None,
 ) -> RepresentationSnapshot:
     """Representations of the first `max_samples` samples of `batches`.
 
     `batches` are collated data batches, in the order to keep; `None` keeps
     every sample. `representations` maps the model and one batch of
     trajectories to named (B, ...) tensors (by default the anchor
-    representations). The model runs in eval mode and float32.
+    representations). The model runs in eval mode and float32. `total`
+    (anchors in `batches`) only sizes the progress bar.
     """
 
     if max_samples is not None and max_samples <= 0:
@@ -126,7 +129,12 @@ def extract_snapshot(
     }
     collected = 0
 
-    with torch.inference_mode():
+    if max_samples is not None:
+        total = max_samples if total is None else min(total, max_samples)
+
+    bar = progress(total=total, desc="extract", unit="anchor")
+
+    with torch.inference_mode(), bar:
         for batch in batches:
             if max_samples is not None and collected >= max_samples:
                 break
@@ -156,19 +164,18 @@ def extract_snapshot(
             metadata["action"].extend(_action_names(action_ids.tolist()))
 
             collected += take
+            bar.update(take)
 
     if not chunks:
         raise ValueError("No samples were extracted")
 
-    representations = {
-        name: torch.cat(parts).contiguous() for name, parts in chunks.items()
-    }
+    tensors = {name: torch.cat(parts).contiguous() for name, parts in chunks.items()}
 
-    for name, tensor in representations.items():
+    for name, tensor in tensors.items():
         if not torch.isfinite(tensor).all():
             raise ValueError(f"Extracted {name!r} contains non-finite values")
 
-    return RepresentationSnapshot(representations=representations, metadata=metadata)
+    return RepresentationSnapshot(representations=tensors, metadata=metadata)
 
 
 def write_snapshot(

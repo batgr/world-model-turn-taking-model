@@ -23,6 +23,7 @@ Only the validation split is read.
 
 from __future__ import annotations
 
+import time
 from pathlib import Path
 from typing import Any
 
@@ -38,6 +39,7 @@ from turn_wm.evaluation.latent_analysis.extract import (
 from turn_wm.evaluation.latent_analysis.run import DEFAULT_CHECKPOINT, open_run
 from turn_wm.models.lewm.jepa import JEPA
 from turn_wm.models.lewm.sigreg import SIGReg
+from turn_wm.progress import log
 from turn_wm.training.lewm import Trajectories, lejepa_forward
 
 ROLLOUT_SPLIT = "validation"
@@ -88,6 +90,7 @@ def extract_rollout_snapshot(
     *,
     max_samples: int | None = DEFAULT_ROLLOUT_SAMPLES,
     device: torch.device | str = "cpu",
+    total: int | None = None,
 ) -> RepresentationSnapshot:
     """The rollout tensors of the first `max_samples` samples of `batches`."""
 
@@ -102,6 +105,7 @@ def extract_rollout_snapshot(
         representations=lambda m, b: rollout_representations(
             m, b, sigreg=sigreg, cfg=cfg
         ),
+        total=total,
     )
 
 
@@ -159,6 +163,7 @@ def extract_rollout_run(
     that `extract_run` uses, so a prefix is a uniform, deterministic sample.
     """
 
+    start = time.perf_counter()
     opened = open_run(
         run_dir,
         checkpoint=checkpoint,
@@ -169,17 +174,22 @@ def extract_rollout_run(
         mimi_cache_root=mimi_cache_root,
         media_roots=media_roots,
     )
+    output_dir = output_dir or opened.default_output_dir("-rollout")
+    log(
+        f"extract-rollouts: device {device}, max samples {max_samples}, "
+        f"output {output_dir}"
+    )
     snapshot = extract_rollout_snapshot(
         opened.checkpoint.model,
         opened.cfg,
         opened.loader,
         max_samples=max_samples,
         device=device,
+        total=len(opened.dataset),
     )
-
-    return write_snapshot(
+    written = write_snapshot(
         snapshot,
-        output_dir or opened.default_output_dir("-rollout"),
+        output_dir,
         provenance={
             **opened.provenance(
                 max_samples=max_samples, samples=snapshot.samples, device=device
@@ -187,3 +197,6 @@ def extract_rollout_run(
             "rollout": rollout_provenance(opened.cfg),
         },
     )
+    log(f"extract-rollouts: written in {time.perf_counter() - start:.0f}s")
+
+    return written

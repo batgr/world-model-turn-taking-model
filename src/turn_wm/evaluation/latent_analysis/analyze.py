@@ -18,6 +18,7 @@ from __future__ import annotations
 import hashlib
 import importlib.util
 import json
+import time
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from pathlib import Path
@@ -61,6 +62,7 @@ from turn_wm.evaluation.latent_analysis.spectrum import (
     Spectrum,
     analyze_spectra,
 )
+from turn_wm.progress import log
 
 if TYPE_CHECKING:
     from matplotlib.figure import Figure
@@ -178,7 +180,12 @@ def analyze_snapshot(
     for output_dir in outputs.values():
         _require_empty(output_dir)
 
+    start = time.perf_counter()
+    log(f"analyze-latents: {describe_snapshot(snapshot)}")
+
     for name, output_dir in outputs.items():
+        log(f"analyze-latents: {name} -> {output_dir}")
+
         if name == SPECTRUM:
             write_spectrum(snapshot, output_dir)
         elif name == PCA:
@@ -208,7 +215,23 @@ def analyze_snapshot(
                 max_plot_samples=max_plot_samples,
             )
 
+    log(f"analyze-latents: done in {time.perf_counter() - start:.0f}s")
+
     return outputs
+
+
+def describe_snapshot(snapshot: Snapshot) -> str:
+    """One log line: the snapshot, its rows, split and checkpoint."""
+
+    provenance = snapshot.manifest.get("provenance") or {}
+    checkpoint = provenance.get("checkpoint") or {}
+    split = (provenance.get("data") or {}).get("split")
+    rows = len(next(iter(snapshot.metadata.values()), []))
+
+    return (
+        f"{snapshot.path} ({rows:,} anchors, {split} split, checkpoint "
+        f"{checkpoint.get('filename')} step {checkpoint.get('global_step')})"
+    )
 
 
 # ---------------------------------------------------------------------------

@@ -24,6 +24,7 @@ from __future__ import annotations
 import copy
 import hashlib
 import json
+import time
 from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import Any
@@ -37,6 +38,7 @@ from turn_wm.data.source import DATASETS, LoadedData, load_data
 from turn_wm.evaluation.latent_analysis.extract import extract_snapshot, write_snapshot
 from turn_wm.models.build import observation_source
 from turn_wm.models.lewm.jepa import JEPA
+from turn_wm.progress import log
 from turn_wm.training.lewm import LeWMModule
 from turn_wm.training.train import (
     RunObservations,
@@ -92,6 +94,7 @@ def extract_run(
     `<DATASET>_MEDIA_ROOT` environment variables, as in training.
     """
 
+    start = time.perf_counter()
     opened = open_run(
         run_dir,
         checkpoint=checkpoint,
@@ -104,23 +107,30 @@ def extract_run(
     )
 
     # 3. Extraction.
+    if output_dir is None:
+        output_dir = opened.default_output_dir()
+
+    log(
+        f"extract-latents: device {device}, max samples {max_samples}, "
+        f"output {output_dir}"
+    )
     snapshot = extract_snapshot(
         opened.checkpoint.model,
         opened.loader,
         max_samples=max_samples,
         device=device,
+        total=len(opened.dataset),
     )
-
-    if output_dir is None:
-        output_dir = opened.default_output_dir()
-
-    return write_snapshot(
+    written = write_snapshot(
         snapshot,
         output_dir,
         provenance=opened.provenance(
             max_samples=max_samples, samples=snapshot.samples, device=device
         ),
     )
+    log(f"extract-latents: written in {time.perf_counter() - start:.0f}s")
+
+    return written
 
 
 @dataclass(frozen=True)
@@ -207,6 +217,7 @@ def open_run(
     # 1. Provenance: the run as it was.
     record = load_run(run_dir)
     cfg = record.cfg
+    log(f"run: {record.run_dir} ({record.metadata.get('run_id')})")
 
     if mimi_cache_root is not None:
         cfg = copy.deepcopy(cfg)
@@ -217,6 +228,11 @@ def open_run(
 
     # The checkpoint first: a wrong name fails before any download.
     loaded_checkpoint = load_checkpoint(record, checkpoint)
+    log(
+        f"checkpoint: {loaded_checkpoint.path} (epoch {loaded_checkpoint.epoch}, "
+        f"step {loaded_checkpoint.global_step})"
+    )
+    log(f"loading the dataset release and the {split} observations")
     loaded = load_run_data(record)
 
     # 2. Data: the split as the run saw it, in a fixed seeded order.
@@ -224,10 +240,15 @@ def open_run(
         record, cfg, loaded, media_roots=media_roots
     )
     dataset = build_run_dataset(cfg, loaded, observations, split=split, training=False)
+    batch_size = batch_size or int(cfg.loader.batch_size)
+    log(
+        f"split: {split}, {len(dataset):,} anchors in seeded order (seed {seed}), "
+        f"batch size {batch_size}"
+    )
     loader = build_dataloader(
         dataset,
         loader=DataLoaderConfig(
-            batch_size=batch_size or int(cfg.loader.batch_size),
+            batch_size=batch_size,
             num_workers=num_workers,
             seed=seed,
             shuffle=True,

@@ -46,6 +46,7 @@ from turn_wm.evaluation.latent_analysis.pca import (
     silhouette,
 )
 from turn_wm.evaluation.latent_analysis.spectrum import ALL
+from turn_wm.progress import progress
 
 DEFAULT_BALANCED_CAP = 1_000
 DEFAULT_BINS = 10
@@ -94,8 +95,14 @@ def analyze_labels(
     projections = {name: pca_2d(rows) for name, rows in representations.items()}
     metrics: dict[str, dict[str, dict[str, dict[str, Any]]]] = {}
     clip = {}
+    bar = progress(
+        total=len(variables) * len(representations) * len(conditions),
+        desc="labels",
+        unit="metric",
+    )
 
     for variable in variables:
+        bar.set_description(f"labels | {variable.name}")
         valid = torch.tensor([v is not None for v in variable.values])
 
         if variable.kind != CATEGORICAL:
@@ -142,6 +149,9 @@ def analyze_labels(
                 metrics.setdefault(variable.name, {}).setdefault(name, {})[
                     condition
                 ] = result
+                bar.update()
+
+    bar.close()
 
     return LabelAnalysis(
         variables=list(variables),

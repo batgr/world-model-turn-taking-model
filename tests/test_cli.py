@@ -642,9 +642,18 @@ def test_precompute_mimi_propagates_every_option(
     assert fake_precompute["model_name"] == "kyutai/mimi"
     assert fake_precompute["model_revision"] == "abc123"
 
-    out = capsys.readouterr().out
-    assert "[1/1] synthetic / r1" in out
+    captured = capsys.readouterr()
+    out = captured.out
+    # Progress and stage logs on stderr; stdout keeps only the results.
+    assert "synthetic / r1" not in out
+    assert "precompute-mimi: dataset egocom" in captured.err
+    assert "precompute-mimi: device mps" in captured.err
+    assert f"precompute-mimi: output {output}" in captured.err
+    assert "precompute-mimi: 1 recordings" in captured.err
+    assert "1/1" in captured.err and "recording" in captured.err
+    assert "precompute-mimi: done in" in captured.err
     assert f"Mimi cache written to {output}" in out
+    assert f"manifest: {output / 'manifest.json'}" in out
     assert "recordings: 1" in out
     assert "feature rate: 10 Hz" in out
     assert "feature dim: 512" in out

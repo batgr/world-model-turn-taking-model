@@ -45,7 +45,8 @@ import hashlib
 import importlib.util
 import json
 import math
-from collections.abc import Mapping, Sequence
+import time
+from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
@@ -55,7 +56,11 @@ import pyarrow.parquet as pq
 import torch
 import torch.nn.functional as F
 
-from turn_wm.evaluation.latent_analysis.analyze import Snapshot, read_snapshot
+from turn_wm.evaluation.latent_analysis.analyze import (
+    Snapshot,
+    describe_snapshot,
+    read_snapshot,
+)
 from turn_wm.evaluation.latent_analysis.label_source import (
     CATEGORICAL,
     CONVERSATIONAL_STATE,
@@ -78,6 +83,7 @@ from turn_wm.evaluation.latent_analysis.rendering import (
 from turn_wm.evaluation.latent_analysis.rollout_dynamics import (
     cluster_bootstrap_weights,
 )
+from turn_wm.progress import log, progress
 
 if TYPE_CHECKING:
     from matplotlib.figure import Figure
@@ -517,6 +523,7 @@ def select_regularization(
     *,
     classes: int | None,
     seed: int,
+    tick: Callable[[], Any] | None = None,
 ) -> CrossValidation:
     """Choose C or alpha by recording-grouped CV inside probe-train.
 
@@ -573,6 +580,9 @@ def select_regularization(
                 else r2(y[held], pred)
             )
 
+            if tick is not None:
+                tick()
+
     mean_scores = {
         v: sum(by_fold.values()) / len(by_fold) for v, by_fold in fold_scores.items()
     }
@@ -592,6 +602,18 @@ class FittedProbe:
 
     cv: CrossValidation
     probe: LinearProbe | None
+    seconds: float = 0.0  # progress display only; never written
+
+    @property
+    def fits(self) -> int:
+        """Fits done: every candidate on every valid fold, then the final one."""
+
+        if not self.cv.fold_scores:
+            return 0
+
+        return len(self.cv.fold_scores) * len(self.cv.valid_folds) + (
+            self.probe is not None
+        )
 
     def predict(self, x: torch.Tensor) -> torch.Tensor:
         assert self.probe is not None
@@ -606,17 +628,27 @@ def fit_probe(
     *,
     classes: int | None = None,
     seed: int = 0,
+    tick: Callable[[], Any] | None = None,
 ) -> FittedProbe:
-    """Select C / alpha inside probe-train, then fit on all of it and freeze."""
+    """Select C / alpha inside probe-train, then fit on all of it and freeze.
 
-    cv = select_regularization(kind, x, y, recordings, classes=classes, seed=seed)
+    `tick` is called after every fit (progress display only).
+    """
+
+    start = time.perf_counter()
+    cv = select_regularization(
+        kind, x, y, recordings, classes=classes, seed=seed, tick=tick
+    )
 
     if cv.selected is None:
-        return FittedProbe(cv, None)
+        return FittedProbe(cv, None, time.perf_counter() - start)
 
-    return FittedProbe(
-        cv, LinearProbe.fit(kind, x, y, classes=classes, value=cv.selected)
-    )
+    probe = LinearProbe.fit(kind, x, y, classes=classes, value=cv.selected)
+
+    if tick is not None:
+        tick()
+
+    return FittedProbe(cv, probe, time.perf_counter() - start)
 
 
 def probe_predictions(
@@ -750,6 +782,7 @@ def run_probe(
     bootstrap: int,
     seed: int,
     fitted: dict[Any, FittedProbe] | None = None,
+    tick: Callable[[], Any] | None = None,
 ) -> dict[str, Any]:
     """Scores of both representations and their delta in one setting.
 
@@ -845,6 +878,7 @@ def run_probe(
                 [train.recordings[i] for i in train_rows],
                 classes=len(classes) if classes is not None else None,
                 seed=_seed(seed, "cv", *setting.train),
+                tick=tick,
             )
 
         probes[name] = fitted[key]
@@ -919,6 +953,19 @@ def run_probe(
     }
 
 
+def _progress_line(task, name, train_corpora, probe: FittedProbe) -> str:
+    cv = probe.cv
+    head = f"  {_short(task)} | trained on {'+'.join(train_corpora)} | {_NAMES[name]}"
+
+    if cv.selected is None:
+        return f"{head}: not evaluable ({cv.unsupported})"
+
+    return (
+        f"{head}: {regularization_parameter(cv.kind)}={cv.selected:g} "
+        f"({len(cv.valid_folds)}/{cv.requested_folds} folds) in {probe.seconds:.0f}s"
+    )
+
+
 def _skipped(
     reason, train_rows, eval_rows, *, keep_regularization: bool = False
 ) -> dict[str, Any]:
@@ -979,6 +1026,7 @@ def analyze_probes(
     """Every task in every setting; the context (N, classes, coverage)."""
 
     check_snapshots(train, validation)
+    log("probes: joining labels to the probe-train and validation snapshots")
     train_variables, _, _ = _variables(train, sources)
     validation_variables, joined, audits = _variables(validation, sources)
     seed = validation.seed
@@ -986,6 +1034,24 @@ def analyze_probes(
     tasks: dict[str, Any] = {}
     scores: list[dict[str, Any]] = []
     fitted_probes: list[dict[str, Any]] = []
+    training_sets = len({s.train for s in probe_settings(corpora, cross_domain=True)})
+
+    def planned(kind: str) -> int:
+        # Upper bound per probe: every candidate on every fold, then the final.
+        return len(candidates(kind)) * CV_FOLDS + 1
+
+    available = [
+        validation_variables[t.variable]
+        for t in TASKS
+        if t.variable in validation_variables and t.variable in train_variables
+    ]
+    bar = progress(
+        total=sum(
+            planned(v.kind) * training_sets * len(REPRESENTATIONS) for v in available
+        ),
+        desc="probes",
+        unit="fit",
+    )
 
     for task in TASKS:
         variable = validation_variables.get(task.variable)
@@ -1015,6 +1081,8 @@ def analyze_probes(
         fitted: dict[Any, FittedProbe] = {}
 
         for setting in probe_settings(corpora, cross_domain=categorical):
+            bar.set_description(f"probes | {_short(task.variable)} | {setting.name}")
+            before = set(fitted)
             scores.append(
                 {
                     "task": task.variable,
@@ -1029,9 +1097,26 @@ def analyze_probes(
                         bootstrap=bootstrap,
                         seed=_seed(seed, task.variable),
                         fitted=fitted,
+                        tick=bar.update,
                     ),
                 }
             )
+
+            for name, train_corpora in sorted(set(fitted) - before):
+                probe = fitted[(name, train_corpora)]
+                # Folds that were not valid are fits that never happen.
+                bar.total -= planned(variable.kind) - probe.fits
+                bar.refresh()
+                log(_progress_line(task.variable, name, train_corpora, probe))
+
+        # Training sets never fitted (the class support excluded them).
+        for train_corpora in {
+            s.train for s in probe_settings(corpora, cross_domain=True)
+        }:
+            for name in REPRESENTATIONS:
+                if (name, train_corpora) not in fitted:
+                    bar.total -= planned(variable.kind)
+                    bar.refresh()
 
         # Model-selection provenance, once per fitted probe.
         fitted_probes += [
@@ -1047,6 +1132,8 @@ def analyze_probes(
             }
             for (name, train_corpora), probe in fitted.items()
         ]
+
+    bar.close()
 
     return {
         "tasks": tasks,
@@ -1158,6 +1245,10 @@ def write_probes(
     if output_dir.exists() and any(output_dir.iterdir()):
         raise ValueError(f"Output directory is not empty: {output_dir}")
 
+    start = time.perf_counter()
+    log(f"probes: probe-train {describe_snapshot(train)}")
+    log(f"probes: validation {describe_snapshot(validation)}")
+    log(f"probes: {bootstrap} bootstrap resamples; output {output_dir}")
     sources = (
         label_sources
         if label_sources is not None
@@ -1167,6 +1258,7 @@ def write_probes(
         )
     )
     results = analyze_probes(train, validation, sources, bootstrap=bootstrap)
+    log("probes: writing figures, tables and report")
     figures = probe_figures(results)
     (output_dir / "figures").mkdir(parents=True, exist_ok=True)
 
@@ -1189,6 +1281,7 @@ def write_probes(
         json.dumps(summary, indent=2) + "\n", encoding="utf-8"
     )
     (output_dir / "report.md").write_text(probe_report(summary), encoding="utf-8")
+    log(f"probes: done in {time.perf_counter() - start:.0f}s")
 
     return output_dir
 

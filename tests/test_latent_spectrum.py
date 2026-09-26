@@ -234,8 +234,12 @@ def snapshot_dir(tmp_path):
     )
 
 
-def test_analysis_of_a_snapshot(snapshot_dir):
+def test_analysis_of_a_snapshot(snapshot_dir, capsys):
     outputs = analyze_snapshot(snapshot_dir)
+
+    stderr = capsys.readouterr().err
+    assert f"analyze-latents: {snapshot_dir} (" in stderr
+    assert "analyze-latents: done in" in stderr
 
     output = outputs["spectrum"]
     assert output == snapshot_dir / "analysis" / "spectrum"

@@ -21,6 +21,7 @@ from __future__ import annotations
 import argparse
 import json
 import re
+import time
 from collections import Counter
 from collections.abc import Sequence
 from pathlib import Path
@@ -97,6 +98,7 @@ from turn_wm.evaluation.latent_analysis.show import (
     show_probes,
     show_rollouts,
 )
+from turn_wm.progress import log, progress
 from turn_wm.training.train import run as run_training
 
 SPLITS = ("train", "validation", "test")
@@ -756,32 +758,49 @@ def _precompute_mimi(
     args: argparse.Namespace,
     parser: argparse.ArgumentParser,
 ) -> int:
+    start = time.perf_counter()
+    log(f"precompute-mimi: dataset {args.dataset}")
     data = _load(DATASETS[args.dataset])
     media_roots = _media_roots(data, args.media_root)
+    log(f"precompute-mimi: device {args.device}, model {args.model}")
+    log(f"precompute-mimi: output {args.output}")
 
-    def report(index: int, total: int, span: RecordingSpan) -> None:
-        print(f"[{index}/{total}] {span.dataset} / {span.recording_id}", flush=True)
+    with progress(desc="precompute-mimi", unit="recording") as bar:
 
-    try:
-        manifest_path = precompute_mimi_cache(
-            data,
-            media_roots=media_roots,
-            output_root=args.output,
-            model_name=args.model,
-            model_revision=args.revision,
-            chunk_seconds=args.chunk_seconds,
-            device=args.device,
-            progress=report,
-        )
-    except (ValueError, OSError) as error:
-        # Output not empty, missing media or root, inconsistent grid or
-        # audio, or a Mimi model/revision the Hub cannot provide.
-        raise SystemExit(f"turn-wm: error: {error}") from error
+        def report(index: int, total: int, span: RecordingSpan) -> None:
+            # Called before each recording: the ones before it are done.
+            if bar.total is None:
+                log(f"precompute-mimi: {total} recordings")
+                bar.total = total
 
+            bar.n = index - 1
+            bar.set_postfix_str(f"{span.dataset} / {span.recording_id}")
+
+        try:
+            manifest_path = precompute_mimi_cache(
+                data,
+                media_roots=media_roots,
+                output_root=args.output,
+                model_name=args.model,
+                model_revision=args.revision,
+                chunk_seconds=args.chunk_seconds,
+                device=args.device,
+                progress=report,
+            )
+        except (ValueError, OSError) as error:
+            # Output not empty, missing media or root, inconsistent grid or
+            # audio, or a Mimi model/revision the Hub cannot provide.
+            raise SystemExit(f"turn-wm: error: {error}") from error
+
+        bar.n = bar.total or 0
+        bar.refresh()
+
+    log(f"precompute-mimi: done in {time.perf_counter() - start:.0f}s")
     manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
     features = manifest["features"]
 
     print(f"Mimi cache written to {manifest_path.parent}")
+    print(f"manifest: {manifest_path}")
     print(f"recordings: {len(manifest['recordings'])}")
     print(f"feature rate: {features['rate_hz']:g} Hz")
     print(f"feature dim: {features['dim']}")

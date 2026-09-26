@@ -620,7 +620,11 @@ def test_cli_show_prints_the_table_and_changes_no_result(tmp_path, monkeypatch, 
     assert _hashes(snapshot / "analysis" / "rollout_dynamics") == _hashes(
         tmp_path / "shown"
     )
-    printed = capsys.readouterr().out
+    captured = capsys.readouterr()
+    printed = captured.out
+    # Input, a bar over the bootstraps and the duration, on stderr.
+    assert f"analyze-rollouts: {snapshot} (" in captured.err
+    assert "bootstrap" in captured.err and "analyze-rollouts: done in" in captured.err
     assert "ground-truth future action/event tokens: yes" in printed
     assert "ONSET/OFFSET in future tokens" in printed
     assert str(tmp_path / "shown" / "figures" / "skill_vs_horizon.png") in printed
