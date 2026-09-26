@@ -10,13 +10,17 @@ _IMPORT = (
 
 
 def _backend(value: str) -> str:
-    return subprocess.run(
-        [sys.executable, "-c", _IMPORT],
-        env={"MPLBACKEND": value, "PATH": ""},
-        capture_output=True,
-        text=True,
-        check=True,
-    ).stdout.strip().lower()
+    return (
+        subprocess.run(
+            [sys.executable, "-c", _IMPORT],
+            env={"MPLBACKEND": value, "PATH": ""},
+            capture_output=True,
+            text=True,
+            check=True,
+        )
+        .stdout.strip()
+        .lower()
+    )
 
 
 def test_a_missing_notebook_backend_falls_back_to_agg():

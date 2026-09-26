@@ -1,21 +1,11 @@
-"""Representations of trained world models, extracted for offline analysis."""
+"""Representations of trained world models, extracted for offline analysis.
 
-from turn_wm.evaluation.latent_analysis.analyze import analyze_snapshot
-from turn_wm.evaluation.latent_analysis.extract import (
-    FEATURES,
-    LATENT,
-    RepresentationSnapshot,
-    extract_snapshot,
-    write_snapshot,
-)
-from turn_wm.evaluation.latent_analysis.run import extract_run
+- `extract` / `run`: write a run's representations to a snapshot
+  (`turn-wm extract-latents`);
+- `spectrum`, `pca` and `analyze`: analyze a snapshot
+  (`turn-wm analyze-latents`);
+- `show`: display written results in a notebook.
 
-__all__ = [
-    "FEATURES",
-    "LATENT",
-    "RepresentationSnapshot",
-    "analyze_snapshot",
-    "extract_run",
-    "extract_snapshot",
-    "write_snapshot",
-]
+Nothing is imported here, so `show` can be imported from a notebook kernel
+without the training dependencies.
+"""

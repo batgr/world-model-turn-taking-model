@@ -61,12 +61,21 @@ from turn_wm.data.source import (
     LoadedData,
     load_data,
 )
-from turn_wm.evaluation.latent_analysis.analyze import ANALYSES, analyze_snapshot
+from turn_wm.evaluation.latent_analysis.analyze import (
+    ANALYSES,
+    PCA,
+    analyze_snapshot,
+)
+from turn_wm.evaluation.latent_analysis.pca import (
+    DEFAULT_MAX_PLOT_SAMPLES,
+    DEFAULT_SILHOUETTE_SAMPLES,
+)
 from turn_wm.evaluation.latent_analysis.run import (
     DEFAULT_CHECKPOINT,
     DEFAULT_SPLIT,
     extract_run,
 )
+from turn_wm.evaluation.latent_analysis.show import show_pca
 from turn_wm.training.train import run as run_training
 
 SPLITS = ("train", "validation", "test")
@@ -344,6 +353,26 @@ def build_parser() -> argparse.ArgumentParser:
             "(default: SNAPSHOT/analysis)."
         ),
     )
+    analyze.add_argument(
+        "--silhouette-samples",
+        type=_positive_int,
+        default=DEFAULT_SILHOUETTE_SAMPLES,
+        help="Rows per silhouette, seeded sample (default: %(default)s).",
+    )
+    analyze.add_argument(
+        "--max-plot-samples",
+        type=_positive_int,
+        default=DEFAULT_MAX_PLOT_SAMPLES,
+        help="Rows drawn in the PCA figures (default: %(default)s).",
+    )
+    analyze.add_argument(
+        "--show",
+        action="store_true",
+        help=(
+            "Then show the PCA results: inline in a notebook kernel, else "
+            "a text table and the figure paths. Results are unchanged."
+        ),
+    )
     analyze.set_defaults(handler=_analyze_latents)
 
     return parser
@@ -409,6 +438,8 @@ def _analyze_latents(
             args.snapshot,
             analyses=args.analysis or ANALYSES,
             output_root=args.output,
+            silhouette_samples=args.silhouette_samples,
+            max_plot_samples=args.max_plot_samples,
         )
     except (ValueError, FileNotFoundError, RuntimeError) as error:
         # Not a snapshot, a non-empty output directory or no matplotlib.
@@ -416,6 +447,9 @@ def _analyze_latents(
 
     for name, output in outputs.items():
         print(f"{name}: {output}")
+
+    if args.show and PCA in outputs:
+        show_pca(outputs[PCA])
 
     return 0
 
