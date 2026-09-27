@@ -1,6 +1,6 @@
 """
-Display written PCA, label, rollout-dynamics, probe and action-ablation
-results: tables, then the figures.
+Display written spectrum, PCA, label, rollout-dynamics, probe and
+action-ablation results: tables, then the figures.
 
 Only reads `summary.json` and the figures an analysis already wrote, so
 showing never changes a result. Standard library only, plus IPython when it
@@ -9,6 +9,7 @@ dependencies),
 
     import sys; sys.path.insert(0, "<repo>/src")
     from turn_wm.evaluation.latent_analysis.show import show_pca
+    show_spectrum("<snapshot>/analysis/spectrum")
     show_pca("<snapshot>/analysis/pca")
     show_labels("<snapshot>/analysis/labels")
     show_rollouts("<rollout-snapshot>/analysis/rollout_dynamics")
@@ -27,6 +28,72 @@ import json
 from collections.abc import Callable
 from pathlib import Path
 from typing import Any
+
+
+def spectrum_rows(summary: dict[str, Any]) -> list[dict[str, Any]]:
+    """One row per (representation, group): the spectrum's main numbers."""
+
+    rows = []
+
+    for name, groups in summary["representations"].items():
+        for group, s in groups.items():
+            rows.append(
+                {
+                    "representation": name,
+                    "group": group,
+                    "N": s["samples"],
+                    "D": s["dim"],
+                    "PC1 variance": s["cumulative_explained_variance"]["1"],
+                    "isotropic 1/D": 1 / s["dim"],
+                    "components 90%": s["dimensions_for_90_percent"],
+                    "components 99%": s["dimensions_for_99_percent"],
+                    "effective rank": s["effective_rank_singular"],
+                    "effective rank / D": s["effective_rank_singular_fraction"],
+                    "participation ratio": s["participation_ratio"],
+                }
+            )
+
+    return rows
+
+
+def show_spectrum(
+    output_dir: Path | str, *, out: Callable[[str], None] = print
+) -> None:
+    """Show a written spectrum analysis, inline in a notebook when possible."""
+
+    output_dir = Path(output_dir)
+    summary = json.loads((output_dir / "summary.json").read_text(encoding="utf-8"))
+    rows = spectrum_rows(summary)
+    paths = [output_dir / path for path in summary.get("figures", [])]
+    missing = [path for path in paths if not path.is_file()]
+    report = output_dir / "report.md"
+    display = _notebook_display()
+
+    if display is None:
+        out(_rows_text(rows))
+        out("\nFigures:")
+        out(
+            "\n".join(
+                f"  {path}{' (missing)' if path in missing else ''}" for path in paths
+            )
+            or "  (none recorded)"
+        )
+        out(f"Report: {report}{'' if report.is_file() else ' (missing)'}")
+        out(
+            "\nFigures are shown inline when show_spectrum() runs in the notebook "
+            "kernel itself (see turn_wm.evaluation.latent_analysis.show)."
+        )
+        return
+
+    show, html_block, image = display
+    show(html_block("<h4>Spectrum</h4>" + _rows_html(rows)))
+
+    for path in paths:
+        if path in missing:
+            show(html_block(f"<p>Missing figure: {html.escape(str(path))}</p>"))
+        else:
+            show(image(filename=str(path)))
+
 
 _SECTIONS = (
     ("dataset", "Dataset structure"),

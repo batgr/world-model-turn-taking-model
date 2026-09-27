@@ -9,7 +9,11 @@ import pyarrow.parquet as pq
 import pytest
 import torch
 
-from turn_wm.evaluation.latent_analysis.analyze import analyze_snapshot
+from turn_wm.cli import main
+from turn_wm.evaluation.latent_analysis.analyze import (
+    analyze_snapshot,
+    spectrum_report,
+)
 from turn_wm.evaluation.latent_analysis.extract import (
     RepresentationSnapshot,
     write_snapshot,
@@ -246,6 +250,7 @@ def test_analysis_of_a_snapshot(snapshot_dir, capsys):
     assert sorted(path.name for path in output.iterdir()) == [
         "cumulative_variance.png",
         "eigenvalue_spectrum.png",
+        "report.md",
         "spectrum.parquet",
         "summary.json",
     ]
@@ -290,6 +295,49 @@ def test_a_snapshot_without_datasets_is_analyzed_globally(tmp_path):
     summary = json.loads((output / "summary.json").read_text())
     assert output == tmp_path / "results" / "spectrum"
     assert list(summary["representations"]["latent"]) == ["all"]
+
+
+def test_report_answers_the_collapse_question():
+    collapsed = spectrum(_rank_one(), representation="x").summary()
+    spread = spectrum(_gaussian(2_000, 16), representation="y").summary()
+
+    report = spectrum_report(
+        {"representations": {"x": {"all": collapsed}, "y": {"all": spread}}}
+    )
+
+    for section in ("Question", "Results", "Interpretation", "Limitations"):
+        assert f"## {section}" in report
+    assert "## Implication" in report
+    assert "**x**: collapsed onto one direction" in report
+    assert "**y**: no trivial collapse" in report
+    assert "of 16 directions" in report
+
+
+def test_cli_show_prints_the_spectrum_and_changes_no_result(
+    snapshot_dir, tmp_path, capsys
+):
+    main(["analyze-latents", str(snapshot_dir), "--analysis", "spectrum"])
+    main(
+        [
+            "analyze-latents",
+            str(snapshot_dir),
+            "--analysis",
+            "spectrum",
+            "--show",
+            "--output",
+            str(tmp_path / "shown"),
+        ]
+    )
+
+    plain = snapshot_dir / "analysis" / "spectrum"
+    shown = tmp_path / "shown" / "spectrum"
+    assert {p.name: p.read_bytes() for p in plain.iterdir()} == {
+        p.name: p.read_bytes() for p in shown.iterdir()
+    }
+    printed = capsys.readouterr().out
+    assert "effective rank / D" in printed and "components 99%" in printed
+    assert str(shown / "cumulative_variance.png") in printed
+    assert f"Report: {shown / 'report.md'}" in printed
 
 
 def test_existing_results_are_not_overwritten(snapshot_dir):

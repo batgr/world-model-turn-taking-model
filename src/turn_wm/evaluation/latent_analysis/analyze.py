@@ -291,17 +291,127 @@ def write_spectrum(snapshot: Snapshot, output_dir: Path) -> None:
             "variance_thresholds": list(VARIANCE_THRESHOLDS),
         },
         "representations": spectrum_summary(spectra),
+        "figures": [f"{name}.png" for name in SPECTRUM_FIGURES],
     }
 
     (output_dir / "summary.json").write_text(
         json.dumps(summary, indent=2, sort_keys=True) + "\n",
         encoding="utf-8",
     )
+    (output_dir / "report.md").write_text(spectrum_report(summary), encoding="utf-8")
     pq.write_table(spectrum_table(spectra), output_dir / "spectrum.parquet")
 
     for name, figure in spectrum_figures(spectra).items():
         figure.savefig(output_dir / f"{name}.png", dpi=150, facecolor=SURFACE)
         close(figure)
+
+
+SPECTRUM_FIGURES = ("cumulative_variance", "eigenvalue_spectrum")
+
+
+def spectrum_report(summary: Mapping[str, Any]) -> str:
+    """Question, results, interpretation, limitations, implication."""
+
+    representations = summary["representations"]
+    rows = [
+        (
+            "| representation | group | N | D | PC1 variance (isotropic 1/D) | "
+            "components for 90% / 95% / 99% | effective rank | participation ratio |"
+        ),
+        "|---|---|---|---|---|---|---|---|",
+    ]
+
+    for name, groups in representations.items():
+        for group, s in groups.items():
+            rows.append(
+                f"| {name} | {group} | {s['samples']:,} | {s['dim']} | "
+                f"{s['cumulative_explained_variance']['1']:.3f} "
+                f"({1 / s['dim']:.3f}) | {s['dimensions_for_90_percent']} / "
+                f"{s['dimensions_for_95_percent']} / "
+                f"{s['dimensions_for_99_percent']} | "
+                f"{s['effective_rank_singular']:.1f} "
+                f"({s['effective_rank_singular_fraction']:.0%} of D) | "
+                f"{s['participation_ratio']:.1f} |"
+            )
+
+    return "\n".join(
+        [
+            "# Spectrum",
+            "",
+            "## Question",
+            "",
+            (
+                "Is the representation collapsed, excessively anisotropic, or "
+                "effectively much lower-dimensional than its nominal dimension D?"
+            ),
+            "",
+            "## Results",
+            "",
+            (
+                "Covariance spectrum of the centred, unstandardized rows (per "
+                "corpus for the corpus groups). Effective rank: exp(entropy) of "
+                "the normalized singular values, the training metric."
+            ),
+            "",
+            *rows,
+            "",
+            "## Interpretation",
+            "",
+            *(
+                f"- **{name}**: {_spectrum_reading(groups['all'])}"
+                for name, groups in representations.items()
+                if "all" in groups
+            ),
+            "",
+            "## Limitations",
+            "",
+            (
+                "- Second-order, linear geometry only: it says how variance "
+                "spreads, not what the directions encode."
+            ),
+            (
+                "- No standardization: directions with a large scale dominate. "
+                "Numbers depend on the snapshot's sample and split."
+            ),
+            (
+                "- The feature and latent D differ; compare their ranks as "
+                "fractions of D."
+            ),
+            "",
+            "## Implication",
+            "",
+            (
+                "Read the PCA figures and the probes with the effective "
+                "dimensionality, not D, in mind. A low effective rank alone does "
+                "not show that information is lost: whether the representation "
+                "keeps turn-taking information is tested by the probes."
+            ),
+            "",
+        ]
+    )
+
+
+def _spectrum_reading(s: Mapping[str, Any]) -> str:
+    """What one representation's 'all' spectrum says, from its numbers only."""
+
+    dim, k99 = s["dim"], s["dimensions_for_99_percent"]
+
+    if s["total_variance"] == 0:
+        return "collapsed: every row is the same point (no variance)."
+
+    if k99 == 1:
+        return "collapsed onto one direction: one component holds 99% of the variance."
+
+    pc1 = s["cumulative_explained_variance"]["1"]
+
+    return (
+        f"no trivial collapse (to a point or one direction): 99% of the "
+        f"variance needs {k99} of {dim} directions "
+        f"({k99 / dim:.0%}); effective rank {s['effective_rank_singular']:.1f} "
+        f"({s['effective_rank_singular_fraction']:.0%} of D). Anisotropy: the "
+        f"first component holds {pc1:.1%} of the variance, {pc1 * dim:.1f} times "
+        "the share of an isotropic space."
+    )
 
 
 # ---------------------------------------------------------------------------

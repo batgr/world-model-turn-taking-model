@@ -77,6 +77,7 @@ from turn_wm.evaluation.latent_analysis.analyze import (
     DEFAULT_ANALYSES,
     LABELS,
     PCA,
+    SPECTRUM,
     analyze_snapshot,
 )
 from turn_wm.evaluation.latent_analysis.label_structure import DEFAULT_BALANCED_CAP
@@ -105,6 +106,7 @@ from turn_wm.evaluation.latent_analysis.show import (
     show_pca,
     show_probes,
     show_rollouts,
+    show_spectrum,
 )
 from turn_wm.progress import log, progress
 from turn_wm.training.train import run as run_training
@@ -673,8 +675,9 @@ def build_parser() -> argparse.ArgumentParser:
         "--show",
         action="store_true",
         help=(
-            "Then show the PCA and label results: inline in a notebook kernel, "
-            "else a text table and the figure paths. Results are unchanged."
+            "Then show the spectrum, PCA and label results: inline in a notebook "
+            "kernel, else a text table and the figure paths. Results are "
+            "unchanged."
         ),
     )
     analyze.set_defaults(handler=_analyze_latents)
@@ -760,6 +763,9 @@ def _analyze_latents(
 
     for name, output in outputs.items():
         print(f"{name}: {output}")
+
+    if args.show and SPECTRUM in outputs:
+        show_spectrum(outputs[SPECTRUM])
 
     if args.show and PCA in outputs:
         show_pca(outputs[PCA])
