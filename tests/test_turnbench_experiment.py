@@ -35,8 +35,12 @@ from turn_wm.evaluation.turnbench.extract import (
 )
 from turn_wm.evaluation.turnbench.heads import (
     CausalHead,
+    Sequence_,
+    TrainingConfig,
+    evaluate,
     load_sequences,
     split_conversations,
+    train_head,
 )
 from turn_wm.evaluation.turnbench.labels import (
     OUTPUTS,
@@ -281,6 +285,51 @@ def test_the_predicted_head_reads_only_the_two_predictions(tmp_path):
         .half()
         .float(),
     )
+
+
+ACCELERATORS = [
+    device
+    for device, available in (
+        ("cuda", torch.cuda.is_available()),
+        ("mps", torch.backends.mps.is_available()),
+    )
+    if available
+]
+
+
+def _sequences(count, frames=24):
+    generator = torch.Generator().manual_seed(0)
+    sequences = []
+
+    for i in range(count):
+        targets = torch.zeros(frames, 4)
+        targets[frames // 2 : frames // 2 + 2] = 1.0
+        sequences.append(
+            Sequence_(
+                f"c{i}",
+                torch.randn(frames, 16, generator=generator).half(),
+                targets,
+                torch.ones(frames, 4, dtype=torch.bool),
+            )
+        )
+
+    return sequences
+
+
+@pytest.mark.parametrize("device", ["cpu", *ACCELERATORS])
+def test_training_and_validation_run_on_one_device(device):
+    config = TrainingConfig(batch_size=2, crop_frames=8, max_epochs=2, patience=5)
+
+    head, record = train_head(
+        _sequences(4), _sequences(2), config=config, device=device
+    )
+
+    assert all(np.isfinite(epoch["val/loss"]) for epoch in record["history"])
+    # Validation metrics do not depend on the device the head was trained on.
+    pos_weight = torch.tensor(record["pos_weight"])
+    on_device = evaluate(head.to(device), _sequences(2), pos_weight.to(device), device)
+    on_cpu = evaluate(head.cpu(), _sequences(2), pos_weight, "cpu")
+    assert on_device["val/loss"] == pytest.approx(on_cpu["val/loss"], rel=1e-4)
 
 
 def test_the_head_is_causal():

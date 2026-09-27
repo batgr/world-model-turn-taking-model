@@ -196,7 +196,11 @@ def evaluate(
     pos_weight: torch.Tensor,
     device: str,
 ) -> dict[str, float]:
-    """Validation loss (all, EOT, INT) and per-output diagnostics."""
+    """Validation loss (all, EOT, INT) and per-output diagnostics.
+
+    The head runs on `device`; the loss and metrics are computed on the CPU,
+    where the targets and masks live, so `pos_weight` is brought there too.
+    """
 
     head.eval()
     logits, targets, masks = [], [], []
@@ -207,7 +211,7 @@ def evaluate(
         masks.append(sequence.mask)
 
     logits_, targets_, masks_ = torch.cat(logits), torch.cat(targets), torch.cat(masks)
-    loss, per_output = masked_loss(logits_, targets_, masks_, pos_weight)
+    loss, per_output = masked_loss(logits_, targets_, masks_, pos_weight.cpu())
     metrics = {
         "val/loss": float(loss),
         "val/eot_loss": float(per_output[:2].mean()),
@@ -279,10 +283,10 @@ def train_head(
             optimizer.zero_grad()
             loss.backward()
             optimizer.step()
-            total += float(loss)
+            total += loss.detach().item()
 
         metrics = {"epoch": epoch, "train/loss": total / steps}
-        metrics |= evaluate(head, validation, pos_weight.to(device), device)
+        metrics |= evaluate(head, validation, pos_weight, device)
         history.append(metrics)
         log(
             f"heads: epoch {epoch}: train {metrics['train/loss']:.4f}, "
