@@ -16,6 +16,8 @@ dependencies = [
     "transformers>=5.17.0",
     "safetensors>=0.4",
     "tqdm>=4.66",
+    # Official TurnBench gold, scorer and sweep (pinned in tool.uv.sources).
+    "turnbench",
 ]
 
 [project.scripts]
@@ -31,6 +33,20 @@ dev = [
 [build-system]
 requires = ["hatchling"]
 build-backend = "hatchling.build"
+
+[tool.uv.sources]
+turnbench = { git = "https://github.com/SesameAILabs/turnbench", rev = "76ccd045f121ccfa921abac2ad3107027e736911" }
+
+[tool.uv]
+# turnbench pins exact versions; allow this project's newer ones instead. Its
+# gold/scoring code uses only stable APIs of these packages.
+override-dependencies = [
+    "datasets>=5.0.1",
+    "huggingface-hub>=1.32.0",
+    "numpy>=2.5.3",
+    "pyarrow>=24.0.0",
+    "typer>=0.25.1",
+]
 
 [tool.hatch.build.targets.wheel]
 packages = ["src/turn_wm"]

@@ -108,6 +108,10 @@ from turn_wm.evaluation.latent_analysis.show import (
     show_rollouts,
     show_spectrum,
 )
+from turn_wm.evaluation.turnbench.data import load_dev, load_train, split_size
+from turn_wm.evaluation.turnbench.extract import extract_turnbench
+from turn_wm.evaluation.turnbench.heads import TrainingConfig
+from turn_wm.evaluation.turnbench.pipeline import PipelineConfig, run_pipeline
 from turn_wm.progress import log, progress
 from turn_wm.training.train import run as run_training
 
@@ -566,6 +570,100 @@ def build_parser() -> argparse.ArgumentParser:
     )
     ablation_analysis.set_defaults(handler=_analyze_action_ablation)
 
+    turnbench = commands.add_parser(
+        "extract-turnbench",
+        help="Frozen V1 representations of TurnBench DEV or TRAIN conversations.",
+        description=(
+            "Read the pinned TurnBench split (speaker audio only), build the "
+            "scene as speaker_1 + speaker_2, and write per 100 ms slot the "
+            "Mimi features, the V1 latent and one V1 predictor step per "
+            "speaker's own causal actions, with a manifest. Both splits are "
+            "gated: they need a Hugging Face login with access granted."
+        ),
+    )
+    turnbench.add_argument(
+        "run_dir",
+        type=Path,
+        help="Run directory holding config.yaml, metadata.json and checkpoints/.",
+    )
+    turnbench.add_argument(
+        "--split",
+        choices=("dev", "train"),
+        default="dev",
+        help="TurnBench split; the test split is not supported (default: dev).",
+    )
+    turnbench.add_argument(
+        "--output", type=Path, required=True, help="Directory to create; must be empty."
+    )
+    turnbench.add_argument(
+        "--scratch-dir",
+        type=Path,
+        help=(
+            "Where TRAIN audio is downloaded temporarily, one conversation at a "
+            "time (default: the system temporary directory)."
+        ),
+    )
+    turnbench.add_argument(
+        "--checkpoint",
+        default=DEFAULT_CHECKPOINT,
+        help="File under checkpoints/, or a path (default: %(default)s).",
+    )
+    turnbench.add_argument(
+        "--device",
+        default="cpu",
+        help="Torch device, e.g. cpu, cuda, mps (default: %(default)s).",
+    )
+    turnbench.add_argument(
+        "--max-conversations",
+        type=_positive_int,
+        help="Stop after this many conversations (default: all).",
+    )
+    turnbench.set_defaults(handler=_extract_turnbench)
+
+    pipeline = commands.add_parser(
+        "turnbench-pipeline",
+        help="The whole V1 TurnBench TRAIN -> DEV experiment, stage after stage.",
+        description=(
+            "Smoke DEV and TRAIN (stop on failure), extract TRAIN and DEV, "
+            "build TRAIN labels, train the mimi / current / predicted heads "
+            "(W&B project turn-wm-turnbench), score them on DEV with the "
+            "official TurnBench sweep and scorer, and write report.md. A "
+            "finished stage is reused only when its manifest and hashes "
+            "validate; a stale one is refused. The test split is never read."
+        ),
+    )
+    pipeline.add_argument(
+        "run_dir",
+        type=Path,
+        help="Run directory holding config.yaml, metadata.json and checkpoints/.",
+    )
+    pipeline.add_argument(
+        "--work-dir", type=Path, required=True, help="Where every stage writes."
+    )
+    pipeline.add_argument(
+        "--checkpoint",
+        default=DEFAULT_CHECKPOINT,
+        help="File under checkpoints/, or a path (default: %(default)s).",
+    )
+    pipeline.add_argument(
+        "--device", default="cuda", help="Torch device (default: %(default)s)."
+    )
+    pipeline.add_argument(
+        "--scratch-dir",
+        type=Path,
+        help="Temporary TRAIN audio, one conversation at a time.",
+    )
+    pipeline.add_argument(
+        "--wandb-mode",
+        choices=("online", "offline", "disabled"),
+        default="online",
+        help="W&B mode for the head runs (default: %(default)s).",
+    )
+    pipeline.add_argument(
+        "--seed", type=int, default=0, help="Split and head seed (default: 0)."
+    )
+    pipeline.set_defaults(handler=_turnbench_pipeline)
+
     probes = commands.add_parser(
         "probe-latents",
         help="Linear probes of a run's features and latent.",
@@ -879,6 +977,71 @@ def _analyze_action_ablation(
 
     if args.show:
         show_action_ablation(output)
+
+    return 0
+
+
+def _extract_turnbench(
+    args: argparse.Namespace,
+    parser: argparse.ArgumentParser,
+) -> int:
+    def source(done):
+        if args.split == "dev":
+            return load_dev(skip=done)
+
+        return load_train(skip=done, scratch_dir=args.scratch_dir)
+
+    try:
+        output = extract_turnbench(
+            source,
+            run_dir=args.run_dir,
+            output_dir=args.output,
+            checkpoint=args.checkpoint,
+            device=args.device,
+            split=args.split,
+            total=split_size(args.split),
+            limit=args.max_conversations,
+        )
+    except (GatedRepoError, RepositoryNotFoundError) as error:
+        raise SystemExit(
+            f"turn-wm: error: TurnBench {args.split} is gated; accept its terms on the "
+            "Hub and log in (`hf auth login`, or HF_TOKEN): "
+            f"{error}"
+        ) from error
+    except (ValueError, FileNotFoundError, RuntimeError) as error:
+        raise SystemExit(f"turn-wm: error: {error}") from error
+
+    print(f"turnbench: {output}")
+    print(f"manifest: {output / 'manifest.json'}")
+
+    return 0
+
+
+def _turnbench_pipeline(
+    args: argparse.Namespace,
+    parser: argparse.ArgumentParser,
+) -> int:
+    try:
+        report = run_pipeline(
+            PipelineConfig(
+                run_dir=args.run_dir,
+                work_dir=args.work_dir,
+                checkpoint=args.checkpoint,
+                device=args.device,
+                scratch_dir=args.scratch_dir,
+                wandb_mode=args.wandb_mode,
+                training=TrainingConfig(seed=args.seed),
+            )
+        )
+    except (GatedRepoError, RepositoryNotFoundError) as error:
+        raise SystemExit(
+            "turn-wm: error: a TurnBench split is gated; accept its terms on the "
+            f"Hub and log in (`hf auth login`, or HF_TOKEN): {error}"
+        ) from error
+    except (ValueError, FileNotFoundError, RuntimeError) as error:
+        raise SystemExit(f"turn-wm: error: {error}") from error
+
+    print(f"turnbench-pipeline: {report}")
 
     return 0
 
