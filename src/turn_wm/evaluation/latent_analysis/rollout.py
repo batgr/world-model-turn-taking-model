@@ -102,7 +102,7 @@ def extract_rollout_snapshot(
         batches,
         max_samples=max_samples,
         device=device,
-        representations=lambda m, b: rollout_representations(
+        representations=lambda m, b, _: rollout_representations(
             m, b, sigreg=sigreg, cfg=cfg
         ),
         total=total,

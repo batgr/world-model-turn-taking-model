@@ -104,17 +104,19 @@ def extract_snapshot(
     max_samples: int | None = None,
     device: torch.device | str = "cpu",
     representations: Callable[
-        [JEPA, Trajectories], dict[str, torch.Tensor]
-    ] = anchor_representations,
+        [JEPA, Trajectories, dict[str, Any]], dict[str, torch.Tensor]
+    ]
+    | None = None,
     total: int | None = None,
 ) -> RepresentationSnapshot:
     """Representations of the first `max_samples` samples of `batches`.
 
     `batches` are collated data batches, in the order to keep; `None` keeps
-    every sample. `representations` maps the model and one batch of
-    trajectories to named (B, ...) tensors (by default the anchor
-    representations). The model runs in eval mode and float32. `total`
-    (anchors in `batches`) only sizes the progress bar.
+    every sample. `representations` maps the model, one batch of
+    trajectories and its collated batch (for metadata such as sample ids)
+    to named (B, ...) tensors (by default the anchor representations).
+    The model runs in eval mode and float32. `total` (anchors in `batches`)
+    only sizes the progress bar.
     """
 
     if max_samples is not None and max_samples <= 0:
@@ -145,7 +147,13 @@ def extract_snapshot(
             if max_samples is not None:
                 take = min(take, max_samples - collected)
 
-            for name, tensor in representations(model, trajectory).items():
+            computed = (
+                anchor_representations(model, trajectory)
+                if representations is None
+                else representations(model, trajectory, batch)
+            )
+
+            for name, tensor in computed.items():
                 # Floating tensors in float32; integer ones (ids) as they are.
                 if tensor.is_floating_point():
                     tensor = tensor.float()

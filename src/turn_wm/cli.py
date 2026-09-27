@@ -65,6 +65,13 @@ from turn_wm.data.source import (
     LoadedData,
     load_data,
 )
+from turn_wm.evaluation.latent_analysis.action_ablation import (
+    DEFAULT_ABLATION_SAMPLES,
+    extract_action_ablation_run,
+)
+from turn_wm.evaluation.latent_analysis.action_ablation_analysis import (
+    write_action_ablation,
+)
 from turn_wm.evaluation.latent_analysis.analyze import (
     ANALYSES,
     DEFAULT_ANALYSES,
@@ -93,6 +100,7 @@ from turn_wm.evaluation.latent_analysis.run import (
     extract_run,
 )
 from turn_wm.evaluation.latent_analysis.show import (
+    show_action_ablation,
     show_labels,
     show_pca,
     show_probes,
@@ -458,6 +466,104 @@ def build_parser() -> argparse.ArgumentParser:
     )
     dynamics.set_defaults(handler=_analyze_rollouts)
 
+    ablation = commands.add_parser(
+        "extract-action-ablation",
+        help="Extract a run's validation rollout under action ablations.",
+        description=(
+            "Run the validation rollout of a training run with the observed, "
+            "NO_EVENT and shuffled future actions, and the one-step prediction "
+            "with the anchor's action forced to NO_EVENT, ONSET and OFFSET, on a "
+            "seeded sample of the validation split. The test split is never read."
+        ),
+    )
+    ablation.add_argument(
+        "run_dir",
+        type=Path,
+        help="Run directory holding config.yaml, metadata.json and checkpoints/.",
+    )
+    ablation.add_argument(
+        "--checkpoint",
+        default=DEFAULT_CHECKPOINT,
+        help="File under checkpoints/, or a path (default: %(default)s).",
+    )
+    ablation.add_argument(
+        "--max-samples",
+        type=_positive_int,
+        default=DEFAULT_ABLATION_SAMPLES,
+        help="Anchors to keep from the seeded order (default: %(default)s).",
+    )
+    ablation.add_argument(
+        "--seed",
+        type=int,
+        help="Seed of the sample order (default: the run's seed).",
+    )
+    ablation.add_argument(
+        "--batch-size",
+        type=_positive_int,
+        help="Batch size; does not change the samples (default: the run's).",
+    )
+    ablation.add_argument(
+        "--num-workers",
+        type=int,
+        default=0,
+        help="Data loader workers (default: %(default)s).",
+    )
+    ablation.add_argument(
+        "--device",
+        default="cpu",
+        help="Torch device, e.g. cpu, cuda, mps (default: %(default)s).",
+    )
+    ablation.add_argument(
+        "--mimi-cache-root",
+        type=Path,
+        help="Where the run's Mimi cache now lives, if it moved.",
+    )
+    ablation.add_argument(
+        "--output",
+        type=Path,
+        help=(
+            "Directory to create; must not exist or be empty (default: "
+            "RUN_DIR/latent_analysis/<checkpoint>-validation-action-ablation)."
+        ),
+    )
+    ablation.set_defaults(handler=_extract_action_ablation)
+
+    ablation_analysis = commands.add_parser(
+        "analyze-action-ablation",
+        help="Analyze an extracted action ablation.",
+        description=(
+            "Rollout skill, displacement alignment and movement ratio under "
+            "observed, NO_EVENT and shuffled future actions, with paired "
+            "differences, and the counterfactual one-step action effect per focal "
+            "state. Reads the snapshot only."
+        ),
+    )
+    ablation_analysis.add_argument(
+        "snapshot",
+        type=Path,
+        help="Snapshot directory written by extract-action-ablation.",
+    )
+    ablation_analysis.add_argument(
+        "--output",
+        type=Path,
+        help="Directory to create (default: SNAPSHOT/analysis/action_ablation).",
+    )
+    ablation_analysis.add_argument(
+        "--bootstrap",
+        type=_positive_int,
+        default=DEFAULT_BOOTSTRAP,
+        help="Bootstrap resamples per interval (default: %(default)s).",
+    )
+    ablation_analysis.add_argument(
+        "--show",
+        action="store_true",
+        help=(
+            "Then show the results: inline in a notebook kernel, else text "
+            "tables and the figure paths. Results are unchanged."
+        ),
+    )
+    ablation_analysis.set_defaults(handler=_analyze_action_ablation)
+
     probes = commands.add_parser(
         "probe-latents",
         help="Linear probes of a run's features and latent.",
@@ -720,6 +826,53 @@ def _analyze_rollouts(
 
     if args.show:
         show_rollouts(output)
+
+    return 0
+
+
+def _extract_action_ablation(
+    args: argparse.Namespace,
+    parser: argparse.ArgumentParser,
+) -> int:
+    try:
+        output = extract_action_ablation_run(
+            args.run_dir,
+            output_dir=args.output,
+            checkpoint=args.checkpoint,
+            max_samples=args.max_samples,
+            seed=args.seed,
+            batch_size=args.batch_size,
+            num_workers=args.num_workers,
+            device=args.device,
+            mimi_cache_root=args.mimi_cache_root,
+        )
+    except (ValueError, FileNotFoundError, RuntimeError) as error:
+        raise SystemExit(f"turn-wm: error: {error}") from error
+
+    manifest = json.loads((output / "manifest.json").read_text(encoding="utf-8"))
+
+    print(f"Action ablation written to {output}")
+    print(f"samples: {manifest['samples']}")
+
+    return 0
+
+
+def _analyze_action_ablation(
+    args: argparse.Namespace,
+    parser: argparse.ArgumentParser,
+) -> int:
+    try:
+        output = write_action_ablation(
+            args.snapshot, output_dir=args.output, bootstrap=args.bootstrap
+        )
+    except (ValueError, FileNotFoundError, RuntimeError) as error:
+        raise SystemExit(f"turn-wm: error: {error}") from error
+
+    print(f"action_ablation: {output}")
+    print(f"report: {output / 'report.md'}")
+
+    if args.show:
+        show_action_ablation(output)
 
     return 0
 

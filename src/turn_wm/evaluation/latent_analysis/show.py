@@ -1,6 +1,6 @@
 """
-Display written PCA, label, rollout-dynamics and probe results: tables,
-then the figures.
+Display written PCA, label, rollout-dynamics, probe and action-ablation
+results: tables, then the figures.
 
 Only reads `summary.json` and the figures an analysis already wrote, so
 showing never changes a result. Standard library only, plus IPython when it
@@ -13,6 +13,7 @@ dependencies),
     show_labels("<snapshot>/analysis/labels")
     show_rollouts("<rollout-snapshot>/analysis/rollout_dynamics")
     show_probes("<snapshot>/analysis/probes")
+    show_action_ablation("<ablation-snapshot>/analysis/action_ablation")
 
 renders inline. Elsewhere, including `!turn-wm ... --show` (a subprocess,
 which cannot draw in the notebook), the table is printed as text with the
@@ -352,16 +353,216 @@ def show_probes(output_dir: Path | str, *, out: Callable[[str], None] = print) -
         show(image(filename=str(path)))
 
 
-def _with_interval(values: dict[str, Any], name: str, *, suffix: str = "") -> str:
+_ABLATION_CONDITIONS = ("observed", "no_event", "shuffled")
+_ABLATION_DIFFERENCES = ("observed-no_event", "observed-shuffled")
+_ABLATION_METRICS = (
+    ("skill", "Skill vs persistence (primary)"),
+    ("displacement_alignment", "Displacement alignment (secondary)"),
+    ("movement_ratio", "Movement ratio (diagnostic)"),
+)
+
+
+def ablation_rows(summary: dict[str, Any], metric: str) -> list[dict[str, Any]]:
+    """One row per (horizon, subset): the conditions and paired differences."""
+
+    rows = []
+
+    for entry in summary["rollout_ablation"].values():
+        for subset, values in entry["subsets"].items():
+            row: dict[str, Any] = {
+                "horizon": f"{entry['horizon_s']:g} s",
+                "subset": subset,
+                "n": values["n"],
+                "recordings": values["n_recordings"],
+            }
+
+            for condition in _ABLATION_CONDITIONS:
+                row[condition] = (
+                    "no rows"
+                    if values["n"] == 0
+                    else _with_interval(values["conditions"][condition], metric)
+                )
+
+            for difference in _ABLATION_DIFFERENCES:
+                stat = values["differences"][difference]
+                row[difference.replace("-", " − ")] = (
+                    "no rows"
+                    if values["n"] == 0
+                    else f"{_with_interval(stat, metric, signed=True)} "
+                    f"({_ablation_verdict(stat, metric)})"
+                )
+
+            rows.append(row)
+
+    return rows
+
+
+def counterfactual_rows(summary: dict[str, Any]) -> list[dict[str, Any]]:
+    """One row per (focal state, action pair): distance and delta cosine."""
+
+    rows = []
+
+    for state, entry in summary["counterfactual"].items():
+        if state == "unstratified_rows":
+            continue
+
+        for pair, values in entry["pairs"].items():
+            stats = {
+                "‖ẑ(a1) − ẑ(a2)‖": values["prediction_distance"],
+                "cos(Δz(a1), Δz(a2))": values["delta_cosine"],
+                "mean ‖Δz(NO_EVENT)‖": entry["mean_no_event_step"],
+            }
+            rows.append(
+                {
+                    "focal state": state,
+                    "n": entry["n"],
+                    "pair": pair,
+                    "intervention": values["intervention"],
+                }
+                | {
+                    column: "no rows" if entry["n"] == 0 else _mean_interval(stat)
+                    for column, stat in stats.items()
+                }
+            )
+
+    return rows
+
+
+def ablation_notes(summary: dict[str, Any]) -> list[str]:
+    """Checkpoint, integrity check and anything not evaluable, in plain lines."""
+
+    provenance = summary["source"].get("snapshot_provenance") or {}
+    checkpoint = provenance.get("checkpoint") or {}
+    first = next(iter(summary["rollout_ablation"].values()))
+    integrity = first.get("integrity")
+    lines = [
+        (
+            f"Checkpoint {checkpoint.get('filename')} (step "
+            f"{checkpoint.get('global_step')}), validation split, "
+            f"{summary['source']['samples']:,} anchors. Intervals: 95% bootstrap "
+            "over recordings within each corpus, paired across conditions."
+        ),
+        "Integrity check (no future token read): "
+        + (
+            "not run (the first horizon reads future tokens)"
+            if integrity is None
+            else f"{'passed' if integrity['passed'] else 'FAILED'} (max |difference| "
+            f"{integrity['max_abs_difference_between_conditions']:g})"
+        )
+        + ".",
+    ]
+
+    for entry in summary["rollout_ablation"].values():
+        for subset, values in entry["subsets"].items():
+            if values["n"] == 0:
+                lines.append(
+                    f"Not evaluable: {entry['horizon_s']:g} s, {subset} has no rows."
+                )
+
+    for state, entry in summary["counterfactual"].items():
+        if state != "unstratified_rows" and entry["n"] == 0:
+            lines.append(f"Not evaluable: no anchor with focal state {state}.")
+
+    unstratified = {
+        k: n for k, n in summary["counterfactual"]["unstratified_rows"].items() if n
+    }
+
+    if unstratified:
+        lines.append(f"Anchors in no counterfactual stratum: {unstratified}.")
+
+    return lines
+
+
+def show_action_ablation(
+    output_dir: Path | str, *, out: Callable[[str], None] = print
+) -> None:
+    """Show a written action-ablation analysis, inline in a notebook if possible."""
+
+    output_dir = Path(output_dir)
+    summary = json.loads((output_dir / "summary.json").read_text(encoding="utf-8"))
+    notes = ablation_notes(summary)
+    tables = [
+        (title, ablation_rows(summary, metric)) for metric, title in _ABLATION_METRICS
+    ]
+    tables.append(
+        ("Counterfactual one-step action effect", counterfactual_rows(summary))
+    )
+    paths = [output_dir / path for path in summary["figures"]]
+    missing = [path for path in paths if not path.is_file()]
+    display = _notebook_display()
+
+    if display is None:
+        out("\n".join(notes))
+
+        for title, rows in tables:
+            out(f"\n{title}:")
+            out(_rows_text(rows))
+
+        out("\nFigures:")
+        out(
+            "\n".join(
+                f"  {path}{' (missing)' if path in missing else ''}" for path in paths
+            )
+        )
+        out(f"Report: {output_dir / 'report.md'}")
+        out(
+            "\nFigures are shown inline when show_action_ablation() runs in the "
+            "notebook kernel itself (see turn_wm.evaluation.latent_analysis.show)."
+        )
+        return
+
+    show, html_block, image = display
+    show(html_block("".join(f"<p>{html.escape(line)}</p>" for line in notes)))
+
+    for title, rows in tables:
+        show(html_block(f"<h4>{html.escape(title)}</h4>" + _rows_html(rows)))
+
+    for path in paths:
+        if path in missing:
+            show(html_block(f"<p>Missing figure: {html.escape(str(path))}</p>"))
+        else:
+            show(image(filename=str(path)))
+
+
+def _ablation_verdict(values: dict[str, Any], metric: str) -> str:
+    interval = values[f"{metric}_ci"]
+
+    if values[metric] is None or interval is None:
+        return "undetermined"
+    if interval[0] > 0:
+        return "observed higher"
+    if interval[1] < 0:
+        return "observed lower"
+
+    return "no difference"
+
+
+def _mean_interval(stat: dict[str, Any]) -> str:
+    if stat["mean"] is None:
+        return "n/a"
+
+    interval = stat["ci"]
+
+    if interval is None:
+        return f"{stat['mean']:.3f}"
+
+    return f"{stat['mean']:.3f} [{interval[0]:.3f}, {interval[1]:.3f}]"
+
+
+def _with_interval(
+    values: dict[str, Any], name: str, *, suffix: str = "", signed: bool = False
+) -> str:
     value, interval = values[f"{name}{suffix}"], values[f"{name}_ci"]
 
     if value is None:
         return "n/a"
 
-    if interval is None:
-        return f"{value:.3f}"
+    text = f"{value:+.3f}" if signed else f"{value:.3f}"
 
-    return f"{value:.3f} [{interval[0]:.3f}, {interval[1]:.3f}]"
+    if interval is None:
+        return text
+
+    return f"{text} [{interval[0]:.3f}, {interval[1]:.3f}]"
 
 
 def _rows_text(rows: list[dict[str, Any]]) -> str:
