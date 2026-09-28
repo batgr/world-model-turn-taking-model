@@ -595,6 +595,8 @@ class LeWMModule(L.LightningModule):
             rollout_predictions=output.rollout_predictions,
             context_steps=output.context_steps,
             datasets=batch["dataset"],
+            context_action=batch.get("context_action"),
+            context_valid=batch.get("context_valid"),
             future_action=batch.get("future_action"),
             future_valid=batch.get("future_valid"),
         )
