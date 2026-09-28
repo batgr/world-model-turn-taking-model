@@ -1,4 +1,38 @@
-# world-model-turn-taking-models
+# World model for conversational turn-taking
+
+An action-conditioned, JEPA-style audio model that learns conditional latent
+dynamics from past speech and recorded vocal-event proxies. Its current
+rollout is given future event tokens, so it does not establish anticipation
+without them or a robot action policy. The research goal is multi-party
+turn-taking for a social robot. This repository contains the data loader,
+frozen Mimi feature precomputation, PyTorch/Lightning training and validation.
+The upstream
+[data pipeline](https://github.com/batgr/world-model-turn-taking-data) publishes
+the vocal-event grid and model-ready anchors.
+
+**Current status:** V1 has been trained and analyzed against persistence and
+event-conditioning baselines. The [audio-only V2 pilot](docs/decisions/v2_audio_only.md)
+has a configured recipe and tests, but no V2 result is reported yet. A voice
+agent demonstration on Hugging Face Spaces is planned after that study and is
+separate from deployment on a robot.
+
+**Explore:** [public EgoCom dataset](https://huggingface.co/datasets/batgre/conversational-dynamics-egocom) · [training design](docs/training.md) · [research decisions](docs/decisions/README.md) · [V2 branch](https://github.com/batgr/world-model-turn-taking-model/tree/v2/audio-only)
+
+## V2 audio-only pilot (this branch)
+
+Select `model=lewm_bn train=lewm_v2` for the coupled 30-step context and
+rollout window, 10-step horizon and transition-focused checkpoint score. The
+physical batch of 512 requires a GPU memory and gradient preflight before a
+real run. V2 has no reported performance result yet. The decision record
+explains the evidence, proposed comparisons and limitations.
+
+```bash
+uv run turn-wm train model=lewm_bn train=lewm_v2 \
+  data.dataset=full data.mimi_cache.root=/path/to/mimi-features
+```
+
+`full` is the access-controlled EgoCom + Ego4D release. For a public data
+smoke test, use the EgoCom commands below.
 
 ## Data
 
