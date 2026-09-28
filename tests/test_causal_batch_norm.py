@@ -79,6 +79,32 @@ def test_bn_config_normalizes_both_projectors_without_changing_v1():
     assert z.shape == output.shape == (1, 4, v2.embed_dim)
 
 
+def test_standard_bn_config_flattens_time_for_both_projectors():
+    cfg = load_config(
+        [
+            "model=lewm_standard_bn",
+            "data.observation_source=mimi_cache",
+        ]
+    )
+    model = build_model(cfg)
+
+    assert isinstance(model.projector.net[1], torch.nn.BatchNorm1d)
+    assert isinstance(model.pred_proj.net[1], torch.nn.BatchNorm1d)
+    assert not getattr(model.projector, "expects_sequence", False)
+    assert not getattr(model.pred_proj, "expects_sequence", False)
+
+    # Ordinary BatchNorm is applied after JEPA flattens (B, T, D) -> (B*T, D).
+    # The resulting shapes must still match the model contract.
+    model.eval()
+    features = torch.randn(2, 4, 512)
+    actions = torch.zeros(2, 4, dtype=torch.long)
+    with torch.no_grad():
+        z = model.project_features(features)
+        output = model.predict(z, model.encode_actions(actions))
+
+    assert z.shape == output.shape == (2, 4, cfg.embed_dim)
+
+
 def test_training_projectors_preserve_prefix_and_receive_gradients():
     torch.manual_seed(19)
     cfg = load_config(
