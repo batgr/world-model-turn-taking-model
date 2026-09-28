@@ -1,4 +1,21 @@
-# world-model-turn-taking-models
+# World model for conversational turn-taking
+
+An action-conditioned, JEPA-style audio model that learns conditional latent
+dynamics from past speech and recorded vocal-event proxies. Its current
+rollout is given future event tokens, so it does not establish anticipation
+without them or a robot action policy. The research goal is multi-party
+turn-taking for a social robot. This repository contains the data loader,
+frozen Mimi feature precomputation, PyTorch/Lightning training and validation.
+The upstream [data pipeline](https://github.com/batgr/world-model-turn-taking-data)
+publishes the vocal-event grid and model-ready anchors.
+
+**Current status:** V1 has been trained and analyzed against persistence and
+event-conditioning baselines. The [audio-only V2 pilot](https://github.com/batgr/world-model-turn-taking-model/tree/v2/audio-only)
+has a configured recipe and tests on its own branch; no V2 result is reported
+yet. A voice-agent demonstration on Hugging Face Spaces is planned after that
+study and is separate from deployment on a robot.
+
+**Explore:** [public EgoCom dataset](https://huggingface.co/datasets/batgre/conversational-dynamics-egocom) · [training design](docs/training.md) · [research decisions](docs/decisions/README.md)
 
 ## Data
 
