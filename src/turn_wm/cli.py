@@ -80,6 +80,7 @@ from turn_wm.evaluation.latent_analysis.analyze import (
     SPECTRUM,
     analyze_snapshot,
 )
+from turn_wm.evaluation.latent_analysis.concepts import write_concepts
 from turn_wm.evaluation.latent_analysis.label_structure import DEFAULT_BALANCED_CAP
 from turn_wm.evaluation.latent_analysis.pca import (
     DEFAULT_MAX_PLOT_SAMPLES,
@@ -102,6 +103,7 @@ from turn_wm.evaluation.latent_analysis.run import (
 )
 from turn_wm.evaluation.latent_analysis.show import (
     show_action_ablation,
+    show_concepts,
     show_labels,
     show_pca,
     show_probes,
@@ -615,6 +617,54 @@ def build_parser() -> argparse.ArgumentParser:
     )
     probes.set_defaults(handler=_probe_latents)
 
+    concepts = commands.add_parser(
+        "probe-concepts",
+        help="Linear probes of vocal, multi-party, social and unrelated concepts.",
+        description=(
+            "Probe the Mimi features and the WM latent for concepts beyond the "
+            "current conversational state: vocal activity, multi-party "
+            "structure, social signals and information unrelated to the "
+            "conversation. Concepts that vary within a recording are fitted on "
+            "the train-split snapshot and evaluated on the validation-split "
+            "snapshot; recording-level concepts use conversation-grouped CV "
+            "over both. Refuses shared recordings and the test split."
+        ),
+    )
+    concepts.add_argument(
+        "train_snapshot",
+        type=Path,
+        help="Train-split snapshot (extract-latents --split train).",
+    )
+    concepts.add_argument(
+        "validation_snapshot",
+        type=Path,
+        help="Validation-split snapshot of the same checkpoint.",
+    )
+    concepts.add_argument(
+        "--output",
+        type=Path,
+        help="Directory to create (default: VALIDATION_SNAPSHOT/analysis/concepts).",
+    )
+    concepts.add_argument(
+        "--labels-revision",
+        help=(
+            "Read the label sidecars at this dataset revision instead of the "
+            "snapshots'; its action grid must be byte-identical."
+        ),
+    )
+    concepts.add_argument(
+        "--bootstrap",
+        type=_positive_int,
+        default=DEFAULT_BOOTSTRAP,
+        help="Bootstrap resamples per interval (default: %(default)s).",
+    )
+    concepts.add_argument(
+        "--show",
+        action="store_true",
+        help="Then show the results. Results are unchanged.",
+    )
+    concepts.set_defaults(handler=_probe_concepts)
+
     analyze = commands.add_parser(
         "analyze-latents",
         help="Analyze an extracted representation snapshot.",
@@ -909,6 +959,36 @@ def _probe_latents(
 
     if args.show:
         show_probes(output)
+
+    return 0
+
+
+def _probe_concepts(
+    args: argparse.Namespace,
+    parser: argparse.ArgumentParser,
+) -> int:
+    try:
+        output = write_concepts(
+            args.train_snapshot,
+            args.validation_snapshot,
+            output_dir=args.output,
+            labels_revision=args.labels_revision,
+            bootstrap=args.bootstrap,
+        )
+    except (GatedRepoError, RepositoryNotFoundError) as error:
+        raise SystemExit(
+            "turn-wm: error: the dataset release is not accessible; private "
+            "datasets require a Hugging Face login (`hf auth login`, or "
+            f"HF_TOKEN): {error}"
+        ) from error
+    except (ValueError, FileNotFoundError, RuntimeError) as error:
+        raise SystemExit(f"turn-wm: error: {error}") from error
+
+    print(f"concepts: {output}")
+    print(f"report: {output / 'report.md'}")
+
+    if args.show:
+        show_concepts(output)
 
     return 0
 

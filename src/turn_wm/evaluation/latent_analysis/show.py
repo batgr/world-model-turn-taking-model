@@ -1,5 +1,5 @@
 """
-Display written spectrum, PCA, label, rollout-dynamics, probe and
+Display written spectrum, PCA, label, rollout-dynamics, probe, concept and
 action-ablation results: tables, then the figures.
 
 Only reads `summary.json` and the figures an analysis already wrote, so
@@ -14,6 +14,7 @@ dependencies),
     show_labels("<snapshot>/analysis/labels")
     show_rollouts("<rollout-snapshot>/analysis/rollout_dynamics")
     show_probes("<snapshot>/analysis/probes")
+    show_concepts("<snapshot>/analysis/concepts")
     show_action_ablation("<ablation-snapshot>/analysis/action_ablation")
 
 renders inline. Elsewhere, including `!turn-wm ... --show` (a subprocess,
@@ -415,6 +416,34 @@ def show_probes(output_dir: Path | str, *, out: Callable[[str], None] = print) -
             + "</ul>"
         )
     )
+
+    for path in paths:
+        show(image(filename=str(path)))
+
+
+def show_concepts(
+    output_dir: Path | str, *, out: Callable[[str], None] = print
+) -> None:
+    """Show a written concept-probe analysis, inline in a notebook when possible."""
+
+    output_dir = Path(output_dir)
+    summary = json.loads((output_dir / "summary.json").read_text(encoding="utf-8"))
+    rows = [
+        {"axis": score["axis"], **row}
+        for score, row in zip(summary["scores"], probe_scores(summary), strict=True)
+    ]
+    paths = [output_dir / path for path in summary["figures"]]
+    display = _notebook_display()
+
+    if display is None:
+        out(_rows_text(rows))
+        out("\nFigures:")
+        out("\n".join(f"  {path}" for path in paths))
+        out(f"Report: {output_dir / 'report.md'}")
+        return
+
+    show, html_block, image = display
+    show(html_block("<h4>Concept probes</h4>" + _rows_html(rows)))
 
     for path in paths:
         show(image(filename=str(path)))
