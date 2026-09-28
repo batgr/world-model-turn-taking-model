@@ -1,0 +1,22 @@
+# V2-D ablation: keep causal normalization everywhere, but give the
+# Mimi-to-latent projector per-position running statistics as well.
+#
+# V2 encodes the complete trajectory before the losses:
+#   context_steps (30) + future_steps (10) = 40 positions.
+# The projector therefore needs statistics for 40 positions. The predictor
+# projector still needs 30, its maximum predictor input length.
+defaults:
+  - lewm
+  - _self_
+
+projector:
+  norm_fn:
+    _target_: turn_wm.models.lewm.mlp.CausalBatchNorm1d
+    _partial_: true
+    num_positions: 40
+
+pred_proj:
+  norm_fn:
+    _target_: turn_wm.models.lewm.mlp.CausalBatchNorm1d
+    _partial_: true
+    num_positions: ${model.predictor.num_frames}
