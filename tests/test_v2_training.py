@@ -34,7 +34,7 @@ def test_v2_fit_reaches_a_full_h10_epoch_and_scores_transitions(tmp_path):
         "dataset": ["egocom", "egocom"],
         "context_lengths": torch.tensor([4, 4]),
         "context_action": torch.zeros(2, 4, dtype=torch.long),
-        "future_action": torch.zeros(2, 10, dtype=torch.long),
+        "future_action": torch.tensor([[1] + [0] * 9, [0] * 10], dtype=torch.long),
         "future_valid": torch.ones(2, 10, dtype=torch.bool),
         "context_state": torch.zeros(2, 4, dtype=torch.long),
         "future_state": torch.ones(2, 10, dtype=torch.long),
