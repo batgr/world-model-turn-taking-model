@@ -1,8 +1,7 @@
 # V2 audio-only model: decision record
 
-**Status:** initial architecture accepted; training and evaluation details
-listed below remain open until fixed before the run. This record describes
-decisions, not V2 results.
+**Status:** V2 pilot recipe implemented locally; batch 512 still needs a Colab
+memory check, and there are no V2 results yet.
 
 ## Question and V1 evidence
 
@@ -87,17 +86,25 @@ recording-level uncertainty. Check learned-state motion, rank, and matched
 Mimi/latent/predicted-latent readouts. Keep the TEST split closed; external
 TurnBench DEV is a separate downstream check. The checkpoint score should
 reflect 0.5/1 s transitions rather than `val/loss` alone, with stable-state
-and readout guardrails. Exact validation cadence, minimum change, patience,
-cosine duration and physical batch are **not yet fixed**. Increasing the
-physical batch is intended, but requires memory/throughput and BN/SIGReg
-statistic checks; gradient accumulation does not reproduce those statistics.
+and readout guardrails. For the first run, `configs/train/lewm_v2.yaml` uses
+a physical batch of 512 after a synthetic GPU memory/gradient check, validates
+at each epoch, plans eight epochs for the cosine schedule and disables the
+10,000-step limit. Checkpoint selection and early stopping use the mean of
+validation skill against persistence on known state transitions at 0.5 and
+1 s. These are observed state changes, not proof of anticipation without
+future events. `min_delta=0` counts any measured improvement, with patience
+two validation epochs. The first monitored validation is at the end of epoch
+two, when H=10 has had a complete epoch. These are pilot choices to revisit
+using validation noise and the transition/stable diagnostics; gradient
+accumulation does not reproduce physical-batch BN and SIGReg statistics.
 
-The horizon curriculum should be expressed in steps **and** corresponding
-examples/epochs so that changing the batch does not silently change exposure.
-An initial proposal activates H=5 after half of epoch one and H=10 after the
-first epoch, then keeps H=10 active. Its thresholds need a final check against
-the actual train sample count before the V2 run. At least one complete
-H=10 epoch precedes any early stop. V1's 10,000-step cap is not carried over.
+The horizon curriculum is measured against steps in the **first epoch**,
+irrespective of the eight-epoch cosine duration. H=5 activates after 20% of
+the first epoch's optimizer steps, H=10 after 50%, then stays active. The
+notebook reports the thresholds in optimizer steps and seen examples from the
+actual train dataset after cache filtering and dropping the incomplete batch.
+At least one complete H=10 epoch precedes any early stop. V1's 10,000-step cap
+is not carried over.
 
 The deeper action study will audit token frequency and reliability, compare
 action-conditioned against matched simpler baselines, and substitute only

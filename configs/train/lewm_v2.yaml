@@ -1,0 +1,42 @@
+# @package _global_
+# Audio-only V2. This recipe changes C and W together and keeps H=10.
+defaults:
+  - lewm
+  - _self_
+
+data:
+  context_steps: 30
+
+prediction:
+  rollout_context_size: 30
+  curriculum:
+    # 20% and 50% of examples seen in epoch one; H=10 stays active thereafter.
+    progress_basis: first_epoch
+
+loader:
+  # Initial physical batch to check on the 80 GB Colab GPU before training.
+  batch_size: 512
+  drop_last: true
+
+trainer:
+  # Finite duration for cosine; the sample count determines steps per epoch.
+  max_epochs: 8
+  max_steps: -1
+  val_check_interval: 1.0
+
+evaluation:
+  transition_metrics: true
+
+checkpoint:
+  monitor: val/transition_skill_5_10
+  mode: max
+
+early_stopping:
+  enabled: true
+  monitor: val/transition_skill_5_10
+  mode: max
+  # Any improvement counts; revisit noise tolerance after the pilot.
+  min_delta: 0.0
+  patience: 2
+  # H=10 activates halfway through epoch one, then trains for all of epoch two.
+  minimum_completed_epochs: 2

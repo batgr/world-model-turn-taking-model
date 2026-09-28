@@ -150,6 +150,11 @@ def validate_config(cfg: DictConfig) -> None:
     if cfg.prediction.curriculum.enabled:
         _validate_curriculum(cfg.prediction.curriculum.stages, horizons=horizons)
 
+        if cfg.prediction.curriculum.get("progress_basis", "run") not in (
+            "run", "first_epoch"
+        ):
+            raise ValueError("prediction.curriculum.progress_basis must be run or first_epoch")
+
 
 def _validate_scheduler(cfg: DictConfig) -> None:
     scheduler = cfg.scheduler
@@ -510,6 +515,9 @@ def lejepa_forward(
         "sigreg_loss": sigreg_loss,
     }
 
+    if (cfg.get("evaluation") or {}).get("transition_metrics", False):
+        output["weighted_sigreg_loss"] = cfg.loss.sigreg.weight * sigreg_loss
+
     for h in rollout_horizons:
         output[f"rollout_{h}_loss"] = rollout_losses[h]
 
@@ -563,6 +571,7 @@ class LeWMModule(L.LightningModule):
             cosine_similarity=evaluation.get("cosine_similarity", True),
             latent_health=evaluation.get("latent_health", True),
             latent_rank_samples=evaluation.get("latent_rank_samples", 8192),
+            transition_metrics=evaluation.get("transition_metrics", False),
         )
 
     @property
@@ -586,6 +595,8 @@ class LeWMModule(L.LightningModule):
             rollout_predictions=output.rollout_predictions,
             context_steps=output.context_steps,
             datasets=batch["dataset"],
+            context_state=batch.get("context_state"),
+            future_state=batch.get("future_state"),
         )
 
         return output.losses["loss"]
@@ -602,13 +613,21 @@ class LeWMModule(L.LightningModule):
         )
 
     def _training_progress(self) -> float:
-        """Fraction of the run's optimizer steps done, in [0, 1]."""
+        """Progress over the run (V1) or first epoch (V2), in [0, 1]."""
 
-        total_steps = self._total_optimizer_steps()
+        if self.cfg.prediction.curriculum.get("progress_basis", "run") == "first_epoch":
+            batches = self.trainer.num_training_batches
+            if not math.isfinite(batches):
+                raise ValueError("First-epoch curriculum requires a finite train loader")
+            total_steps = math.ceil(batches / self.trainer.accumulate_grad_batches)
+        else:
+            total_steps = self._total_optimizer_steps()
 
         if total_steps <= 1:
             return 1.0
 
+        if self.cfg.prediction.curriculum.get("progress_basis", "run") == "first_epoch":
+            return min(1.0, max(0.0, self.global_step / total_steps))
         return min(1.0, max(0.0, self.global_step / (total_steps - 1)))
 
     def _total_optimizer_steps(self) -> int:

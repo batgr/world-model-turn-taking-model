@@ -19,11 +19,16 @@ from collections.abc import Mapping
 from dataclasses import dataclass, replace
 from datetime import UTC, datetime
 from pathlib import Path
-from typing import cast
+from typing import Any, cast
 
 import lightning as L
 import pyarrow as pa
-from lightning.pytorch.callbacks import Callback, LearningRateMonitor, ModelCheckpoint
+from lightning.pytorch.callbacks import (
+    Callback,
+    EarlyStopping,
+    LearningRateMonitor,
+    ModelCheckpoint,
+)
 from omegaconf import DictConfig, OmegaConf
 
 from turn_wm.data.build import build_dataset
@@ -142,6 +147,7 @@ def run(
     if not isinstance(trainer_kwargs, dict):
         raise TypeError("cfg.trainer must resolve to a mapping")
 
+    trainer_kwargs = cast(dict[str, Any], trainer_kwargs)
     trainer_kwargs["default_root_dir"] = str(run_dir)
 
     callbacks = _build_callbacks(
@@ -450,23 +456,52 @@ def _build_callbacks(
     *,
     run_dir: Path,
 ) -> list[Callback]:
-    if not cfg.checkpoint.enabled:
-        return []
+    callbacks: list[Callback] = []
 
-    checkpoint_dir = run_dir / "checkpoints"
+    if cfg.checkpoint.enabled:
+        checkpoint_dir = run_dir / "checkpoints"
 
-    checkpoint = ModelCheckpoint(
-        dirpath=checkpoint_dir,
-        monitor=cfg.checkpoint.monitor,
-        mode=cfg.checkpoint.mode,
-        save_top_k=cfg.checkpoint.save_top_k,
-        save_last=cfg.checkpoint.save_last,
-        every_n_epochs=cfg.checkpoint.every_n_epochs,
-        filename="epoch={epoch:03d}-step={step}",
-        auto_insert_metric_name=False,
-    )
+        callbacks.append(
+            ModelCheckpoint(
+                dirpath=checkpoint_dir,
+                monitor=cfg.checkpoint.monitor,
+                mode=cfg.checkpoint.mode,
+                save_top_k=cfg.checkpoint.save_top_k,
+                save_last=cfg.checkpoint.save_last,
+                every_n_epochs=cfg.checkpoint.every_n_epochs,
+                filename="epoch={epoch:03d}-step={step}",
+                auto_insert_metric_name=False,
+            )
+        )
 
-    return [checkpoint]
+    early = cfg.get("early_stopping")
+    if early and early.get("enabled", False):
+        callbacks.append(
+            FullHorizonEarlyStopping(
+                monitor=early.monitor,
+                mode=early.mode,
+                min_delta=early.min_delta,
+                patience=early.patience,
+                minimum_completed_epochs=early.minimum_completed_epochs,
+            )
+        )
+
+    return callbacks
+
+
+class FullHorizonEarlyStopping(EarlyStopping):
+    """Start counting patience only after H=10 has had a full epoch."""
+
+    def __init__(self, *, minimum_completed_epochs: int, **kwargs) -> None:
+        super().__init__(check_on_train_epoch_end=False, **kwargs)
+        if minimum_completed_epochs < 2:
+            raise ValueError("minimum_completed_epochs must cover one full H=10 epoch")
+        self.minimum_completed_epochs = minimum_completed_epochs
+
+    def _run_early_stopping_check(self, trainer: L.Trainer) -> None:
+        if trainer.current_epoch + 1 < self.minimum_completed_epochs:
+            return
+        super()._run_early_stopping_check(trainer)
 
 
 def _resolved_config(cfg: DictConfig) -> dict:

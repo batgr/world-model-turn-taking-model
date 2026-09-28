@@ -6,7 +6,11 @@ from types import SimpleNamespace
 
 import pytest
 from datasets import Dataset
-from lightning.pytorch.callbacks import LearningRateMonitor, ModelCheckpoint
+from lightning.pytorch.callbacks import (
+    EarlyStopping,
+    LearningRateMonitor,
+    ModelCheckpoint,
+)
 from omegaconf import OmegaConf
 
 from turn_wm.config import load_config
@@ -318,6 +322,37 @@ def test_checkpoint_callback_uses_config():
     assert checkpoint.save_top_k == 3
     assert checkpoint.save_last is True
     assert checkpoint.every_n_epochs == 1
+
+
+def test_v2_recipe_tracks_full_horizon_transitions_after_first_epoch():
+    cfg = load_config(["model=lewm_bn", "train=lewm_v2"])
+    callbacks = _build_callbacks(cfg, run_dir=Path("run"))
+
+    assert (cfg.data.context_steps, cfg.prediction.rollout_context_size) == (30, 30)
+    assert cfg.data.future_steps == 10
+    assert cfg.loader.batch_size == 512 and cfg.loader.drop_last
+    assert cfg.trainer.max_steps == -1 and cfg.trainer.val_check_interval == 1.0
+    assert cfg.prediction.curriculum.progress_basis == "first_epoch"
+    assert [type(callback).__name__ for callback in callbacks] == [
+        "ModelCheckpoint", "FullHorizonEarlyStopping"
+    ]
+    assert callbacks[0].monitor == callbacks[1].monitor == "val/transition_skill_5_10"
+    assert callbacks[1].minimum_completed_epochs == 2
+
+
+def test_v2_early_stopping_ignores_validation_before_full_h10_epoch(monkeypatch):
+    cfg = load_config(["model=lewm_bn", "train=lewm_v2"])
+    callback = _build_callbacks(cfg, run_dir=Path("run"))[1]
+    checked = []
+    monkeypatch.setattr(
+        EarlyStopping, "_run_early_stopping_check",
+        lambda self, trainer: checked.append(trainer.current_epoch),
+    )
+
+    callback._run_early_stopping_check(SimpleNamespace(current_epoch=0))
+    assert checked == []
+    callback._run_early_stopping_check(SimpleNamespace(current_epoch=1))
+    assert checked == [1]
 
 
 def test_checkpoint_can_be_disabled():

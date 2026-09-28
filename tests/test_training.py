@@ -68,6 +68,25 @@ def small_config(**overrides):
     return cfg
 
 
+def test_v2_curriculum_follows_first_epoch_not_eight_epoch_cosine():
+    cfg = load_config(["model=lewm_bn", "train=lewm_v2"])
+    module = LeWMModule(cfg)
+    module._trainer = SimpleNamespace(
+        global_step=0, num_training_batches=1000, accumulate_grad_batches=1
+    )
+
+    for step, expected in (
+        (0, [1]),
+        (199, [1]),
+        (200, [1, 5]),
+        (499, [1, 5]),
+        (500, [1, 5, 10]),
+        (1500, [1, 5, 10]),
+    ):
+        module._trainer.global_step = step
+        assert rollout_horizons_for_progress(cfg, module._training_progress()) == expected
+
+
 def make_model(cfg, *, encoder_dim=512, **kwargs):
     return instantiate(cfg.model, encoder=StepIndexEncoder(encoder_dim), **kwargs)
 
@@ -235,7 +254,9 @@ def test_rollout_uses_the_real_future_actions():
     expected = embed(torch.tensor([[0, 1], [1, 2], [2, 0]]))
 
     for call, actions in zip(calls[1:], expected, strict=True):
-        assert torch.allclose(call["act"][0], actions)
+        # The same MLP uses different GEMM shapes (batch 2 vs 3); small CPU
+        # rounding differences do not change the selected action tokens.
+        assert torch.allclose(call["act"][0], actions, atol=2e-5, rtol=1e-5)
 
 
 def test_default_config_no_longer_overflows_positions():

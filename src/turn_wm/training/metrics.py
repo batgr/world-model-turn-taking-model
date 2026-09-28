@@ -29,6 +29,8 @@ from dataclasses import dataclass, field
 import torch
 import torch.nn.functional as F
 
+from turn_wm.data.dataset import STATE_TO_ID
+
 GLOBAL = ""
 EPS = torch.finfo(torch.float32).eps
 
@@ -158,13 +160,17 @@ class ValidationMetrics:
         cosine_similarity: bool = True,
         latent_health: bool = True,
         latent_rank_samples: int = 8192,
+        transition_metrics: bool = False,
     ) -> None:
         self.horizons = sorted(horizons)
         self.persistence_baseline = persistence_baseline
         self.cosine_similarity = cosine_similarity
         self.latent_health = latent_health
+        self.transition_metrics = transition_metrics
         self.tf: dict[str, _ErrorSums] = defaultdict(_ErrorSums)
         self.rollout: dict[tuple[str, int], _HorizonSums] = defaultdict(_HorizonSums)
+        self.conditions: dict[tuple[str, int], _ErrorSums] = defaultdict(_ErrorSums)
+        self.latent_dim: int | None = None
         self.latent_sum: torch.Tensor | None = None
         self.latent_square_sum: torch.Tensor | None = None
         self.latent_norm_sum = 0.0
@@ -183,8 +189,11 @@ class ValidationMetrics:
         context_steps: int,
         datasets: Sequence[str],
         mask: torch.Tensor | None = None,
+        context_state: torch.Tensor | None = None,
+        future_state: torch.Tensor | None = None,
     ) -> None:
         z = latents.detach().double()
+        self.latent_dim = z.shape[-1]
         tf_pred = tf_predictions.detach().double()
         c = context_steps
         valid = (
@@ -200,6 +209,22 @@ class ValidationMetrics:
             )
             for name in groups
         }
+
+        now: torch.Tensor | None = None
+        later: torch.Tensor | None = None
+        known_now: torch.Tensor | None = None
+        known_later: torch.Tensor | None = None
+        if self.transition_metrics:
+            if context_state is None or future_state is None:
+                raise ValueError("Transition metrics require context and future states")
+            if context_state.shape[0] != z.shape[0] or future_state.shape[:2] != (
+                z.shape[0], z.shape[1] - c
+            ):
+                raise ValueError("State labels do not match validation trajectories")
+            now = context_state[:, c - 1].to(z.device)
+            later = future_state.to(z.device)
+            known_now = now < STATE_TO_ID["UNKNOWN"]
+            known_later = later < STATE_TO_ID["UNKNOWN"]
 
         # Teacher forcing: z[:, :C] -> z[:, 1 : C + 1]; baseline z[t].
         tf_valid = valid[:, :c] & valid[:, 1 : c + 1]
@@ -238,6 +263,19 @@ class ValidationMetrics:
                 sums.prediction_delta_norm += float(
                     (pred[rows] - last[rows]).norm(dim=-1).sum()
                 )
+
+            if self.transition_metrics:
+                assert now is not None and later is not None
+                assert known_now is not None and known_later is not None
+                known = known_now & known_later[:, h - 1] & ok
+                changed = now != later[:, h - 1]
+                for condition, rows in (
+                    ("transition", known & changed),
+                    ("stable", known & ~changed),
+                ):
+                    self.conditions[(condition, h)].add(
+                        pred[rows], last[rows], target[rows]
+                    )
 
             if self.latent_health:
                 kept = pred[ok]
@@ -305,6 +343,17 @@ class ValidationMetrics:
         if skills:
             # Plain mean over horizons of the (epoch-aggregated) global skills.
             metrics["skill_mean"] = sum(skills) / len(skills)
+
+        if self.transition_metrics:
+            for (condition, h), sums in sorted(self.conditions.items()):
+                metrics.update(sums.metrics(f"{condition}_{h}_"))
+                if sums.elements:
+                    assert self.latent_dim is not None
+                    metrics[f"{condition}_{h}_n"] = sums.elements // self.latent_dim
+            if all(f"transition_{h}_skill" in metrics for h in (5, 10)):
+                metrics["transition_skill_5_10"] = (
+                    metrics["transition_5_skill"] + metrics["transition_10_skill"]
+                ) / 2
 
         if self.latent_health and self.latent_count:
             assert self.latent_sum is not None and self.latent_square_sum is not None

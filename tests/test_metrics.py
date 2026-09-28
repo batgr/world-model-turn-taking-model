@@ -157,6 +157,37 @@ def test_model_and_baseline_share_the_same_masked_positions():
     assert metrics.tf[""].elements == only.tf[""].elements
 
 
+def test_transition_skill_uses_known_state_changes_and_epoch_sums():
+    metrics = ValidationMetrics(HORIZONS, latent_health=False, transition_metrics=True)
+    z = trajectory(batch=3, last=(0.0, 0.0), future=(2.0, 2.0))
+    current = torch.tensor([[0] * C] * 3)
+    future = torch.tensor([[1] * 10, [0] * 10, [2] * 10])
+    predictions = {h: torch.tensor([[2.0, 2.0], [0.0, 0.0], [0.0, 0.0]]) for h in HORIZONS}
+
+    metrics.update(
+        latents=z,
+        tf_predictions=z[:, :C],
+        rollout_predictions=predictions,
+        context_steps=C,
+        datasets=["egocom"] * 3,
+        context_state=current,
+        future_state=future,
+    )
+    result = metrics.compute()
+
+    assert result["transition_5_n"] == result["transition_10_n"] == 1
+    assert result["stable_5_n"] == result["stable_10_n"] == 1
+    assert result["transition_5_skill"] == result["transition_10_skill"] == 1
+    assert result["transition_skill_5_10"] == 1
+    assert result["stable_5_skill"] == 0
+
+
+def test_transition_metrics_reject_missing_state_labels():
+    metrics = ValidationMetrics(HORIZONS, latent_health=False, transition_metrics=True)
+    with pytest.raises(ValueError, match="require context and future states"):
+        update(metrics, trajectory())
+
+
 # -- cosine and deltas ----------------------------------------------------------
 
 
