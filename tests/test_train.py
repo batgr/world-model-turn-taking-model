@@ -214,6 +214,16 @@ def test_run_propagates_loader_config(recorder, media_roots):
     assert val_loader.drop_last is False
 
 
+def test_training_can_drop_incomplete_batch_without_dropping_validation(
+    recorder, media_roots
+):
+    run(media_roots, "loader.drop_last=true")
+
+    train_loader, val_loader = (call["loader"] for call in recorder.loader_calls)
+    assert train_loader.drop_last is True
+    assert val_loader.drop_last is False
+
+
 def test_run_seeds_before_model_construction(recorder, media_roots):
     run(media_roots, "seed=7")
 

@@ -106,6 +106,7 @@ def run(
 
     train_loader_config = DataLoaderConfig(
         batch_size=cfg.loader.batch_size,
+        drop_last=cfg.loader.drop_last,
         num_workers=cfg.loader.num_workers,
         pin_memory=cfg.loader.pin_memory,
         persistent_workers=cfg.loader.persistent_workers,

@@ -80,6 +80,9 @@ class JEPA(nn.Module):
         if parameter is not None and features.dtype != parameter.dtype:
             features = features.to(parameter.dtype)
 
+        if getattr(self.projector, "expects_sequence", False):
+            return self.projector(features)
+
         b = features.size(0)
 
         emb = rearrange(
@@ -142,6 +145,9 @@ class JEPA(nn.Module):
             emb,
             act_emb,
         )
+
+        if getattr(self.pred_proj, "expects_sequence", False):
+            return self.pred_proj(preds)
 
         batch_size = preds.size(0)
 

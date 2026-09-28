@@ -93,6 +93,8 @@ scheduler:
 
 loader:
   batch_size: 128
+  # A BatchNorm recipe can set this to true to avoid a final batch of one.
+  drop_last: false
   num_workers: 6
   persistent_workers: true
   prefetch_factor: 3

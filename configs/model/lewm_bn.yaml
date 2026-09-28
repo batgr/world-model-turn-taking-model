@@ -1,0 +1,14 @@
+# Retain the V1 model configuration; change only the two projectors.
+defaults:
+  - lewm
+  - _self_
+
+projector:
+  norm_fn:
+    _target_: hydra.utils.get_class
+    path: turn_wm.models.lewm.mlp.CausalBatchNorm1d
+
+pred_proj:
+  norm_fn:
+    _target_: hydra.utils.get_class
+    path: turn_wm.models.lewm.mlp.CausalBatchNorm1d
