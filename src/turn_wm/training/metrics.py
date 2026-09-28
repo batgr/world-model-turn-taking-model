@@ -189,6 +189,8 @@ class ValidationMetrics:
         context_steps: int,
         datasets: Sequence[str],
         mask: torch.Tensor | None = None,
+        context_action: torch.Tensor | None = None,
+        context_valid: torch.Tensor | None = None,
         future_action: torch.Tensor | None = None,
         future_valid: torch.Tensor | None = None,
     ) -> None:
@@ -210,18 +212,31 @@ class ValidationMetrics:
             for name in groups
         }
 
-        actions: torch.Tensor | None = None
-        action_valid: torch.Tensor | None = None
+        context_actions: torch.Tensor | None = None
+        context_action_valid: torch.Tensor | None = None
+        future_actions: torch.Tensor | None = None
+        future_action_valid: torch.Tensor | None = None
         if self.transition_metrics:
-            if future_action is None or future_valid is None:
-                raise ValueError("Transition metrics require future actions and validity")
+            if any(
+                value is None
+                for value in (context_action, context_valid, future_action, future_valid)
+            ):
+                raise ValueError(
+                    "Transition metrics require context/future actions and validity"
+                )
             future_steps = z.shape[1] - c
+            if context_action.shape != (z.shape[0], c) or context_valid.shape != (
+                z.shape[0], c
+            ):
+                raise ValueError("Context action labels do not match validation trajectories")
             if future_action.shape != (z.shape[0], future_steps) or future_valid.shape != (
                 z.shape[0], future_steps
             ):
                 raise ValueError("Future action labels do not match validation trajectories")
-            actions = future_action.to(device=z.device, dtype=torch.long)
-            action_valid = future_valid.to(device=z.device, dtype=torch.bool)
+            context_actions = context_action.to(device=z.device, dtype=torch.long)
+            context_action_valid = context_valid.to(device=z.device, dtype=torch.bool)
+            future_actions = future_action.to(device=z.device, dtype=torch.long)
+            future_action_valid = future_valid.to(device=z.device, dtype=torch.bool)
 
         # Teacher forcing: z[:, :C] -> z[:, 1 : C + 1]; baseline z[t].
         tf_valid = valid[:, :c] & valid[:, 1 : c + 1]
@@ -262,10 +277,20 @@ class ValidationMetrics:
                 )
 
             if self.transition_metrics:
-                assert actions is not None and action_valid is not None
-                horizon_valid = action_valid[:, :h].all(dim=1) & ok
+                assert context_actions is not None and context_action_valid is not None
+                assert future_actions is not None and future_action_valid is not None
+                # z[C+h-1] is reached from z[C-1] with the last context action,
+                # then h-1 future actions. H=1 therefore uses only a[C-1].
+                transition_actions = torch.cat(
+                    [context_actions[:, -1:], future_actions[:, : h - 1]], dim=1
+                )
+                transition_valid = torch.cat(
+                    [context_action_valid[:, -1:], future_action_valid[:, : h - 1]],
+                    dim=1,
+                )
+                horizon_valid = transition_valid.all(dim=1) & ok
                 has_transition = (
-                    actions[:, :h] != ACTION_TO_ID["NO_EVENT"]
+                    transition_actions != ACTION_TO_ID["NO_EVENT"]
                 ).any(dim=1)
                 for condition, rows in (
                     ("transition", horizon_valid & has_transition),
