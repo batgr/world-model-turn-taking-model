@@ -75,7 +75,12 @@ steps and random projections. A falling scalar has no useful interpretation
 without its finite-sample reference. Under independent standard Gaussian
 latents, its 17-point quadrature has expected value approximately **1.0525**;
 with every latent fixed to zero it gives approximately **51.46** at physical
-batch 128, or **205.85** at batch 512. These are calculation-specific
+batch 128, or **205.85** at batch 512. The factor of the batch size is part
+of the Epps-Pulley statistic as LeJEPA defines it, and LeJEPA keeps the
+coefficient fixed from batch 128 to 1024 (its Table 1c); the same `lambda`
+therefore weighs a given distribution mismatch four times more at batch 512
+than at 128, one more reason comparison arms match the batch. These are
+calculation-specific
 references, not universal optimum values or a task-quality threshold.
 Repeated synthetic evaluations with the actual batch, number of steps and
 projection sampling will provide variation bands. Report the raw statistic,
