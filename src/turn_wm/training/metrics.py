@@ -29,7 +29,7 @@ from dataclasses import dataclass, field
 import torch
 import torch.nn.functional as F
 
-from turn_wm.data.dataset import STATE_TO_ID
+from turn_wm.data.dataset import ACTION_TO_ID
 
 GLOBAL = ""
 EPS = torch.finfo(torch.float32).eps
@@ -189,8 +189,8 @@ class ValidationMetrics:
         context_steps: int,
         datasets: Sequence[str],
         mask: torch.Tensor | None = None,
-        context_state: torch.Tensor | None = None,
-        future_state: torch.Tensor | None = None,
+        future_action: torch.Tensor | None = None,
+        future_valid: torch.Tensor | None = None,
     ) -> None:
         z = latents.detach().double()
         self.latent_dim = z.shape[-1]
@@ -210,21 +210,18 @@ class ValidationMetrics:
             for name in groups
         }
 
-        now: torch.Tensor | None = None
-        later: torch.Tensor | None = None
-        known_now: torch.Tensor | None = None
-        known_later: torch.Tensor | None = None
+        actions: torch.Tensor | None = None
+        action_valid: torch.Tensor | None = None
         if self.transition_metrics:
-            if context_state is None or future_state is None:
-                raise ValueError("Transition metrics require context and future states")
-            if context_state.shape[0] != z.shape[0] or future_state.shape[:2] != (
-                z.shape[0], z.shape[1] - c
+            if future_action is None or future_valid is None:
+                raise ValueError("Transition metrics require future actions and validity")
+            future_steps = z.shape[1] - c
+            if future_action.shape != (z.shape[0], future_steps) or future_valid.shape != (
+                z.shape[0], future_steps
             ):
-                raise ValueError("State labels do not match validation trajectories")
-            now = context_state[:, c - 1].to(z.device)
-            later = future_state.to(z.device)
-            known_now = now < STATE_TO_ID["UNKNOWN"]
-            known_later = later < STATE_TO_ID["UNKNOWN"]
+                raise ValueError("Future action labels do not match validation trajectories")
+            actions = future_action.to(device=z.device, dtype=torch.long)
+            action_valid = future_valid.to(device=z.device, dtype=torch.bool)
 
         # Teacher forcing: z[:, :C] -> z[:, 1 : C + 1]; baseline z[t].
         tf_valid = valid[:, :c] & valid[:, 1 : c + 1]
@@ -265,13 +262,14 @@ class ValidationMetrics:
                 )
 
             if self.transition_metrics:
-                assert now is not None and later is not None
-                assert known_now is not None and known_later is not None
-                known = known_now & known_later[:, h - 1] & ok
-                changed = now != later[:, h - 1]
+                assert actions is not None and action_valid is not None
+                horizon_valid = action_valid[:, :h].all(dim=1) & ok
+                has_transition = (
+                    actions[:, :h] != ACTION_TO_ID["NO_EVENT"]
+                ).any(dim=1)
                 for condition, rows in (
-                    ("transition", known & changed),
-                    ("stable", known & ~changed),
+                    ("transition", horizon_valid & has_transition),
+                    ("stable", horizon_valid & ~has_transition),
                 ):
                     self.conditions[(condition, h)].add(
                         pred[rows], last[rows], target[rows]
