@@ -105,6 +105,36 @@ def test_standard_bn_config_flattens_time_for_both_projectors():
     assert z.shape == output.shape == (2, 4, cfg.embed_dim)
 
 
+def test_positional_cbn_config_uses_full_v2_trajectory_for_projector():
+    cfg = load_config(
+        [
+            "model=lewm_positional_cbn",
+            "train=lewm_v2",
+            "data.observation_source=mimi_cache",
+        ]
+    )
+    model = build_model(cfg)
+
+    projector_norm = model.projector.net[1]
+    pred_norm = model.pred_proj.net[1]
+
+    assert isinstance(projector_norm, CausalBatchNorm1d)
+    assert isinstance(pred_norm, CausalBatchNorm1d)
+    assert projector_norm.num_positions == cfg.data.context_steps + cfg.data.future_steps == 40
+    assert pred_norm.num_positions == cfg.model.predictor.num_frames == 30
+
+    model.eval()
+    features = torch.randn(2, 40, 512)
+    actions = torch.zeros(2, 30, dtype=torch.long)
+
+    with torch.no_grad():
+        z = model.project_features(features)
+        pred = model.predict(z[:, :30], model.encode_actions(actions))
+
+    assert z.shape == (2, 40, cfg.embed_dim)
+    assert pred.shape == (2, 30, cfg.embed_dim)
+
+
 def test_training_projectors_preserve_prefix_and_receive_gradients():
     torch.manual_seed(19)
     cfg = load_config(
