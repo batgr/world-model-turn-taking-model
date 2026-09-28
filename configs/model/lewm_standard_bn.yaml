@@ -1,0 +1,19 @@
+# V2-B ablation: retain the V2 architecture and replace only the two
+# causal batch-normalization layers with ordinary BatchNorm1d.
+#
+# JEPA flattens (B, T, D) -> (B*T, D) for ordinary MLP normalizations, so
+# standard BatchNorm1d intentionally estimates one set of statistics over
+# examples and temporal positions. This is the behavior V2-B is testing.
+defaults:
+  - lewm
+  - _self_
+
+projector:
+  norm_fn:
+    _target_: hydra.utils.get_class
+    path: torch.nn.BatchNorm1d
+
+pred_proj:
+  norm_fn:
+    _target_: hydra.utils.get_class
+    path: torch.nn.BatchNorm1d
