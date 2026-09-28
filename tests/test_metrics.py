@@ -157,25 +157,29 @@ def test_model_and_baseline_share_the_same_masked_positions():
     assert metrics.tf[""].elements == only.tf[""].elements
 
 
-def test_transition_skill_uses_future_events_and_epoch_sums():
+def test_transition_skill_uses_rollout_actions_and_epoch_sums():
     metrics = ValidationMetrics(HORIZONS, latent_health=False, transition_metrics=True)
     z = trajectory(batch=3, last=(0.0, 0.0), future=(2.0, 2.0))
-    # Sample 0 has an ONSET in the first future slot; sample 1 stays NO_EVENT;
-    # sample 2 is masked and must not enter either condition.
-    future_action = torch.tensor(
+
+    # H=1 predicts z[C] from z[C-1] using action[C-1].
+    # Sample 0 transitions on that last context action, sample 1 stays stable,
+    # sample 2 has that action masked and must enter neither condition.
+    context_action = torch.tensor(
         [
-            [1] + [0] * 9,
-            [0] * 10,
-            [3] + [0] * 9,
+            [0, 0, 1],
+            [0, 0, 0],
+            [0, 0, 3],
         ]
     )
-    future_valid = torch.tensor(
+    context_valid = torch.tensor(
         [
-            [True] * 10,
-            [True] * 10,
-            [False] + [True] * 9,
+            [True] * C,
+            [True] * C,
+            [True, True, False],
         ]
     )
+    future_action = torch.zeros(3, 10, dtype=torch.long)
+    future_valid = torch.ones(3, 10, dtype=torch.bool)
     predictions = {
         h: torch.tensor([[2.0, 2.0], [0.0, 0.0], [0.0, 0.0]])
         for h in HORIZONS
@@ -187,6 +191,8 @@ def test_transition_skill_uses_future_events_and_epoch_sums():
         rollout_predictions=predictions,
         context_steps=C,
         datasets=["egocom"] * 3,
+        context_action=context_action,
+        context_valid=context_valid,
         future_action=future_action,
         future_valid=future_valid,
     )
@@ -202,9 +208,13 @@ def test_transition_skill_uses_future_events_and_epoch_sums():
 def test_transition_horizon_counts_round_trip_as_transition():
     metrics = ValidationMetrics(HORIZONS, latent_health=False, transition_metrics=True)
     z = trajectory(last=(0.0, 0.0), future=(2.0, 2.0))
-    # ONSET then OFFSET returns to the original state, but the horizon contains
-    # real transitions and therefore must not be called stable.
-    future_action = torch.tensor([[1, 2] + [0] * 8])
+
+    # The last context action produces H1; the first future action produces H2.
+    # ONSET then OFFSET is still a transition horizon even if the vocal state
+    # has returned to its starting value by H2.
+    context_action = torch.tensor([[0, 0, 1]])
+    context_valid = torch.ones(1, C, dtype=torch.bool)
+    future_action = torch.tensor([[2] + [0] * 9])
     future_valid = torch.ones(1, 10, dtype=torch.bool)
     predictions = {h: torch.tensor([[2.0, 2.0]]) for h in HORIZONS}
 
@@ -214,19 +224,52 @@ def test_transition_horizon_counts_round_trip_as_transition():
         rollout_predictions=predictions,
         context_steps=C,
         datasets=["egocom"],
+        context_action=context_action,
+        context_valid=context_valid,
         future_action=future_action,
         future_valid=future_valid,
     )
     result = metrics.compute()
 
+    assert result["transition_1_n"] == 1
     assert result["transition_5_n"] == result["transition_10_n"] == 1
     assert "stable_5_n" not in result
     assert "stable_10_n" not in result
 
 
-def test_transition_metrics_reject_missing_future_actions():
+def test_transition_horizon_stops_before_action_that_produces_next_target():
     metrics = ValidationMetrics(HORIZONS, latent_health=False, transition_metrics=True)
-    with pytest.raises(ValueError, match="require future actions and validity"):
+    z = trajectory(last=(0.0, 0.0), future=(2.0, 2.0))
+
+    # H5 uses a[C-1], a[C], ..., a[C+3].  The event at future_action[4]
+    # produces z[C+5] (H6), so H5 is stable while H10 is a transition.
+    context_action = torch.zeros(1, C, dtype=torch.long)
+    context_valid = torch.ones(1, C, dtype=torch.bool)
+    future_action = torch.tensor([[0, 0, 0, 0, 1, 0, 0, 0, 0, 0]])
+    future_valid = torch.ones(1, 10, dtype=torch.bool)
+    predictions = {h: torch.tensor([[2.0, 2.0]]) for h in HORIZONS}
+
+    metrics.update(
+        latents=z,
+        tf_predictions=z[:, :C],
+        rollout_predictions=predictions,
+        context_steps=C,
+        datasets=["egocom"],
+        context_action=context_action,
+        context_valid=context_valid,
+        future_action=future_action,
+        future_valid=future_valid,
+    )
+    result = metrics.compute()
+
+    assert result["stable_1_n"] == 1
+    assert result["stable_5_n"] == 1
+    assert result["transition_10_n"] == 1
+
+
+def test_transition_metrics_reject_missing_rollout_actions():
+    metrics = ValidationMetrics(HORIZONS, latent_health=False, transition_metrics=True)
+    with pytest.raises(ValueError, match="require context/future actions and validity"):
         update(metrics, trajectory())
 
 
