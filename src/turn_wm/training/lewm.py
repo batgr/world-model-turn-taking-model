@@ -595,8 +595,8 @@ class LeWMModule(L.LightningModule):
             rollout_predictions=output.rollout_predictions,
             context_steps=output.context_steps,
             datasets=batch["dataset"],
-            context_state=batch.get("context_state"),
-            future_state=batch.get("future_state"),
+            future_action=batch.get("future_action"),
+            future_valid=batch.get("future_valid"),
         )
 
         return output.losses["loss"]
