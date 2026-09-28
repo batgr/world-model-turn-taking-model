@@ -53,7 +53,17 @@ report the exact number of training examples consumed per epoch.
 The reference [LeWM implementation](https://github.com/lucas-maes/le-wm/blob/main/jepa.py)
 flattens batch and time before both projectors. The V2 variant instead keeps
 time separate during training normalization so future positions cannot change
-an earlier output. `configs/model/lewm_bn.yaml` changes only the projector
+an earlier output. Evaluation must then use the statistics training used. The
+Mimi-to-latent projector's inputs do not depend on the window position, so it
+keeps one set of running statistics. The predictor-output projector's inputs
+carry the predictor's absolute position embedding, and their mean varies by
+position; pooling its running statistics over positions would make evaluation
+normalize differently from training. It therefore keeps running statistics
+per window position (`num_positions` = `model.predictor.num_frames`), which
+stays causal and matches training position by position. This departs from
+the reference implementation, which pools batch and time in both modes and
+so lets later window positions enter the training statistics of earlier
+ones. `configs/model/lewm_bn.yaml` changes only the projector
 normalization; the observed context is selected separately in the training
 configuration or notebook. The V1 `model=lewm` path remains available.
 

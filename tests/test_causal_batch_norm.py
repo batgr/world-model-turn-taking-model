@@ -32,6 +32,25 @@ def test_eval_uses_fixed_statistics_for_single_sample_and_prefix():
     torch.testing.assert_close(norm(sample[:, :1]), norm(sample)[:, :1], rtol=0, atol=0)
 
 
+def test_positional_statistics_match_training_in_eval():
+    # Predictor outputs have a mean that depends on the position; eval must
+    # normalize each position with that position's statistics.
+    torch.manual_seed(20)
+    norm = CausalBatchNorm1d(3, momentum=1.0, num_positions=5)
+    norm.train()
+    offsets = 10 * torch.randn(1, 5, 3)
+    x = torch.randn(4096, 5, 3) + offsets
+
+    trained = norm(x)
+    norm.eval()
+
+    torch.testing.assert_close(norm(x), trained, rtol=0, atol=1e-3)
+    torch.testing.assert_close(norm(x[:1, :2]), norm(x[:1])[:, :2], rtol=0, atol=0)
+
+    with pytest.raises(ValueError, match="statistics for 5 positions"):
+        norm(torch.randn(1, 6, 3))
+
+
 def test_training_rejects_batch_of_one():
     norm = CausalBatchNorm1d(3)
 
@@ -47,6 +66,8 @@ def test_bn_config_normalizes_both_projectors_without_changing_v1():
     model = build_model(v2)
     assert isinstance(model.projector.net[1], CausalBatchNorm1d)
     assert isinstance(model.pred_proj.net[1], CausalBatchNorm1d)
+    assert model.projector.net[1].num_positions is None
+    assert model.pred_proj.net[1].num_positions == v2.model.predictor.num_frames
 
     model.eval()
     features = torch.randn(1, 4, 512)
