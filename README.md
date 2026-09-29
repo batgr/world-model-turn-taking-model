@@ -10,21 +10,23 @@ The upstream
 [data pipeline](https://github.com/batgr/world-model-turn-taking-data) publishes
 the vocal-event grid and model-ready anchors.
 
-**Current status:** V1 has been trained and analyzed against persistence and
-event-conditioning baselines. The [audio-only V2 pilot](docs/decisions/v2_audio_only.md)
-has a configured recipe and tests, but no V2 result is reported yet. A voice
-agent demonstration on Hugging Face Spaces is planned after that study and is
-separate from deployment on a robot.
+**Current status:** V1 is complete and the audio-only V2 study is in controlled
+ablation/evaluation. The baseline plus lower-SIGReg (V2-A) and standard-BN
+(V2-B) runs have matched representation/rollout analyses; the positional-CBN
+(V2-D) run is awaiting the same analysis. The living
+[research program](docs/research_program.md) tracks hypotheses, evidence,
+architecture evolution and experiment gates. A voice-agent/planning
+demonstration is a later stage and is separate from deployment on a robot.
 
-**Explore:** [public EgoCom dataset](https://huggingface.co/datasets/batgre/conversational-dynamics-egocom) · [training design](docs/training.md) · [research decisions](docs/decisions/README.md) · [V2 branch](https://github.com/batgr/world-model-turn-taking-model/tree/v2/audio-only)
+**Explore:** [public EgoCom dataset](https://huggingface.co/datasets/batgre/conversational-dynamics-egocom) · [training design](docs/training.md) · [research program](docs/research_program.md) · [research decisions](docs/decisions/README.md) · [Zotero/reference workflow](references/README.md) · [V2 branch](https://github.com/batgr/world-model-turn-taking-model/tree/v2/audio-only)
 
 ## V2 audio-only pilot (this branch)
 
 Select `model=lewm_bn train=lewm_v2` for the coupled 30-step context and
-rollout window, 10-step horizon and transition-focused checkpoint score. The
-physical batch of 512 requires a GPU memory and gradient preflight before a
-real run. V2 has no reported performance result yet. The decision record
-explains the evidence, proposed comparisons and limitations.
+rollout window, 10-step horizon and transition-focused checkpoint score.
+Controlled V2 ablations vary one factor at a time (SIGReg or projector
+normalization); see the [research program](docs/research_program.md) for the
+current experiment matrix, hypotheses and pending decision gates.
 
 ```bash
 uv run turn-wm train model=lewm_bn train=lewm_v2 \
