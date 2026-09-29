@@ -2423,7 +2423,7 @@ wheels = [
 ]
 
 [[package]]
-name = "world-model-turn-taking-models"
+name = "world-model-turn-taking-model"
 version = "0.1.0"
 source = { editable = "." }
 dependencies = [
