@@ -10,12 +10,14 @@ The upstream [data pipeline](https://github.com/batgr/world-model-turn-taking-da
 publishes the vocal-event grid and model-ready anchors.
 
 **Current status:** V1 has been trained and analyzed against persistence and
-event-conditioning baselines. The [audio-only V2 pilot](https://github.com/batgr/world-model-turn-taking-model/tree/v2/audio-only)
-has a configured recipe and tests on its own branch; no V2 result is reported
-yet. A voice-agent demonstration on Hugging Face Spaces is planned after that
-study and is separate from deployment on a robot.
+event-conditioning baselines. Controlled audio-only V2 ablations and their
+representation/rollout analyses are developed on the
+[audio-only V2 branch](https://github.com/batgr/world-model-turn-taking-model/tree/v2/audio-only).
+The stable main branch is intentionally kept separate until the V2 recipe is
+frozen. A voice-agent/planning demonstration is a later stage and is separate
+from deployment on a robot.
 
-**Explore:** [public EgoCom dataset](https://huggingface.co/datasets/batgre/conversational-dynamics-egocom) · [training design](docs/training.md) · [research decisions](docs/decisions/README.md)
+**Explore:** [public EgoCom dataset](https://huggingface.co/datasets/batgre/conversational-dynamics-egocom) · [training design](docs/training.md) · [V2 research program](https://github.com/batgr/world-model-turn-taking-model/blob/v2/audio-only/docs/research_program.md) · [research decisions](https://github.com/batgr/world-model-turn-taking-model/tree/v2/audio-only/docs/decisions)
 
 ## Data
 
