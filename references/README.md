@@ -139,6 +139,11 @@ this project.
 
 ## Initial seed
 
+`references/seed_identifiers.txt` contains the DOI/arXiv identifiers for the
+initial collection. Zotero's **Add Item by Identifier** accepts several
+identifiers at once (spaces, commas or line breaks), so the file can be pasted
+in one operation and Zotero can resolve the metadata itself.
+
 These are the sources already used in the project or directly tied to planned
 experiments. Import them into Zotero rather than recreating their metadata in
 `library.bib` manually.
