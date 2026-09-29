@@ -1,10 +1,18 @@
 # Research decisions
 
 This directory records decisions that change an experiment or the claims made
-from it. The bibliography itself lives in Zotero; a reproducible export may be
-added under `references/` when the curated collection is reconciled. A paper
-motivates a hypothesis, while a versioned run and its artifacts establish the
-project's result.
+from it.
+
+The project has three complementary research records:
+
+- [Research program](../research_program.md): living hypotheses, open
+  questions, architecture evolution, experiment gates and roadmap.
+- [Decision records](./): accepted choices supported by project evidence.
+- [Research references](../../references/README.md): Zotero workflow and the
+  curated literature map. Zotero is the bibliographic source of truth.
+
+A paper motivates a hypothesis, while a versioned run and its artifacts
+establish the project's result.
 
 | Record | Scope |
 | --- | --- |
