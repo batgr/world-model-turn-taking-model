@@ -299,7 +299,7 @@ def _rollout_snapshot(tmp_path, *, split="validation"):
             }
         )
     )
-    # An ONSET at t+1 (trajectory step 15) on every other transition row:
+    # An START at t+1 (trajectory step 15) on every other transition row:
     # read for 0.5 s and 1 s, not for 0.1 s.
     actions = torch.zeros(ROWS, 24, dtype=torch.int64)
     actions[[k for k in range(ROWS) if k % 4 == 1], 15] = 1
@@ -376,7 +376,7 @@ def test_metrics_per_condition(tmp_path):
         low, high = metrics["all"]["skill_ci"]
         assert low <= metrics["all"][SKILL] <= high
         assert metrics["all"]["n_recordings"] == 4
-        # Confounding diagnostic: the ONSET at t+1 is read from 0.5 s on.
+        # Confounding diagnostic: the START at t+1 is read from 0.5 s on.
         read = h != "1"
         assert metrics["transition"]["future_event_fraction"] == (0.5 if read else 0)
         assert metrics["stable"]["future_event_fraction"] == 0
@@ -626,7 +626,7 @@ def test_cli_show_prints_the_table_and_changes_no_result(tmp_path, monkeypatch, 
     assert f"analyze-rollouts: {snapshot} (" in captured.err
     assert "bootstrap" in captured.err and "analyze-rollouts: done in" in captured.err
     assert "ground-truth future action/event tokens: yes" in printed
-    assert "ONSET/OFFSET in future tokens" in printed
+    assert "START/STOP in future tokens" in printed
     assert str(tmp_path / "shown" / "figures" / "skill_vs_horizon.png") in printed
 
 
