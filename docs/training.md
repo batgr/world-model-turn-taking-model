@@ -26,6 +26,9 @@ trainable projector (512 -> 192)
 A trajectory is `data.context_steps` ground-truth context steps followed by
 `data.future_steps` future steps on the 10 Hz action grid.
 
+- **Predictor position** uses standard RoPE on attention queries and keys
+  (base 10,000). The default predictor has no learned absolute-position table;
+  rolling windows therefore reuse relative temporal offsets naturally.
 - **Teacher forcing** is dense over the context: from `z0 … z(C-1)` and their
   actions the predictor predicts `z1 … zC`, one step ahead at every position.
 - **Rollout** starts at the context/future boundary from the ground-truth
