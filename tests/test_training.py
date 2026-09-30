@@ -786,23 +786,7 @@ def test_module_schedule_uses_estimated_stepping_batches_not_epochs():
 
 VALIDATION_METRICS = [
     "tf_mse",
-    "tf_persistence_mse",
-    "tf_skill",
-    "skill_mean",
-    "latent_std",
-    "latent_norm",
-    "prediction_norm",
     "effective_rank",
-    *(
-        f"{name}_{h}"
-        for h in (1, 5, 10)
-        for name in (
-            "skill",
-            "cosine",
-            "target_delta_norm",
-            "prediction_delta_norm",
-        )
-    ),
     *(f"rollout_{h}_mse" for h in (1, 5, 10)),
     *(f"persistence_{h}_mse" for h in (1, 5, 10)),
     *(
@@ -810,11 +794,8 @@ VALIDATION_METRICS = [
         for corpus in ("egocom", "ego4d")
         for name in (
             "tf_mse",
-            "tf_persistence_mse",
-            "tf_skill",
             *(f"rollout_{h}_mse" for h in (1, 5, 10)),
             *(f"persistence_{h}_mse" for h in (1, 5, 10)),
-            *(f"skill_{h}" for h in (1, 5, 10)),
         )
     ),
 ]
@@ -831,8 +812,13 @@ def test_validation_metrics_cover_every_horizon_during_the_first_stage():
     for h in (1, 3):
         for name in ("rollout", "persistence"):
             assert f"val/{name}_{h}_mse" in logged
-        for name in ("skill", "cosine", "target_delta_norm", "prediction_delta_norm"):
-            assert f"val/{name}_{h}" in logged
+
+    assert "val/effective_rank" in logged
+    assert not any(
+        token in name
+        for name in logged
+        for token in ("skill", "cosine", "latent_norm", "prediction_norm")
+    )
 
 
 def test_training_steps_do_not_compute_validation_metrics():
@@ -841,7 +827,7 @@ def test_training_steps_do_not_compute_validation_metrics():
 
     module.training_step(make_batch(), 0)
 
-    assert not [name for name in logged if "skill" in name or "persistence" in name]
+    assert not [name for name in logged if "persistence" in name]
     assert getattr(module, "_validation_metrics", None) is None
 
 
