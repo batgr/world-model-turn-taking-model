@@ -336,7 +336,7 @@ def test_v2_recipe_tracks_full_horizon_transitions_after_first_epoch():
     assert [type(callback).__name__ for callback in callbacks] == [
         "ModelCheckpoint", "FullHorizonEarlyStopping"
     ]
-    assert callbacks[0].monitor == callbacks[1].monitor == "val/transition_skill_5_10"
+    assert callbacks[0].monitor == callbacks[1].monitor == "val/rollout_10_mse"
     assert callbacks[1].minimum_completed_epochs == 2
 
 
