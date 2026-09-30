@@ -93,42 +93,37 @@ matched audio readouts, not the lowest SIGReg scalar. Centered/residual
 SIGReg addresses a separate temporal-information hypothesis; it is not the
 fix for interpreting the raw loss and has not been adopted for the first V2.
 
-## Evaluation and decisions still open
+## Evaluation protocol
 
-Report logged-event-conditioned rollout skill versus persistence at 0.1,
-0.5 and 1 s, with transition and stable subsets, per corpus and paired
-recording-level uncertainty. Check learned-state motion, rank, and matched
-Mimi/latent/predicted-latent readouts. Keep the TEST split closed; external
-TurnBench DEV is a separate downstream check. The checkpoint score should
-reflect 0.5/1 s transitions rather than `val/loss` alone, with stable-state
-and readout guardrails. For the first run, `configs/train/lewm_v2.yaml` uses
-a physical batch of 512 after a synthetic GPU memory/gradient check, validates
-at each epoch, plans eight epochs for the cosine schedule and disables the
-10,000-step limit. Checkpoint selection and early stopping use the mean of
-validation skill against persistence on known state transitions at 0.5 and
-1 s. These are observed state changes, not proof of anticipation without
-future events. `min_delta=0` counts any measured improvement, with patience
-two validation epochs. The first monitored validation is at the end of epoch
-two, when H=10 has had a complete epoch. These are pilot choices to revisit
-using validation noise and the transition/stable diagnostics; gradient
-accumulation does not reproduce physical-batch BN and SIGReg statistics.
+The V2 evaluation protocol is now frozen separately in
+[`evaluation_protocol.md`](evaluation_protocol.md). The primary world-model
+dynamics result is autoregressive latent rollout MSE at 0.1, 0.5 and 1.0 s,
+reported beside the persistence MSE baseline. Transition/stable subsets use
+the same metric and remain diagnostics rather than defining a new score.
+
+Checkpoint selection and early stopping now monitor
+`val/rollout_10_mse` in `min` mode. The previous
+`transition_skill_5_10` pilot criterion is superseded: it mixed the primary
+prediction error with a project-specific normalization and over-weighted one
+slice of the data.
+
+Representation health is tracked with effective rank, while conversational
+meaning is evaluated separately through train-fitted, validation-evaluated
+readouts. The evaluation distinguishes role-relative aggregate/joint targets
+from true participant-level marginal metrics; the latter are not claimed
+until the model/evaluator exposes a stable participant identity or slot
+interface.
+
+Action-conditioned evaluation remains separate from raw dynamics. The
+observed/no-event/shuffled ablation can show that V2 uses its conditioning
+sequence, but it does not establish correct off-policy counterfactual
+responses. Planning metrics are deferred until candidate ego-action rollouts
+and a planner are implemented.
 
 The horizon curriculum is measured against steps in the **first epoch**,
 irrespective of the eight-epoch cosine duration. H=5 activates after 20% of
-the first epoch's optimizer steps, H=10 after 50%, then stays active. The
-notebook reports the thresholds in optimizer steps and seen examples from the
-actual train dataset after cache filtering and dropping the incomplete batch.
-At least one complete H=10 epoch precedes any early stop. V1's 10,000-step cap
-is not carried over.
-
-The deeper action study will audit token frequency and reliability, compare
-action-conditioned against matched simpler baselines, and substitute only
-valid state/action combinations. A revised action grid needs supported,
-selectable distinctions and a matched retraining comparison against v0.
-Good conditional prediction alone does not prove intervention or planning.
-An independent context-only future-event anticipation test was discussed
-and **deferred**. Longer context (including 50 states), H>10 and the exact
-V2-bis architecture require separate decisions after relevant evidence.
+the first epoch's optimizer steps, H=10 after 50%, then stays active. At least
+one complete H=10 epoch precedes any early stop.
 
 ## Evidence and bibliography contract
 
