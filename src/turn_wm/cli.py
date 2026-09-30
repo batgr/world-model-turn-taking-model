@@ -474,10 +474,11 @@ def build_parser() -> argparse.ArgumentParser:
         "extract-action-ablation",
         help="Extract a run's validation rollout under action ablations.",
         description=(
-            "Run the validation rollout of a training run with the observed, "
-            "NO_EVENT and shuffled future actions, and the one-step prediction "
-            "with the anchor's action forced to NO_EVENT, ONSET and OFFSET, on a "
-            "seeded sample of the validation split. The test split is never read."
+            "Run the validation rollout of a training run with observed, "
+            "state-preserving and shuffled future ego actions, and measure the "
+            "one-step effect of forcing the anchor action. Only state-valid "
+            "WAIT/START or HOLD/STOP comparisons are reported. The test split "
+            "is never read."
         ),
     )
     ablation.add_argument(
