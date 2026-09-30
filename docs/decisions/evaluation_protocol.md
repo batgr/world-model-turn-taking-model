@@ -4,7 +4,13 @@
 
 ## Evaluation target
 
-The model is evaluated primarily as an **action-conditioned model of the joint future conversational scene**. The ego/robot supplies controllable actions; it is not the main prediction target.
+The model is evaluated as an **action-conditioned model of future conversational activity** through three co-primary views:
+
+1. **Ego/robot future activity and turn-taking role**: whether the ego speaks, continues/holds the floor, releases/yields the floor, starts or stops speaking, and participates in overlap/backchannel-related events when those events are operationally defined by the labels.
+2. **Other-participant future activity**: aggregate activity of the other participants, and participant-level marginal activity / next-speaker prediction whenever stable local participant slots are identifiable.
+3. **Joint future conversational configuration**: the simultaneous configuration of ego and other participants, including silence, exclusive speech, overlap, floor changes and richer participant-aware joint states when the interface supports them.
+
+The ego/robot therefore has two roles: it is a **prediction target for turn-taking behavior** and the **source of controllable actions** for action-conditioned rollouts and later planning. Ego-only quality is never treated as sufficient evidence of a good multi-party world model.
 
 For the current deterministic V2, evaluation covers one predicted future rollout per supplied ego-action sequence. Probabilistic metrics such as NLL, Brier score, calibration, or best-of-K trajectory metrics are out of scope until the model represents a distribution over futures.
 
@@ -22,22 +28,52 @@ For the current deterministic V2, evaluation covers one predicted future rollout
 
 **Interaction-performance metrics are explicitly out of scope for this phase.** They require the complete interactive system, not the world model alone.
 
-## Marginal and joint evaluation
+## Ego, marginal-other and joint evaluation
 
-Multi-party evaluation distinguishes **marginal** and **joint** prediction:
+Multi-party evaluation keeps three complementary views and none replaces the others:
 
-- **Marginal:** prediction quality for each non-ego participant separately.
-- **Joint:** quality of the complete future conversational configuration.
+- **Ego:** future activity and turn-taking role of the robot/focal speaker.
+- **Marginal other:** prediction quality for each identifiable non-ego participant separately.
+- **Joint:** quality of the complete future conversational configuration across ego and the other participants.
 
-A model can obtain good marginal scores while producing an incoherent joint scene. This is the transferable lesson from joint metrics in multi-agent trajectory forecasting.
+When participant identities cannot be represented consistently, **aggregate-other** targets such as `others_active` remain first-class role-relative targets, but they are reported explicitly as aggregate-other rather than as participant-level marginal metrics.
+
+A model can obtain good ego or marginal scores while producing an incoherent joint scene. Conversely, a coarse joint label can hide which participant was predicted incorrectly. The protocol therefore requires both marginal/aggregate and joint views whenever the data supports them.
 
 The current audio-only V2 labels expose role-relative aggregate targets such as `others_active` and `future_joint_speech_state`, but the model evaluation interface does not yet expose stable participant slots across recordings. Therefore:
 
 - `future_joint_speech_state` is a valid role-relative joint readout;
-- `others_active` is an aggregate-other readout, **not** a per-participant marginal metric;
-- true participant-level marginal metrics remain pending until the representation/evaluator has a stable participant identity or slot mechanism.
+- `others_active` is a first-class aggregate-other readout;
+- participant-level marginal metrics are required whenever stable local participant slots can be constructed;
+- participant identities need only be stable within an interaction/window; they do not need a global identity vocabulary across recordings.
 
-Do not report aggregate `others_active` as "multi-agent marginal accuracy".
+## Frozen turn-taking readouts
+
+The following conversational readouts are in scope. They are added only when the underlying labels have explicit, reproducible semantics.
+
+**Ego / focal-speaker readouts**
+- future speaking/activity state;
+- speech onset and offset;
+- **Hold**: the current floor holder continues holding the floor across the evaluation window;
+- **Shift / yield outcome**: the current floor holder releases the floor and another participant takes it. "Yield" is not interpreted as latent intention unless the dataset explicitly labels intention;
+- overlap participation;
+- backchannel occurrence/appropriateness when a reproducible backchannel label exists.
+
+**Other-participant readouts**
+- aggregate other activity;
+- future other onset/offset;
+- participant-level future activity when stable local slots exist;
+- next-speaker prediction;
+- current-speaker-continues versus floor-shift.
+
+**Joint-scene readouts**
+- joint speech state;
+- silence / gap;
+- overlap;
+- floor-holder change;
+- richer participant-aware joint activity configuration when local participant slots exist.
+
+VAP-family Shift/Hold and backchannel tasks are direct turn-taking precedents. MuVAP adds a directly relevant multi-party precedent for Shift/Hold and next-speaker prediction.
 
 ## V2 metrics implemented now
 
@@ -74,12 +110,15 @@ For categorical readouts use **balanced accuracy** as the primary score. The cur
 
 Current role-relative readouts include, where labels are available:
 
+- ego speaking state;
 - aggregate activity of other participants (`others_active`);
 - joint speech state;
 - time to next speaker onset;
 - future joint speech state.
 
-Participant-level future activity, next-speaker and other multi-party readouts should only be added when their participant identity semantics are explicit and stable.
+The frozen protocol additionally requires future ego activity and turn-taking-event readouts (notably Hold/Shift or observable yield outcome), future aggregate-other activity, next-speaker prediction, overlap/gap-related readouts, and participant-level marginal activity whenever stable local participant slots are available.
+
+For categorical readouts, balanced accuracy remains the primary score and macro-F1 / per-class recall are useful complementary diagnostics when event imbalance is material. For timing readouts, MAE in seconds or milliseconds is required before promotion to headline results.
 
 ### 4. Action-conditioned dynamics
 
@@ -104,12 +143,23 @@ Later controlled strata may include noise, reverberation, participant count, lan
 
 ### 7. Efficiency
 
-When planning is implemented, report at least:
+Efficiency is split into two levels.
 
-- decision/planning latency (p50 and p95);
+**World-model rollout efficiency — measurable before a planner exists:**
+- rollout latency p50 / p95 at fixed horizon and batch/candidate count;
+- candidate rollouts per second;
+- latent prediction steps per second;
+- peak accelerator memory;
+- scaling with rollout horizon and candidate batch size.
+
+**Planning efficiency — once a planner exists:**
+- end-to-end decision/planning latency p50 / p95;
 - candidate rollouts evaluated per decision;
+- planning iterations when applicable;
 - compute-budget versus planning-performance curve;
-- peak memory when relevant.
+- peak memory.
+
+Latency measurements must state hardware, precision, batch/candidate count, rollout horizon and warm-up protocol. Human-perceived response latency remains an interaction-performance metric and is still out of scope for this phase.
 
 ## Metrics that are not headline metrics
 
@@ -127,7 +177,9 @@ PCA and other exploratory analyses remain research diagnostics, not model-select
 
 The structure borrows only transferable principles from established benchmarks and papers:
 
-- VAP-family work: class-imbalance-aware turn-taking readouts such as Shift/Hold and future voice-activity tasks;
+- Ekstedt & Skantze, *Voice Activity Projection* (2022): future voice activity, Shift/Hold, turn-shift and backchannel readouts;
+- Qi & Skantze, *MuVAP* (2026): multi-party Shift/Hold and next-speaker prediction with role-relative projection;
+- Skantze, *Turn-taking in Conversational Systems and Human-Robot Interaction: A Review* (2021): turn-holding/yielding, gaps, overlaps, interruptions and multi-party floor management;
 - Waymo Open Motion Dataset: interactive forecasting requires joint, not only single-agent, evaluation;
 - Weng et al., *Joint Metrics Matter* (2023): marginal accuracy can hide incoherent multi-agent futures;
 - AD-E2E-JEPA (arXiv:2609.34085): separate world-model prediction, zero-shot planning quality, reliability and planning efficiency;
