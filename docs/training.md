@@ -207,61 +207,51 @@ including every horizon of the stage before (the curriculum is cumulative).
 
 ### Validation metrics
 
-Validation evaluates every `prediction.rollout_horizons` (the curriculum only
-affects training) and, besides the losses, logs diagnostics computed from the
-latents and predictions of the losses (`turn_wm.training.metrics`; no second
-forward). All are accumulated as sums over the whole validation epoch, so they
-do not depend on the batch size. Training logs only the losses, the
-curriculum state and the learning rate.
+Validation evaluates every configured rollout horizon even when the training
+curriculum has not activated all of them. Metrics reuse the latents and
+predictions already computed for the losses; validation does not run a second
+predictor pass.
 
-1. **Prediction MSE** — `val/tf_mse` (one-step, on exactly the teacher-forced
-   positions) and `val/rollout_{h}_mse`.
-2. **Persistence baseline** — the error of copying a latent forward:
-   `z_t` for the teacher-forced step `z_t -> z_{t+1}` (`val/tf_persistence_mse`)
-   and the last ground-truth context latent `z_{C-1}` for every rollout
-   horizon (`val/persistence_{h}_mse`). Model and baseline use the same
-   targets and positions.
-3. **Skill score** —
+The training-time metric surface is deliberately small:
 
-   ```text
-   skill = 1 - MSE_model / MSE_persistence
-   ```
-
-   from the epoch's aggregated errors (never an average of per-batch skills):
-   `> 0` better than persistence, `0` as good, `< 0` worse (unclipped).
-   `val/tf_skill`, `val/skill_{h}` and `val/skill_mean` (mean over horizons).
-4. **Cosine similarity** — `val/cosine_{h}` between predicted and target
-   latents, a geometric complement to the MSE.
-5. **Delta dynamics** — `val/target_delta_norm_{h}` = mean `||z_target -
-   z_{C-1}||` and `val/prediction_delta_norm_{h}` = mean `||z_pred -
-   z_{C-1}||`. A predicted delta near 0 while the target delta is large means
-   the model stays close to persistence rather than predicting a change.
-6. **Latent health** — on the projected target latents: `val/latent_std`
-   (per-dimension std, averaged over dimensions), `val/latent_norm`
-   (mean L2 norm), `val/prediction_norm` (mean L2 norm of the rollout
-   predictions at every horizon) and `val/effective_rank`
-   (`exp(entropy)` of the normalized singular values of the centred latents,
-   1 for a collapsed direction up to `embed_dim`), computed on a deterministic
-   random sample of at most `evaluation.latent_rank_samples` latents per epoch.
-7. **Global vs per corpus** — prediction, persistence and skill metrics are
-   also logged per corpus (`val/egocom/...`, `val/ego4d/...`, from each
-   sample's `dataset`). Global metrics pool every element of every corpus;
-   they are not averages of the corpus metrics.
+1. **Autoregressive rollout MSE** — `val/rollout_{h}_mse` at each configured
+   horizon. This is the primary dynamics metric.
+2. **Persistence MSE** — `val/persistence_{h}_mse`, obtained by copying the
+   last observed context latent to the same target. It is reported beside the
+   model error as a baseline; it is not converted into a custom headline
+   score.
+3. **Teacher-forcing MSE** — `val/tf_mse`, retained as a training diagnostic,
+   not as the main world-model result.
+4. **Transition/stable slices** — in V2, the same rollout and persistence MSEs
+   are also reported on horizons whose required ego vocal-action sequence does
+   or does not contain a non-`NO_EVENT` transition. These are slices of the
+   primary metric, not separate metrics.
+5. **Effective rank** — `val/effective_rank`, computed on a deterministic
+   bounded sample of centred latent rows as a collapse/representation-health
+   diagnostic.
+6. **Per-corpus reliability** — rollout, persistence and teacher-forcing MSE
+   are also logged per corpus. Global values pool all valid elements rather
+   than averaging corpus-level numbers.
 
 ```yaml
 evaluation:
   persistence_baseline: true
-  cosine_similarity: true
-  latent_health: true
+  effective_rank: true
   latent_rank_samples: 8192
 ```
 
-Checkpoints are still selected on `val/loss`; these metrics are diagnostics.
+V2 checkpoint selection and early stopping monitor
+`val/rollout_10_mse` in `min` mode. Transition/stable slices remain
+diagnostics and do not define the checkpoint score.
+
+The complete evaluation rationale, formulas and literature provenance are in
+[`docs/decisions/evaluation_protocol.md`](decisions/evaluation_protocol.md)
+and [`docs/metrics.md`](metrics.md).
 
 **The test split is not used during training or model selection.** `run()`
 builds only the train and validation splits, and the Lightning module has no
-test step. The test split is evaluated once, after the final checkpoint has
-been selected.
+test step. The test split is evaluated once after the final checkpoint is
+selected.
 
 ### Not in V1
 
