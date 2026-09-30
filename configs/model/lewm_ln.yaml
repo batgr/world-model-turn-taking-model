@@ -1,4 +1,4 @@
-# Legacy/reproduction variant: restore the original LayerNorm projectors.
+# Projector-normalization ablation: use LayerNorm in both projectors under the current predictor.
 defaults:
   - lewm
   - _self_
