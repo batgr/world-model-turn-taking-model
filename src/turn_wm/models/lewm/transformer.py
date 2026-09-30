@@ -1,3 +1,4 @@
+import torch
 import torch.nn.functional as F
 from einops import rearrange
 from torch import nn
@@ -8,10 +9,71 @@ def modulate(x, shift, scale):
     return x * (1 + scale) + shift
 
 
+class RotaryEmbedding(nn.Module):
+    """Standard rotary position embedding for attention queries and keys."""
+
+    def __init__(self, dim: int, base: float = 10_000.0):
+        super().__init__()
+
+        if dim % 2:
+            raise ValueError(f"RoPE requires an even head dimension, got {dim}")
+        if base <= 1:
+            raise ValueError(f"RoPE base must be > 1, got {base}")
+
+        inv_freq = base ** (
+            -torch.arange(0, dim, 2, dtype=torch.float32) / dim
+        )
+        self.dim = dim
+        self.register_buffer("inv_freq", inv_freq, persistent=False)
+
+    @staticmethod
+    def _rotate(x: torch.Tensor, cos: torch.Tensor, sin: torch.Tensor) -> torch.Tensor:
+        even = x[..., 0::2]
+        odd = x[..., 1::2]
+        rotated = torch.stack(
+            (even * cos - odd * sin, even * sin + odd * cos),
+            dim=-1,
+        )
+        return rotated.flatten(-2)
+
+    def forward(
+        self, q: torch.Tensor, k: torch.Tensor
+    ) -> tuple[torch.Tensor, torch.Tensor]:
+        """Rotate Q/K of shape (B, H, T, D) using positions 0..T-1."""
+
+        if q.shape[-1] != self.dim or k.shape[-1] != self.dim:
+            raise ValueError(
+                f"RoPE expected head dimension {self.dim}, got "
+                f"{q.shape[-1]} and {k.shape[-1]}"
+            )
+        if q.shape[-2] != k.shape[-2]:
+            raise ValueError("RoPE requires Q and K to have the same sequence length")
+
+        positions = torch.arange(
+            q.shape[-2],
+            device=q.device,
+            dtype=self.inv_freq.dtype,
+        )
+        angles = positions[:, None] * self.inv_freq[None, :]
+        cos = angles.cos().to(dtype=q.dtype)[None, None]
+        sin = angles.sin().to(dtype=q.dtype)[None, None]
+
+        return self._rotate(q, cos, sin), self._rotate(k, cos, sin)
+
+
 class Attention(nn.Module):
     """Scaled dot-product attention with causal masking"""
 
-    def __init__(self, dim, heads=8, dim_head=64, dropout=0.0):
+    def __init__(
+        self,
+        dim,
+        heads=8,
+        dim_head=64,
+        dropout=0.0,
+        *,
+        use_rope=False,
+        rope_base=10_000.0,
+    ):
         super().__init__()
         inner_dim = dim_head * heads
         project_out = not (heads == 1 and dim_head == dim)
@@ -21,6 +83,7 @@ class Attention(nn.Module):
         self.norm = nn.LayerNorm(dim)
         self.attend = nn.Softmax(dim=-1)
         self.to_qkv = nn.Linear(dim, inner_dim * 3, bias=False)
+        self.rotary = RotaryEmbedding(dim_head, base=rope_base) if use_rope else None
         self.to_out = (
             nn.Sequential(nn.Linear(inner_dim, dim), nn.Dropout(dropout))
             if project_out
@@ -35,6 +98,10 @@ class Attention(nn.Module):
         drop = self.dropout if self.training else 0.0
         qkv = self.to_qkv(x).chunk(3, dim=-1)  # q, k, v: (B, heads, T, dim_head)
         q, k, v = (rearrange(t, "b t (h d) -> b h t d", h=self.heads) for t in qkv)
+
+        if self.rotary is not None:
+            q, k = self.rotary(q, k)
+
         out = F.scaled_dot_product_attention(q, k, v, dropout_p=drop, is_causal=causal)
         out = rearrange(out, "b h t d -> b t (h d)")
         return self.to_out(out)
@@ -61,10 +128,27 @@ class FeedForward(nn.Module):
 class ConditionalBlock(nn.Module):
     """Transformer block with AdaLN-zero conditioning"""
 
-    def __init__(self, dim, heads, dim_head, mlp_dim, dropout=0.0):
+    def __init__(
+        self,
+        dim,
+        heads,
+        dim_head,
+        mlp_dim,
+        dropout=0.0,
+        *,
+        use_rope=False,
+        rope_base=10_000.0,
+    ):
         super().__init__()
 
-        self.attn = Attention(dim, heads=heads, dim_head=dim_head, dropout=dropout)
+        self.attn = Attention(
+            dim,
+            heads=heads,
+            dim_head=dim_head,
+            dropout=dropout,
+            use_rope=use_rope,
+            rope_base=rope_base,
+        )
         self.mlp = FeedForward(dim, mlp_dim, dropout=dropout)
         self.norm1 = nn.LayerNorm(dim, elementwise_affine=False, eps=1e-6)
         self.norm2 = nn.LayerNorm(dim, elementwise_affine=False, eps=1e-6)
@@ -87,10 +171,27 @@ class ConditionalBlock(nn.Module):
 class Block(nn.Module):
     """Standard Transformer block"""
 
-    def __init__(self, dim, heads, dim_head, mlp_dim, dropout=0.0):
+    def __init__(
+        self,
+        dim,
+        heads,
+        dim_head,
+        mlp_dim,
+        dropout=0.0,
+        *,
+        use_rope=False,
+        rope_base=10_000.0,
+    ):
         super().__init__()
 
-        self.attn = Attention(dim, heads=heads, dim_head=dim_head, dropout=dropout)
+        self.attn = Attention(
+            dim,
+            heads=heads,
+            dim_head=dim_head,
+            dropout=dropout,
+            use_rope=use_rope,
+            rope_base=rope_base,
+        )
         self.mlp = FeedForward(dim, mlp_dim, dropout=dropout)
         self.norm1 = nn.LayerNorm(dim, elementwise_affine=False, eps=1e-6)
         self.norm2 = nn.LayerNorm(dim, elementwise_affine=False, eps=1e-6)
@@ -115,6 +216,9 @@ class Transformer(nn.Module):
         mlp_dim,
         dropout=0.0,
         block_class=Block,
+        *,
+        use_rope=False,
+        rope_base=10_000.0,
     ):
         super().__init__()
         self.norm = nn.LayerNorm(hidden_dim)
@@ -140,7 +244,15 @@ class Transformer(nn.Module):
 
         for _ in range(depth):
             self.layers.append(
-                block_class(hidden_dim, heads, dim_head, mlp_dim, dropout)
+                block_class(
+                    hidden_dim,
+                    heads,
+                    dim_head,
+                    mlp_dim,
+                    dropout,
+                    use_rope=use_rope,
+                    rope_base=rope_base,
+                )
             )
 
     def forward(self, x, c=None):
