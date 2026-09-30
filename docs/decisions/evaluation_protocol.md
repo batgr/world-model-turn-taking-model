@@ -122,7 +122,7 @@ For categorical readouts, balanced accuracy remains the primary score and macro-
 
 ### 4. Action-conditioned dynamics
 
-Keep action evaluation separate from raw prediction error. The existing observed/no-event/shuffled action ablation is retained as a diagnostic that the predictor uses the conditioning sequence. It does not by itself establish correct off-policy counterfactual reactions.
+Keep action evaluation separate from raw prediction error. The action ablation compares observed, state-preserving and shuffled ego-action sequences as a diagnostic that the predictor uses the conditioning sequence. It does not by itself establish correct off-policy counterfactual reactions.
 
 A headline action-fidelity metric is intentionally not frozen yet. It will be selected when the counterfactual/off-policy protocol is defined.
 
