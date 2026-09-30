@@ -113,7 +113,7 @@ until the model/evaluator exposes a stable participant identity or slot
 interface.
 
 Action-conditioned evaluation remains separate from raw dynamics. The
-observed/no-event/shuffled ablation can show that V2 uses its conditioning
+observed/state-preserving/shuffled ablation can show that the model uses its conditioning
 sequence, but it does not establish correct off-policy counterfactual
 responses. Planning metrics are deferred until candidate ego-action rollouts
 and a planner are implemented.
