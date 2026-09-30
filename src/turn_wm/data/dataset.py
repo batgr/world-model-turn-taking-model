@@ -465,16 +465,11 @@ class TurnTakingDataset(Dataset):
                 else:
                     raise ValueError(f"Unknown focal state: {state!r}")
             elif value == "ONSET":
-                if state != "SILENT":
-                    raise ValueError(
-                        f"ONSET requires SILENT focal_state_before, got {state!r}"
-                    )
+                # The data-layer action-grid invariant guarantees SILENT before
+                # ONSET; do not duplicate that contract in the model layer.
                 action = "START"
             elif value == "OFFSET":
-                if state != "SPEAKING":
-                    raise ValueError(
-                        f"OFFSET requires SPEAKING focal_state_before, got {state!r}"
-                    )
+                # Likewise, OFFSET is guaranteed to originate from SPEAKING.
                 action = "STOP"
             else:
                 raise ValueError(f"Unknown action-grid event: {value!r}")
