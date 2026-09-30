@@ -32,7 +32,7 @@ separate some of these explanations; the first combined V2 run does not.
 | --- | --- |
 | Scope | Continue audio-only until the result is convincing. The first controlled V2 model trains and validates on **EgoCom only**; larger-corpus training is a separate later scaling experiment. Multimodal work has no fixed version boundary. |
 | Context/history/target | `C=30`, training and inference rollout window `W=30`, target and rollout horizon `H=10`, all at 10 Hz. The coupled C/W choice retains the added observed history; H remains 1 s while testing it. |
-| Projection | Use **causally safe BatchNorm in both** the Mimi-to-latent and predictor-output projectors; keep transformer AdaLN separate. No training-time normalization may mix future positions into a prefix. With RoPE there is no learned absolute-position vector in predictor outputs, so the default projector norms use shared running statistics at evaluation. |
+| Projection | Use **causally safe BatchNorm in both** the Mimi-to-latent and predictor-output projectors; keep transformer AdaLN separate. No training-time normalization may mix future positions into a prefix. The Mimi projector uses shared running statistics; the predictor projector keeps per-position running statistics because causal receptive fields differ by position even under RoPE. |
 | Position encoding | Replace learned absolute predictor positions with standard **RoPE** on Q/K, base `10000`. RoPE is the default; `model=lewm_learned_pos` preserves the pre-RoPE learned-position predictor for reproduction/ablation. |
 | Latent regularization | Retain 192 dimensions and raw-latent SIGReg at `lambda=0.09` for the first recipe. These are controls, not claimed optima. Log unweighted/weighted terms and their gradient contributions. |
 | Optimizer schedule | Keep warmup plus cosine decay. Its planned duration in examples/epochs is distinct from the stopping rule; no 10,000-step training cutoff. |
@@ -54,16 +54,17 @@ report the exact number of training examples consumed per epoch.
 The reference [LeWM implementation](https://github.com/lucas-maes/le-wm/blob/main/jepa.py)
 flattens batch and time before both projectors. This model instead keeps time
 separate during training normalization so future positions cannot change an
-earlier output. Under the default RoPE predictor, neither projector receives a
-learned absolute-position vector, so both default CausalBatchNorm layers keep
-one shared set of running statistics for evaluation. Training statistics are
-still computed independently at each time step. `model=lewm_positional_cbn`
-remains an explicit ablation with per-position running statistics;
-`model=lewm_learned_pos` restores learned absolute predictor embeddings and
-therefore restores per-position running statistics in the predictor projector.
-`model=lewm_ln` is the LayerNorm-projector ablation under the current
-architecture, and `model=lewm_bn` remains a compatibility alias for the
-default causal-BatchNorm design.
+earlier output. The Mimi-to-latent projector keeps one shared set of running
+statistics. The predictor projector keeps running statistics per sequence
+position: RoPE removes the learned absolute-position vector, but a causal
+predictor can still have position-dependent output statistics because earlier
+positions see shorter receptive fields. This preserves train/eval normalization
+semantics while changing only the position encoding. `model=lewm_positional_cbn`
+extends per-position statistics to the Mimi projector as an explicit ablation;
+`model=lewm_learned_pos` restores the pre-RoPE learned absolute embeddings
+while holding the rest of the current architecture fixed. `model=lewm_ln`
+is the LayerNorm-projector ablation, and `model=lewm_bn` remains a
+compatibility alias for the default causal-BatchNorm design.
 
 ## SIGReg reference and later tuning
 
