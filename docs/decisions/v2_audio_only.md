@@ -13,7 +13,7 @@ analysis](https://drive.google.com/file/d/1nuid0ZZt8meLkZ7-R4aHHsJ_SZrFpwEu/view
 the selected step-9000 checkpoint beats persistence at 1 s, including on
 transitions, but underpredicts displacement. The [event-conditioning
 ablation](https://drive.google.com/file/d/1Huf82F2jcucofoo84P0kgzI4j_0Ugyu_/view)
-shows sensitivity to recorded future ONSET/OFFSET tokens. Neither result
+shows sensitivity to the previous recorded future ONSET/OFFSET event tokens; the new action interface converts these to explicit START/STOP transitions and splits NO_EVENT into WAIT/HOLD. Neither result
 establishes anticipation without supplied events or a controllable action
 interface. The [representation
 analysis](https://drive.google.com/file/d/1cSxIobd4i6k5LPgVlaIAbbxz0HjJdUUx/view)
@@ -36,7 +36,7 @@ separate some of these explanations; the first combined V2 run does not.
 | Latent regularization | Retain 192 dimensions and raw-latent SIGReg at `lambda=0.09` for the first recipe. These are controls, not claimed optima. Log unweighted/weighted terms and their gradient contributions. |
 | Optimizer schedule | Keep warmup plus cosine decay. Its planned duration in examples/epochs is distinct from the stopping rule; no 10,000-step training cutoff. |
 | Training length | Count optimizer steps, samples and epochs from the actual train set and physical batch. A run must reach at least one complete epoch and give H=10 a full epoch of training before automatic early stopping can end it. |
-| Action semantics | Preserve v0 `NO_EVENT/ONSET/OFFSET` observed vocal-action/event proxies as the first comparison. `TAKE/BACKCHANNEL/HOLD/YIELD` are outcomes, not conditioning actions. A deeper V2 action-utility study is required before revising the vocabulary. |
+| Action semantics | Use four explicit controllable ego actions derived from the audited vocal-action grid: `WAIT` = SILENT+NO_EVENT, `START` = ONSET, `HOLD` = SPEAKING+NO_EVENT, `STOP` = OFFSET. `TAKE/BACKCHANNEL/YIELD/INTERRUPT` remain contextual outcomes/readouts, not conditioning actions. `MASKED` and `PAD` are technical tokens only. |
 | Architecture tracks | V2 studies the single-rate multi-horizon rollout; V2-bis is a separate multi-timescale alternative, compared on matched data and physical horizons. |
 
 The first V2-versus-V1 result compares **whole recipes**. It cannot attribute
