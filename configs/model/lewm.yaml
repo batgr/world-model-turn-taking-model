@@ -32,9 +32,19 @@ projector:
   input_dim: 512
   output_dim: ${embed_dim}
   hidden_dim: 2048
+  # Normalize across examples at each time step without mixing future positions.
+  norm_fn:
+    _target_: hydra.utils.get_class
+    path: turn_wm.models.lewm.mlp.CausalBatchNorm1d
 
 pred_proj:
   _target_: turn_wm.models.lewm.mlp.MLP
   input_dim: ${embed_dim}
   output_dim: ${embed_dim}
   hidden_dim: 2048
+  # Predictor outputs carry absolute positions, so keep running statistics
+  # separately for each predictor position.
+  norm_fn:
+    _target_: turn_wm.models.lewm.mlp.CausalBatchNorm1d
+    _partial_: true
+    num_positions: ${model.predictor.num_frames}
