@@ -102,15 +102,18 @@ uv run turn-wm train \
   optimizer.lr=1e-4
 ```
 
-For raw-audio debugging instead of the feature cache, provide the local media
-root for the selected dataset:
+For raw-audio debugging instead of the feature cache, set the media-root
+environment variable for the selected dataset:
 
 ```bash
+export DATASET_MEDIA_ROOT=/path/to/media
+
 uv run turn-wm train \
   data.dataset=dataset \
-  data.observation_source=raw_audio \
-  data.media_root=/path/to/media
+  data.observation_source=raw_audio
 ```
+
+Media-root variables follow the `<DATASET>_MEDIA_ROOT` convention.
 
 Invalid Hydra overrides or configurations rejected by `validate_config` fail
 before data loading. See [docs/training.md](docs/training.md) for the objective,
