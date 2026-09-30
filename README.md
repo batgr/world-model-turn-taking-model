@@ -6,17 +6,17 @@ conversation for social-robot turn-taking.
 
 ## Data
 
-Inspect the structure of the first batch built from the  dataset.
-This loads the dataset through the same data package used for training:
+Inspect the structure of the first batch built from a dataset. This loads the
+dataset through the same data package used for training:
 
 ```bash
 uv run turn-wm inspect-data --dataset dataset
 uv run turn-wm inspect-data --dataset dataset --split validation --batch-size 4
 ```
 
-`--dataset full` loads every corpus 
-into one dataset; a split includes only the corpora that publish it. Add
-`--shuffle` to inspect a seeded shuffled (mixed-corpus) batch.
+`--dataset full` loads every configured corpus into one dataset; a split
+includes only the corpora that publish it. Add `--shuffle` to inspect a
+seeded shuffled mixed-corpus batch.
 
 ```bash
 uv run turn-wm inspect-data --dataset full --batch-size 8 --shuffle
@@ -30,13 +30,11 @@ dataset = build_dataset(loaded, split="train", window=WindowConfig(), training=T
 loader = build_dataloader(dataset, loader=DataLoaderConfig(batch_size=32))
 ```
 
-Raw audio/video is never downloaded. To decode it from a local copy of the
-corpus, pass its root (the directory the published `media_manifest` paths are
-relative to):
+Raw media is not downloaded automatically. To decode it from a local copy,
+pass the root directory referenced by the dataset's media manifest:
 
 ```bash
-uv run turn-wm inspect-data --dataset egocom --batch-size 1 --media-root /path/to/EgoCom
-uv run turn-wm inspect-data --dataset full --media-root egocom=/path/to/EgoCom --media-root ego4d=/path/to/Ego4D
+uv run turn-wm inspect-data --dataset dataset --batch-size 1 --media-root /path/to/media
 ```
 
 ## Model
