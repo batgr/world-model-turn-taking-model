@@ -45,8 +45,11 @@ pred_proj:
   input_dim: ${embed_dim}
   output_dim: ${embed_dim}
   hidden_dim: 2048
-  # RoPE does not add an absolute-position vector to the predictor output, so
-  # evaluation uses one shared set of running statistics.
+  # Training normalizes each causal predictor position independently. Keep
+  # matching running statistics per position at evaluation: RoPE removes the
+  # learned absolute embedding, but causal receptive fields still differ by
+  # position.
   norm_fn:
-    _target_: hydra.utils.get_class
-    path: turn_wm.models.lewm.mlp.CausalBatchNorm1d
+    _target_: turn_wm.models.lewm.mlp.CausalBatchNorm1d
+    _partial_: true
+    num_positions: ${model.predictor.num_frames}
