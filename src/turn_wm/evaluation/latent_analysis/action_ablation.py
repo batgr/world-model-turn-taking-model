@@ -3,16 +3,17 @@ Extract the action/event ablation of a run's validation rollout.
 
 Two questions:
 
-1. Does the V1 predictor use its future action/event conditioning?
-2. Does changing only the action token change the predicted transition?
+1. Does the predictor use its future ego-action conditioning?
+2. Does changing only the ego action change the predicted transition?
 
 Every prediction below comes from `rollout_representations`, i.e. the
 validation rollout (`lejepa_forward`); only the trajectory's action tensor
 changes. With C context steps and the anchor t = C - 1:
 
-- OBSERVED: the real actions (the existing rollout, unchanged);
-- NO_EVENT: every future step (>= C) set to NO_EVENT;
-- SHUFFLED: the future steps (>= C) replaced by another sample's complete
+- OBSERVED: the real WAIT/START/HOLD/STOP actions;
+- STATE_PRESERVING: after the unchanged anchor action, every future action
+  preserves the resulting ego vocal state (WAIT if silent, HOLD if speaking);
+- SHUFFLED: the future steps (>= C) are replaced by another sample's complete
   future sequence, drawn deterministically (seed 3072) within the same
   corpus and focal state at the anchor.
 
@@ -21,9 +22,11 @@ anchors and horizons never change. The rollout at h = 1 reads no future
 action, so the three conditions must agree exactly there; extraction
 refuses a batch where they do not.
 
-Counterfactual one-step effect: the anchor's own action (step C - 1, the one
-conditioning the prediction of z_(t+1)) forced to NO_EVENT, ONSET and OFFSET,
+One-step action effect: the anchor's own action (step C - 1, the one
+conditioning the prediction of z_(t+1)) is forced to each semantic ego action,
 everything else unchanged; the h = 1 prediction is z_hat_next(action).
+Downstream analysis reports only the state-valid pair: WAIT vs START from
+SILENT, and HOLD vs STOP from SPEAKING.
 
 Only the validation split is read.
 """
@@ -42,7 +45,7 @@ import torch
 import torch.nn.functional as F
 from omegaconf import DictConfig
 
-from turn_wm.data.dataset import ACTION_TO_ID, STATE_TO_ID
+from turn_wm.data.dataset import ACTION_TO_ID, MASKED_ACTION_ID, STATE_TO_ID
 from turn_wm.evaluation.latent_analysis.extract import (
     RepresentationSnapshot,
     extract_snapshot,
@@ -67,14 +70,14 @@ DEFAULT_ABLATION_SAMPLES = 10_000
 SHUFFLE_SEED = 3072
 
 OBSERVED = "observed"
-NO_EVENT = "no_event"
+STATE_PRESERVING = "state_preserving"
 SHUFFLED = "shuffled"
-CONDITIONS = (OBSERVED, NO_EVENT, SHUFFLED)
-FORCED_ACTIONS = ("NO_EVENT", "ONSET", "OFFSET")
+CONDITIONS = (OBSERVED, STATE_PRESERVING, SHUFFLED)
+FORCED_ACTIONS = ("WAIT", "START", "HOLD", "STOP")
 
 PRED = {condition: f"pred_future_latent_{condition}" for condition in CONDITIONS}
 SHUFFLED_ACTION_IDS = "rollout_action_ids_shuffled"
-COUNTERFACTUAL_NEXT = "counterfactual_next_latent"  # (N, 3, D), FORCED_ACTIONS
+COUNTERFACTUAL_NEXT = "counterfactual_next_latent"  # (N, 4, D), FORCED_ACTIONS
 FOCAL_STATE = "focal_state_id"  # at the anchor (focal_state_before of step t)
 SHUFFLE_DONOR = "shuffle_donor_row"
 ABLATION_TENSORS = (
@@ -94,11 +97,27 @@ ABLATION_TENSORS = (
 # ---------------------------------------------------------------------------
 
 
-def no_event_actions(actions: torch.Tensor, context_steps: int) -> torch.Tensor:
-    """Every future step (>= C) set to NO_EVENT; steps < C unchanged."""
+def state_preserving_actions(
+    actions: torch.Tensor, context_steps: int
+) -> torch.Tensor:
+    """Replace future actions by the valid action that preserves ego state.
+
+    The anchor action (step C - 1) is unchanged. Its result determines the
+    state entering the future: WAIT/STOP lead to SILENT, START/HOLD to
+    SPEAKING. Every future step then uses WAIT or HOLD respectively.
+    Masked anchors remain masked.
+    """
 
     ablated = actions.clone()
-    ablated[:, context_steps:] = ACTION_TO_ID["NO_EVENT"]
+    anchor = actions[:, context_steps - 1]
+    preserving = torch.full_like(anchor, MASKED_ACTION_ID)
+
+    silent = (anchor == ACTION_TO_ID["WAIT"]) | (anchor == ACTION_TO_ID["STOP"])
+    speaking = (anchor == ACTION_TO_ID["START"]) | (anchor == ACTION_TO_ID["HOLD"])
+
+    preserving[silent] = ACTION_TO_ID["WAIT"]
+    preserving[speaking] = ACTION_TO_ID["HOLD"]
+    ablated[:, context_steps:] = preserving[:, None]
 
     return ablated
 
@@ -205,7 +224,7 @@ def ablation_representations(
     shuffled = shuffled_actions(batch.actions, c, donor_future)
     conditions = {
         OBSERVED: observed,
-        NO_EVENT: rollout(no_event_actions(batch.actions, c)),
+        STATE_PRESERVING: rollout(state_preserving_actions(batch.actions, c)),
         SHUFFLED: rollout(shuffled),
     }
 
@@ -282,7 +301,7 @@ def collect_futures(batches, *, max_samples: int | None, total: int | None):
 
 
 def action_embedding_geometry(model: JEPA) -> dict[str, Any]:
-    """Norms, pairwise cosines and distances of the three action embeddings."""
+    """Norms, pairwise cosines and distances of the four semantic action embeddings."""
 
     with torch.inference_mode():
         ids = torch.tensor([[ACTION_TO_ID[a] for a in FORCED_ACTIONS]])
@@ -362,7 +381,7 @@ def extract_action_ablation(
             donor_rows=donor_rows,
         )
 
-    log("action ablation: rollout under observed, no_event and shuffled actions")
+    log("action ablation: rollout under observed, state-preserving and shuffled actions")
     snapshot = extract_snapshot(
         model,
         batches,
@@ -397,6 +416,10 @@ def extract_action_ablation(
         },
         "counterfactual": {
             "forced_actions": list(FORCED_ACTIONS),
+            "reported_valid_pairs": {
+                "SILENT": ["WAIT", "START"],
+                "SPEAKING": ["HOLD", "STOP"],
+            },
             "forced_step": "the anchor's own action, trajectory step C - 1",
             "prediction": "1-step rollout prediction of z_(t+1)",
         },
