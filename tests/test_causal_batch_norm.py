@@ -67,7 +67,7 @@ def test_default_model_uses_causal_bn_and_layernorm_variant_is_available():
     assert isinstance(model.projector.net[1], CausalBatchNorm1d)
     assert isinstance(model.pred_proj.net[1], CausalBatchNorm1d)
     assert model.projector.net[1].num_positions is None
-    assert model.pred_proj.net[1].num_positions is None
+    assert model.pred_proj.net[1].num_positions == v2.model.predictor.num_frames
 
     model.eval()
     features = torch.randn(1, 4, 512)
