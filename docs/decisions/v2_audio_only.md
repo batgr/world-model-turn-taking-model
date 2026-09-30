@@ -30,7 +30,7 @@ separate some of these explanations; the first combined V2 run does not.
 
 | Choice | Decision and reason |
 | --- | --- |
-| Scope | Continue audio-only until the result is convincing. Multimodal work has no fixed version boundary. |
+| Scope | Continue audio-only until the result is convincing. The first controlled V2 model trains and validates on **EgoCom only**; larger-corpus training is a separate later scaling experiment. Multimodal work has no fixed version boundary. |
 | Context/history/target | `C=30`, training and inference rollout window `W=30`, target and rollout horizon `H=10`, all at 10 Hz. The coupled C/W choice retains the added observed history; H remains 1 s while testing it. |
 | Projection | Replace LayerNorm with **causally safe BatchNorm in both** the Mimi-to-latent and predictor-output projectors for V2; keep transformer AdaLN separate. No training-time normalization may mix future positions into a prefix. |
 | Latent regularization | Retain 192 dimensions and raw-latent SIGReg at `lambda=0.09` for the first recipe. These are controls, not claimed optima. Log unweighted/weighted terms and their gradient contributions. |
@@ -63,9 +63,7 @@ per window position (`num_positions` = `model.predictor.num_frames`), which
 stays causal and matches training position by position. This departs from
 the reference implementation, which pools batch and time in both modes and
 so lets later window positions enter the training statistics of earlier
-ones. `configs/model/lewm_bn.yaml` changes only the projector
-normalization; the observed context is selected separately in the training
-configuration or notebook. The V1 `model=lewm` path remains available.
+ones. `model=lewm` now uses this causal BatchNorm design in both projectors by default. `model=lewm_ln` preserves the original LayerNorm projector recipe for V1 reproduction and normalization ablations. `model=lewm_bn` remains a compatibility alias for the BatchNorm design.
 
 ## SIGReg reference and later tuning
 
