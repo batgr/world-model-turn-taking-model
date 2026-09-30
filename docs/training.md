@@ -224,7 +224,7 @@ The training-time metric surface is deliberately small:
    not as the main world-model result.
 4. **Transition/stable slices** — in V2, the same rollout and persistence MSEs
    are also reported on horizons whose required ego vocal-action sequence does
-   or does not contain a non-`NO_EVENT` transition. These are slices of the
+   or does not contain a `START`/`STOP` transition. These are slices of the
    primary metric, not separate metrics.
 5. **Effective rank** — `val/effective_rank`, computed on a deterministic
    bounded sample of centred latent rows as a collapse/representation-health
