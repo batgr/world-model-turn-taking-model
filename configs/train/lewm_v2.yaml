@@ -5,6 +5,9 @@ defaults:
   - _self_
 
 data:
+  # First controlled V2 study: train and validate on EgoCom only.
+  # Larger-corpus training is a separate later experiment.
+  dataset: egocom
   context_steps: 30
 
 prediction:
