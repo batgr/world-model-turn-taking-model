@@ -17,13 +17,13 @@ import torch
 from safetensors.torch import load_file
 
 from turn_wm.cli import main
-from turn_wm.data.dataset import ACTION_TO_ID
+from turn_wm.data.dataset import ACTION_TO_ID, MASKED_ACTION_ID
 from turn_wm.evaluation.latent_analysis.action_ablation import (
     CONDITIONS,
     COUNTERFACTUAL_NEXT,
     FOCAL_STATE,
     FORCED_ACTIONS,
-    NO_EVENT,
+    STATE_PRESERVING,
     OBSERVED,
     PRED,
     SHUFFLE_DONOR,
@@ -32,7 +32,7 @@ from turn_wm.evaluation.latent_analysis.action_ablation import (
     ablation_representations,
     extract_action_ablation_run,
     forced_anchor_action,
-    no_event_actions,
+    state_preserving_actions,
     shuffle_donors,
     shuffled_actions,
 )
@@ -114,21 +114,29 @@ def test_observed_is_the_existing_rollout_and_all_agree_at_one_step(validation_b
     for condition in CONDITIONS:
         assert torch.equal(result[PRED[condition]][:, 0], result[PRED[OBSERVED]][:, 0])
     # ... and the ablations do reach the later horizons.
-    for condition in (NO_EVENT, SHUFFLED):
+    for condition in (STATE_PRESERVING, SHUFFLED):
         assert not torch.equal(
             result[PRED[condition]][:, 1:], result[PRED[OBSERVED]][:, 1:]
         )
 
 
-def test_no_event_changes_only_the_future_tokens(validation_batch):
+def test_state_preserving_changes_only_the_future_tokens(validation_batch):
     cfg, _, batch = validation_batch
     actions = trajectories(batch).actions
     c = cfg.data.context_steps
 
-    ablated = no_event_actions(actions, c)
+    ablated = state_preserving_actions(actions, c)
 
     assert torch.equal(ablated[:, :c], actions[:, :c])  # context and anchor action
-    assert bool((ablated[:, c:] == ACTION_TO_ID["NO_EVENT"]).all())
+
+    anchor = actions[:, c - 1]
+    expected = torch.full_like(anchor, MASKED_ACTION_ID)
+    silent = (anchor == ACTION_TO_ID["WAIT"]) | (anchor == ACTION_TO_ID["STOP"])
+    speaking = (anchor == ACTION_TO_ID["START"]) | (anchor == ACTION_TO_ID["HOLD"])
+    expected[silent] = ACTION_TO_ID["WAIT"]
+    expected[speaking] = ACTION_TO_ID["HOLD"]
+
+    assert torch.equal(ablated[:, c:], expected[:, None].expand_as(ablated[:, c:]))
     assert not torch.equal(ablated, actions)
 
 
@@ -221,7 +229,7 @@ def test_run_extraction_and_analysis(tmp_path, cache_root, loads):
     assert snapshot == run_dir / "latent_analysis" / "last-validation-action-ablation"
     assert manifest["provenance"]["data"]["split"] == "validation"
     assert all(":validation#" in s for s in metadata["sample_id"])
-    assert tensors[COUNTERFACTUAL_NEXT].shape == (12, 3, 192)
+    assert tensors[COUNTERFACTUAL_NEXT].shape == (12, 4, 192)
 
     # Same anchors as extract-rollouts with the same seed and limit.
     from turn_wm.evaluation.latent_analysis.rollout import extract_rollout_run
@@ -273,7 +281,7 @@ def test_run_extraction_and_analysis(tmp_path, cache_root, loads):
 
     report = (output / "report.md").read_text()
     assert "passed" in report
-    assert "useful use of the observed vocal-action conditioning channel" in report
+    assert "useful use of the observed ego-action conditioning channel" in report
     assert "does not establish planner controllability" in report
 
 
@@ -329,7 +337,7 @@ def test_cli_show_prints_the_results_and_changes_no_result(
     printed = shown.out
     assert "Integrity check (no future token read): passed" in printed
     assert "Skill vs persistence (primary)" in printed
-    assert "observed − no_event" in printed
+    assert "observed − state_preserving" in printed
     assert "Counterfactual one-step action effect" in printed
     # The first horizon reads no future token: its exposed subset is empty.
     assert "Not evaluable: 0.1 s, event_exposed has no rows." in printed
@@ -377,11 +385,11 @@ def test_conditions_are_compared_on_identical_rows():
     anchor = torch.randn(40, 4, generator=generator)
     true = anchor + torch.randn(40, 4, generator=generator)
     observed = anchor + 0.5 * (true - anchor)
-    no_event = observed.clone()
-    no_event[:10] = anchor[:10]  # no predicted motion: no direction there
+    state_preserving = observed.clone()
+    state_preserving[:10] = anchor[:10]  # no predicted motion: no direction there
     terms = {
         OBSERVED: row_terms(anchor, true, observed),
-        NO_EVENT: row_terms(anchor, true, no_event),
+        STATE_PRESERVING: row_terms(anchor, true, state_preserving),
         SHUFFLED: row_terms(anchor, true, observed),
     }
 
