@@ -392,7 +392,7 @@ def test_metrics_per_condition(tmp_path):
 
     report = (output / "report.md").read_text()
     assert (
-        "**Is the rollout conditioned on ground-truth future action/event tokens? "
+        "**Is the rollout conditioned on ground-truth future ego-action tokens? "
         "Yes.**" in report
     )
     assert "on **transition** rows the rollout beats persistence" in report
@@ -625,7 +625,7 @@ def test_cli_show_prints_the_table_and_changes_no_result(tmp_path, monkeypatch, 
     # Input, a bar over the bootstraps and the duration, on stderr.
     assert f"analyze-rollouts: {snapshot} (" in captured.err
     assert "bootstrap" in captured.err and "analyze-rollouts: done in" in captured.err
-    assert "ground-truth future action/event tokens: yes" in printed
+    assert "ground-truth future ego-action tokens: yes" in printed
     assert "START/STOP in future tokens" in printed
     assert str(tmp_path / "shown" / "figures" / "skill_vs_horizon.png") in printed
 
