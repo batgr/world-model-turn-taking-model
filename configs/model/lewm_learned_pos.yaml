@@ -1,0 +1,16 @@
+# Pre-RoPE predictor variant for reproduction and positional-encoding ablations.
+# It restores learned absolute embeddings and, because those embeddings make
+# predictor outputs position-specific, keeps separate pred-projector running
+# statistics per predictor position.
+defaults:
+  - lewm
+  - _self_
+
+predictor:
+  position_encoding: learned
+
+pred_proj:
+  norm_fn:
+    _target_: turn_wm.models.lewm.mlp.CausalBatchNorm1d
+    _partial_: true
+    num_positions: ${model.predictor.num_frames}
