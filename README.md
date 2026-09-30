@@ -103,17 +103,18 @@ uv run turn-wm train \
 ```
 
 For raw-audio debugging instead of the feature cache, set the media-root
-environment variable for the selected dataset:
+environment variable for the selected dataset. Replace `<dataset>` with the
+dataset key configured in `DATASETS`:
 
 ```bash
-export DATASET_MEDIA_ROOT=/path/to/media
+export <DATASET>_MEDIA_ROOT=/path/to/media
 
 uv run turn-wm train \
-  data.dataset=dataset \
+  data.dataset=<dataset> \
   data.observation_source=raw_audio
 ```
 
-Media-root variables follow the `<DATASET>_MEDIA_ROOT` convention.
+For example, a dataset key `my_corpus` uses `MY_CORPUS_MEDIA_ROOT`.
 
 Invalid Hydra overrides or configurations rejected by `validate_config` fail
 before data loading. See [docs/training.md](docs/training.md) for the objective,
