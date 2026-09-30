@@ -298,7 +298,7 @@ def show_rollouts(
         summary["rollout"]["conditioned_on_ground_truth_future_actions"].values()
     )
     note = (
-        "Rollout conditioned on ground-truth future action/event tokens: "
+        "Rollout conditioned on ground-truth future ego-action tokens: "
         f"{'yes' if conditioned else 'no'}. Intervals: 95% cluster bootstrap "
         "over recordings within each corpus."
     )
