@@ -1148,14 +1148,15 @@ def rollout_report(summary: Mapping[str, Any]) -> str:
             "logged val/skill_h."
         ),
         "",
-        "**Is the rollout conditioned on ground-truth future action/event tokens? "
+        "**Is the rollout conditioned on ground-truth future ego-action tokens? "
         + (
             "Yes.**"
             if any(rollout["conditioned_on_ground_truth_future_actions"].values())
             else "No.**"
         )
-        + " To predict z_(t+h) the predictor receives the action grid's ground-truth "
-        "tokens (NO_EVENT, ONSET, OFFSET, MASKED) of the future steps t+1 … t+h−1, "
+        + " To predict z_(t+h) the predictor receives the model's ground-truth "
+        "ego-action tokens (WAIT, START, HOLD, STOP, MASKED), deterministically "
+        "derived from the audited action grid, for future steps t+1 … t+h−1, "
         "as in training and validation: " + "; ".join(conditioned) + ".",
         "",
         (
