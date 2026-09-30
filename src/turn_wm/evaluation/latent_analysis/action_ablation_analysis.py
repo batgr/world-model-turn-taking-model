@@ -11,10 +11,11 @@ A. Rollout ablation, per horizon and subset (ALL, EVENT_EXPOSED: at least
    condition; the alignment counts only rows with a direction in every
    condition.
 
-B. Counterfactual one-step effect, per focal state at the anchor (SILENT,
+B. Forced one-step action effect, per focal state at the anchor (SILENT,
    SPEAKING): ||z_hat(a1) - z_hat(a2)|| and cos(delta_z(a1), delta_z(a2)),
-   delta_z(a) = z_hat_next(a) - z_t, for the valid pair for the current focal state. SILENT: WAIT vs START and SPEAKING: HOLD vs STOP are
-   the natural interventions; Invalid state/action combinations are not reported.
+   delta_z(a) = z_hat_next(a) - z_t, using only the valid pair for the current
+   focal state: WAIT vs START from SILENT, HOLD vs STOP from SPEAKING.
+   Invalid state/action combinations are not reported.
 
 Intervals: seeded 95% percentile bootstrap over recordings within each
 corpus, as in the rollout-dynamics analysis. Nothing is refitted.
@@ -904,12 +905,12 @@ def ablation_report(summary: Mapping[str, Any]) -> str:
 
     return "\n".join(
         [
-            "# Action/event ablation and counterfactual action effects",
+            "# Ego-action ablation and forced-action effects",
             "",
             "## Purpose",
             "",
             (
-                "1. Does the V1 predictor materially use its future action/event "
+                "1. Does the predictor materially use its future ego-action "
                 "conditioning?"
             ),
             (
@@ -928,7 +929,7 @@ def ablation_report(summary: Mapping[str, Any]) -> str:
             "## Conditions",
             "",
             (
-                "- **observed**: the real future STATE_PRESERVING/START/STOP sequence, as in "
+                "- **observed**: the real future WAIT/START/HOLD/STOP sequence, as in "
                 "the rollout-dynamics analysis."
             ),
             "- **state_preserving**: future tokens replaced by the valid state-preserving action (WAIT or HOLD).",
@@ -975,7 +976,7 @@ def ablation_report(summary: Mapping[str, Any]) -> str:
             "",
             *_ablation_table(summary, MOVEMENT),
             "",
-            "## Counterfactual one-step action effect",
+            "## Forced one-step action effect",
             "",
             (
                 "From the same state and context, only the anchor's own action is "
@@ -1009,7 +1010,7 @@ def ablation_report(summary: Mapping[str, Any]) -> str:
             (
                 "Where observed outperforms both ablations (intervals of the paired "
                 "differences above 0), this supports: *the V1 predictor makes useful "
-                "use of the observed vocal-action conditioning channel.* Where an "
+                "use of the observed ego-action conditioning channel.* Where an "
                 "interval includes 0, this analysis finds no measurable benefit of "
                 "the observed tokens at that horizon and subset, which is not proof "
                 "that the channel is unused. Where observed is lower than an "
