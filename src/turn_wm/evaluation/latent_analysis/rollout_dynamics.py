@@ -25,7 +25,7 @@ replacement within each corpus. The alignment mean only counts rows whose
 true displacement is at least `MIN_TRUE_MOTION_FRACTION` of the horizon's
 median; excluded rows are counted. As a confounding diagnostic (not a
 performance measure), each (horizon, condition) also reports the fraction of
-rows whose future action tokens read by the rollout hold an ONSET or OFFSET.
+rows whose future action tokens read by the rollout hold an START or STOP.
 The optional trajectory figure projects a few transitions on the first two
 principal components of the true latents only (anchor and true futures),
 then applies that projection to the predictions.
@@ -109,7 +109,7 @@ MIN_TRUE_MOTION_FRACTION = 0.01
 HORIZON_TOLERANCE_S = 1e-6
 
 # Action ids announcing a speech event (turn_wm.data.dataset.ACTION_TO_ID).
-EVENT_ACTIONS = ("ONSET", "OFFSET")
+EVENT_ACTIONS = ("START", "STOP")
 
 
 @dataclass(frozen=True)
@@ -352,7 +352,7 @@ def future_event_rows(
     rollout: Mapping[str, Any],
     horizon: int,
 ) -> torch.Tensor:
-    """Rows whose future action tokens read for `horizon` hold ONSET/OFFSET.
+    """Rows whose future action tokens read for `horizon` hold START/STOP.
 
     The future tokens read are those of the trajectory steps after the
     anchor within the rollout's action window for that horizon.
@@ -462,7 +462,7 @@ def analyze_rollout_dynamics(
             ),
             "future_event_actions": list(EVENT_ACTIONS),
             "future_event_rule": (
-                "at least one ONSET/OFFSET among the future action tokens the "
+                "at least one START/STOP among the future action tokens the "
                 "rollout reads for the horizon (steps t+1 .. t+h-1)"
             ),
             "dtype": "float64",
@@ -1172,7 +1172,7 @@ def rollout_report(summary: Mapping[str, Any]) -> str:
         "",
         (
             "Fraction of rows whose future action tokens read by the rollout "
-            "(steps t+1 … t+h−1) contain at least one ONSET or OFFSET. Where it is "
+            "(steps t+1 … t+h−1) contain at least one START or STOP. Where it is "
             "high on transition rows, transition skill can partly come from the "
             "announced event. This is a diagnostic of the conditioning, not a "
             "performance measure."
