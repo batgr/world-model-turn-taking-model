@@ -302,7 +302,9 @@ def test_losses_are_finite_and_train_only_the_predictor_side():
         "rollout_3_loss",
     }
     assert all(torch.isfinite(value) for value in output.values())
-    assert model.predictor.pos_embedding.grad is not None
+    assert model.predictor.pos_embedding is None
+    qkv_grad = model.predictor.transformer.layers[0].attn.to_qkv.weight.grad
+    assert qkv_grad is not None and torch.isfinite(qkv_grad).all()
     assert model.encoder.frozen.grad is None
 
 
@@ -323,7 +325,13 @@ def test_encoder_receives_whole_trajectories():
         ({"data.context_steps": 0}, "context_steps must be >= 1"),
         ({"prediction.rollout_context_size": 0}, "rollout_context_size must lie"),
         ({"prediction.rollout_context_size": 5}, "rollout_context_size must lie"),
-        ({"model.predictor.num_frames": 3}, "must cover the teacher-forced"),
+        (
+            {
+                "model.predictor.position_encoding": "learned",
+                "model.predictor.num_frames": 3,
+            },
+            "must cover the teacher-forced",
+        ),
         ({"prediction.rollout_horizons": [0, 1]}, "must be positive"),
         ({"prediction.rollout_horizons": []}, "must be positive"),
         ({"prediction.rollout_horizons": [1, 4]}, "must cover every rollout"),
@@ -421,12 +429,14 @@ def test_module_leaves_seeding_to_the_caller():
     # loading Mimi.
     cfg = small_config(**{"model.encoder._target_": "torch.nn.Identity"})
 
-    torch.manual_seed(0)
-    first = LeWMModule(cfg).model.predictor.pos_embedding
-    torch.manual_seed(0)
-    second = LeWMModule(cfg).model.predictor.pos_embedding
-    torch.manual_seed(1)
-    other = LeWMModule(cfg).model.predictor.pos_embedding
+    def qkv_weight(seed):
+        torch.manual_seed(seed)
+        module = LeWMModule(cfg)
+        return module.model.predictor.transformer.layers[0].attn.to_qkv.weight.detach()
+
+    first = qkv_weight(0)
+    second = qkv_weight(0)
+    other = qkv_weight(1)
 
     assert torch.equal(first, second)
     assert not torch.equal(first, other)
