@@ -1,4 +1,4 @@
-"""A two-epoch V2 fit exercises the curriculum, transition score and callbacks."""
+"""A two-epoch V2 fit exercises the curriculum, metrics and callbacks."""
 
 import lightning as L
 import torch
@@ -62,5 +62,5 @@ def test_v2_fit_reaches_a_full_h10_epoch_and_scores_transitions(tmp_path):
     )
 
     assert trainer.global_step == 4
-    assert "val/transition_skill_5_10" in trainer.callback_metrics
+    assert "val/rollout_10_mse" in trainer.callback_metrics
     assert (tmp_path / "checkpoints" / "last.ckpt").is_file()
