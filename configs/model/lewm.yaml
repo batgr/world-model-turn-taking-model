@@ -22,10 +22,10 @@ predictor:
 
 action_encoder:
   _target_: turn_wm.models.lewm.embedder.Embedder
-  num_actions: 5
+  num_actions: 6
   smoothed_dim: 10
   emb_dim: ${embed_dim}
-  padding_idx: 4
+  padding_idx: 5
 
 projector:
   _target_: turn_wm.models.lewm.mlp.MLP
