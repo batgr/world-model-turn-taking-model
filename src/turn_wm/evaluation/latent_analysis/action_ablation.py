@@ -271,11 +271,12 @@ def ablation_representations(
 
 
 def collect_futures(batches, *, max_samples: int | None, total: int | None):
-    """First pass: sample ids, corpora, anchor focal states, future actions."""
+    """First pass: ids, corpora, anchor states/actions and future actions."""
 
     sample_ids: list[str] = []
     datasets: list[str] = []
     states: list[torch.Tensor] = []
+    anchor_actions: list[torch.Tensor] = []
     futures: list[torch.Tensor] = []
     if max_samples is not None:
         total = max_samples if total is None else min(total, max_samples)
@@ -294,10 +295,17 @@ def collect_futures(batches, *, max_samples: int | None, total: int | None):
             sample_ids += list(batch["sample_id"][:take])
             datasets += [str(d) for d in batch["dataset"][:take]]
             states.append(batch["context_state"][:take, context - 1])
+            anchor_actions.append(batch["context_action"][:take, context - 1])
             futures.append(batch["future_action"][:take])
             bar.update(take)
 
-    return sample_ids, datasets, torch.cat(states), torch.cat(futures)
+    return (
+        sample_ids,
+        datasets,
+        torch.cat(states),
+        torch.cat(anchor_actions),
+        torch.cat(futures),
+    )
 
 
 def action_embedding_geometry(model: JEPA) -> dict[str, Any]:
@@ -344,12 +352,12 @@ def extract_action_ablation(
     (e.g. the fixed-permutation validation loader).
     """
 
-    sample_ids, datasets, states, futures = collect_futures(
+    sample_ids, datasets, states, anchor_actions, futures = collect_futures(
         batches, max_samples=max_samples, total=total
     )
     groups = [
-        (d, int(s), int(f.numel()))
-        for d, s, f in zip(datasets, states, futures, strict=True)
+        (d, int(a), int(f.numel()))
+        for d, a, f in zip(datasets, anchor_actions, futures, strict=True)
     ]
     donors = shuffle_donors(sample_ids, groups, seed=seed)
     log(
@@ -408,7 +416,7 @@ def extract_action_ablation(
         ),
         "shuffle": {
             "seed": seed,
-            "grouping": "(dataset, focal state at the anchor, future length)",
+            "grouping": "(dataset, anchor ego action, future length)",
             "unit": "whole future action sequence",
             "assignment": "cycle over group members in seeded sample-key order",
             "groups": len(sizes),
