@@ -7,11 +7,10 @@ class CausalBatchNorm1d(nn.Module):
 
     The input is (B, T, D). Training statistics are computed independently
     for each T. Without `num_positions`, the running statistics average those
-    per-time estimates, for inputs whose distribution does not depend on T
-    (the Mimi-to-latent projector). With `num_positions`, each position keeps
-    its own running statistics, so evaluation normalizes position t as
-    training did (the predictor projector, whose inputs carry the predictor's
-    absolute position embedding).
+    per-time estimates, for inputs whose distribution is not explicitly tied
+    to an absolute window position. With `num_positions`, each position keeps
+    its own running statistics so evaluation normalizes position t as training
+    did; this remains available for learned-absolute-position ablations.
     """
 
     expects_sequence = True
