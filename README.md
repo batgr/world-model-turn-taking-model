@@ -1,21 +1,13 @@
 # World model for conversational turn-taking
 
-An action-conditioned, JEPA-style audio model that learns conditional latent
-dynamics from past speech and recorded vocal-event proxies. Its current
-rollout is given future event tokens, so it does not establish anticipation
-without them or a robot action policy. The research goal is multi-party
-turn-taking for a social robot. This repository contains the data loader,
-frozen Mimi feature precomputation, PyTorch/Lightning training and validation.
-The upstream [data pipeline](https://github.com/batgr/world-model-turn-taking-data)
-publishes the vocal-event grid and model-ready anchors.
+A JEPA-style world model for learning the latent dynamics of multi-party
+conversation for social-robot turn-taking. Speech is encoded with frozen Mimi,
+projected into a learned latent state, and modeled by a causal Transformer
+conditioned on vocal-event actions through AdaLN-Zero. Multi-horizon rollout
+predicts future latent speech states, while SIGReg regularizes the
+representation space.
 
-**Current status:** V1 has been trained and analyzed against persistence and
-event-conditioning baselines. Controlled audio-only V2 ablations and their
-representation/rollout analyses are developed on the
-[audio-only V2 branch](https://github.com/batgr/world-model-turn-taking-model/tree/v2/audio-only).
-The stable main branch is intentionally kept separate until the V2 recipe is
-frozen. A voice-agent/planning demonstration is a later stage and is separate
-from deployment on a robot.
+**Architecture:** `audio → frozen Mimi → latent projector → action-conditioned causal Transformer → future latent states`
 
 **Explore:** [public EgoCom dataset](https://huggingface.co/datasets/batgre/conversational-dynamics-egocom) · [training design](docs/training.md) · [V2 research program](https://github.com/batgr/world-model-turn-taking-model/blob/v2/audio-only/docs/research_program.md) · [research decisions](https://github.com/batgr/world-model-turn-taking-model/tree/v2/audio-only/docs/decisions)
 
@@ -57,29 +49,17 @@ uv run turn-wm inspect-data --dataset full --media-root egocom=/path/to/EgoCom -
 
 ## Model
 
-The world model follows [LeWM](https://github.com/lucas-maes/le-wm): a JEPA
-that predicts the next latent observation from past latents and turn-taking
-actions.
+Implementation map:
 
-- **Encoder** (`models/encoders/mimi.py`): frozen
-  [Mimi](https://huggingface.co/kyutai/mimi). Audio is down-mixed to mono,
-  resampled to 24 kHz and encoded to Mimi's continuous pre-quantization
-  latents (12.5 Hz, 512-d), then causally aligned to the 10 Hz action grid:
-  grid step `k` takes the latest Mimi frame available by the end of its
-  interval, so no step sees future audio. A batch may mix windows of
-  different lengths and sample rates (EgoCom and Ego4D).
-- **Projector / prediction head** (`lewm/mlp.py`): MLPs to and from the
-  `embed_dim` latent space.
-- **Action embedder** (`lewm/embedder.py`): the five action ids of the
-  dataset (`NO_EVENT`, `ONSET`, `OFFSET`, `MASKED`, `PAD`, the last one
-  zeroed).
-- **Predictor** (`lewm/predictor.py`, `lewm/transformer.py`): causal
-  transformer conditioned on actions through AdaLN-zero, with one learned
-  position per step of the teacher-forced context (`num_frames =
-  data.context_steps`). Its attention is plain causal attention; how much
-  history it sees is set by the inputs it is given.
-- **SIGReg** (`lewm/sigreg.py`): regularizer keeping latents close to an
-  isotropic Gaussian, which prevents collapse.
+- `src/turn_wm/models/encoders/mimi.py` — frozen Mimi encoder
+- `src/turn_wm/models/lewm/mlp.py` — latent projector and prediction head
+- `src/turn_wm/models/lewm/embedder.py` — action embedding
+- `src/turn_wm/models/lewm/predictor.py` — action-conditioned predictor
+- `src/turn_wm/models/lewm/transformer.py` — causal Transformer backbone
+- `src/turn_wm/models/lewm/sigreg.py` — SIGReg regularizer
+- `src/turn_wm/training/lewm.py` — Lightning module and training objective
+
+See [docs/training.md](docs/training.md) for architecture and training details.
 
 ## Configuration
 
@@ -111,77 +91,16 @@ selected with `train=xxx`).
 
 ## Training
 
-`turn_wm.training.lewm` holds the objective and a Lightning module. The
-baseline V1 recipe (AdamW with warmup + cosine per optimizer step, loss
-weights, horizon curriculum) is described in [docs/training.md](docs/training.md).
-Validation tracks prediction quality, skill against a persistence baseline
-and latent health, globally and per corpus (same page).
-
-- **Trajectories.** A sample's context window followed by its future window
-  forms one trajectory of `data.context_steps + data.future_steps` steps.
-  Training uses a fixed context (`training_window(cfg)`), so every trajectory
-  in a batch has the same length; anchors too close to a recording's start
-  for that context are left out by the dataset. Context and future audio are
-  encoded together, once per trajectory.
-- **Teacher forcing** is dense over the ground-truth context
-  (`C = data.context_steps`): from `z0 … z(C-1)` and their actions the
-  predictor predicts `z1 … zC`, one step ahead at every position. The first
-  future latent `zC` is only a target, never an input.
-- **Rollout** starts at the context/future boundary from the ground-truth
-  context, then feeds its own predictions back, never a ground-truth future
-  latent (without gradient when `prediction.rollout_stop_gradient`), with
-  the real future actions. Before each prediction it keeps only the latest
-  `prediction.rollout_context_size` states and actions
-  (`<= data.context_steps`). Its loss is the weighted mean
-  (`loss.rollout.horizon_weights`) over the active horizons: a curriculum
-  over optimizer steps activates `[1]`, then `[1, 5]`, then `[1, 5, 10]`
-  during training, while validation always evaluates every
-  `prediction.rollout_horizons`.
-- `validate_config` checks these sizes against each other and against the
-  predictor before any data is read.
-- The total loss weights teacher forcing, rollout and SIGReg
-  (`loss.*.weight`). Latent targets are defined at every step, including
-  steps whose annotation is `UNKNOWN`.
-
-`turn_wm.training.train.run(cfg)` runs one experiment: it validates the
-config, seeds Python, NumPy, PyTorch and the loader workers with `seed`
-(before the model is built), loads `DATASETS[data.dataset]` (`egocom`,
-`ego4d` or `full`), builds the train and validation splits with the same
-fixed window and `data.modalities`, and fits `LeWMModule` with a Lightning
-`Trainer(**cfg.trainer)`. The loaders take `loader.*` and are seeded with
-`seed`; validation stays in order. Raw media comes from
-`<DATASET>_MEDIA_ROOT` for every loaded corpus (or from the `media_roots`
-argument of `run`).
-
-### Run training
-
-Training is exposed through the same `turn-wm` CLI. Experiment
-configuration remains entirely Hydra-driven. Real runs use the precomputed
-Mimi features (see [Precompute Mimi features](#precompute-mimi-features)); no
-raw media is needed then, only the cache:
+Use precomputed Mimi features for normal training runs:
 
 ```bash
 uv run turn-wm train \
-    data.dataset=full \
-    data.observation_source=mimi_cache \
-    data.mimi_cache.root=/path/to/mimi-features
+  data.dataset=full \
+  data.observation_source=mimi_cache \
+  data.mimi_cache.root=/path/to/mimi-features
 ```
 
-`data.mimi_cache.root` is the downloaded release root (one cache per corpus)
-or a single corpus cache.
-
-`data.observation_source=raw_audio` decodes the raw audio and encodes it with
-frozen Mimi at every step instead (debugging); it needs the media roots:
-
-```bash
-export EGOCOM_MEDIA_ROOT=/path/to/EgoCom
-export EGO4D_MEDIA_ROOT=/path/to/Ego4D   # for data.dataset=full or ego4d
-
-uv run turn-wm train data.observation_source=raw_audio
-```
-
-See [docs/training.md](docs/training.md) for both sources. Hydra overrides
-can be passed directly:
+Override the Hydra configuration directly from the CLI:
 
 ```bash
 uv run turn-wm train \
@@ -193,8 +112,19 @@ uv run turn-wm train \
   optimizer.lr=1e-4
 ```
 
-An invalid override or a configuration rejected by `validate_config` stops
-with a `turn-wm: error: ...` message before any data is loaded.
+For raw-audio debugging instead of the feature cache:
+
+```bash
+export EGOCOM_MEDIA_ROOT=/path/to/EgoCom
+export EGO4D_MEDIA_ROOT=/path/to/Ego4D
+
+uv run turn-wm train data.observation_source=raw_audio
+```
+
+Invalid Hydra overrides or configurations rejected by `validate_config` fail
+before data loading. See [docs/training.md](docs/training.md) for the objective,
+rollout semantics, horizon curriculum, validation protocol, and observation
+sources.
 
 ### Runs
 
@@ -267,19 +197,10 @@ uv run turn-wm precompute-mimi \
   output directory must be new or empty; grids and media are checked for
   every recording before encoding starts.
 
-### Audio timeline caveats
+### Audio timeline notes
 
-- Local decoded-frame timestamp irregularities below 100 ms are treated as
-  jitter. Frames are concatenated without introducing artificial silence.
-- Local gaps of at least 100 ms are materialized as silence at their detected
-  canonical position and recorded in the cache manifest.
-- Canonical `SPEAKING`, `SILENT`, and `UNKNOWN` labels are not modified.
-- Three Ego4D recordings with slow audio/annotation clock drift of roughly
-  0.3--0.5 s are excluded from the V1 cache. This is synchronization
-  uncertainty, not a claim that the media are corrupted; exact IDs, measured
-  drift, and reasons are retained in the manifest.
-- In cache mode, anchors whose recording is absent from the cache are filtered
-  from the experimental view, while the canonical dataset remains unchanged.
+Synchronization, gap handling, causal alignment, and excluded-recording details
+are documented in [docs/training.md](docs/training.md).
 
 After the per-corpus caches are in a shared release directory, deterministic
 release metadata can be rebuilt with:
