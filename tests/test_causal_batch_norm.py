@@ -67,7 +67,7 @@ def test_default_model_uses_causal_bn_and_layernorm_variant_reproduces_v1():
     assert isinstance(model.projector.net[1], CausalBatchNorm1d)
     assert isinstance(model.pred_proj.net[1], CausalBatchNorm1d)
     assert model.projector.net[1].num_positions is None
-    assert model.pred_proj.net[1].num_positions == v2.model.predictor.num_frames
+    assert model.pred_proj.net[1].num_positions is None
 
     model.eval()
     features = torch.randn(1, 4, 512)
@@ -77,6 +77,21 @@ def test_default_model_uses_causal_bn_and_layernorm_variant_reproduces_v1():
         output = model.predict(z, model.encode_actions(actions))
 
     assert z.shape == output.shape == (1, 4, v2.embed_dim)
+
+
+def test_learned_position_variant_keeps_positional_pred_projector_stats():
+    cfg = load_config(
+        [
+            "model=lewm_learned_pos",
+            "data.observation_source=mimi_cache",
+        ]
+    )
+    model = build_model(cfg)
+
+    assert model.predictor.position_encoding == "learned"
+    assert model.predictor.pos_embedding is not None
+    assert isinstance(model.pred_proj.net[1], CausalBatchNorm1d)
+    assert model.pred_proj.net[1].num_positions == cfg.model.predictor.num_frames
 
 
 def test_standard_bn_config_flattens_time_for_both_projectors():
