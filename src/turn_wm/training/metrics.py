@@ -24,6 +24,13 @@ from turn_wm.data.dataset import ACTION_TO_ID
 GLOBAL = ""
 
 
+def skill_score(model_mse: float, persistence_mse: float) -> float:
+    """Legacy analysis helper; not part of the V2 training metric surface."""
+
+    eps = torch.finfo(torch.float32).eps
+    return 1.0 - model_mse / max(persistence_mse, eps)
+
+
 def effective_rank(latents: torch.Tensor) -> float:
     """Effective rank of centred rows, from normalized singular values."""
 
