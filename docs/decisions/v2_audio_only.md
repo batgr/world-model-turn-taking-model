@@ -33,7 +33,7 @@ separate some of these explanations; the first combined V2 run does not.
 | Scope | Continue audio-only until the result is convincing. The first controlled V2 model trains and validates on **EgoCom only**; larger-corpus training is a separate later scaling experiment. Multimodal work has no fixed version boundary. |
 | Context/history/target | `C=30`, training and inference rollout window `W=30`, target and rollout horizon `H=10`, all at 10 Hz. The coupled C/W choice retains the added observed history; H remains 1 s while testing it. |
 | Projection | Use **causally safe BatchNorm in both** the Mimi-to-latent and predictor-output projectors; keep transformer AdaLN separate. No training-time normalization may mix future positions into a prefix. The Mimi projector uses shared running statistics; the predictor projector keeps per-position running statistics because causal receptive fields differ by position even under RoPE. |
-| Position encoding | Replace learned absolute predictor positions with standard **RoPE** on Q/K, base `10000`. RoPE is the default; `model=lewm_learned_pos` preserves the pre-RoPE learned-position predictor for reproduction/ablation. |
+| Position encoding | Replace learned absolute predictor positions with standard **RoPE** on Q/K ([Su et al., 2021](https://arxiv.org/abs/2104.09864)), base `10000`. RoPE is the default; `model=lewm_learned_pos` preserves the pre-RoPE learned-position predictor for reproduction/ablation. |
 | Latent regularization | Retain 192 dimensions and raw-latent SIGReg at `lambda=0.09` for the first recipe. These are controls, not claimed optima. Log unweighted/weighted terms and their gradient contributions. |
 | Optimizer schedule | Keep warmup plus cosine decay. Its planned duration in examples/epochs is distinct from the stopping rule; no 10,000-step training cutoff. |
 | Training length | Count optimizer steps, samples and epochs from the actual train set and physical batch. A run must reach at least one complete epoch and give H=10 a full epoch of training before automatic early stopping can end it. |
@@ -130,6 +130,7 @@ Zotero is the bibliographic source of truth for selected papers, with DOI or
 arXiv version and notes linking claim, limitation and experiment. A future
 `references/library.bib` is an export, not a second hand-maintained source.
 Relevant starting papers include
+[RoFormer / RoPE](https://arxiv.org/abs/2104.09864),
 [LeJEPA](https://arxiv.org/abs/2511.08544),
 [LeWorldModel](https://arxiv.org/abs/2603.19312),
 [the frozen-encoder window study](https://arxiv.org/abs/2512.24497),
