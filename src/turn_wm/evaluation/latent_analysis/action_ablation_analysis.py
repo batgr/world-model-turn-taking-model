@@ -981,9 +981,8 @@ def ablation_report(summary: Mapping[str, Any]) -> str:
                 "From the same state and context, only the anchor's own action is "
                 "forced to WAIT, START, HOLD or STOP, and the one-step prediction "
                 "ẑ(a) = ẑ_(t+1)(a) is compared: ‖ẑ(a1) − ẑ(a2)‖ and the cosine between "
-                "Δz(a) = ẑ(a) − z_t. SILENT: WAIT vs START and SPEAKING: HOLD vs STOP are natural "
-                "interventions; SILENT + OFFSET and SPEAKING + ONSET are "
-                "out-of-distribution stress tests."
+                "Δz(a) = ẑ(a) − z_t. Only state-valid alternatives are reported: "
+                "WAIT vs START from SILENT, and HOLD vs STOP from SPEAKING."
             ),
             "",
             *_counterfactual_table(summary),
