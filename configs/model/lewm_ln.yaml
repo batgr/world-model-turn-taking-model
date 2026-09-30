@@ -1,0 +1,14 @@
+# Legacy/reproduction variant: restore the original LayerNorm projectors.
+defaults:
+  - lewm
+  - _self_
+
+projector:
+  norm_fn:
+    _target_: hydra.utils.get_class
+    path: torch.nn.LayerNorm
+
+pred_proj:
+  norm_fn:
+    _target_: hydra.utils.get_class
+    path: torch.nn.LayerNorm
