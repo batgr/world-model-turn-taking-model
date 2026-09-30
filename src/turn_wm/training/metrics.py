@@ -19,7 +19,7 @@ from dataclasses import dataclass, field
 
 import torch
 
-from turn_wm.data.dataset import ACTION_TO_ID
+from turn_wm.data.dataset import ACTION_TO_ID, TRANSITION_ACTIONS
 
 GLOBAL = ""
 
@@ -232,9 +232,11 @@ class ValidationMetrics:
             ).to(z.device)
 
             evaluable = transition_valid.bool().all(dim=1) & ok
-            has_transition = (
-                transition_actions != ACTION_TO_ID["NO_EVENT"]
-            ).any(dim=1)
+            transition_ids = torch.tensor(
+                [ACTION_TO_ID[name] for name in TRANSITION_ACTIONS],
+                device=transition_actions.device,
+            )
+            has_transition = torch.isin(transition_actions, transition_ids).any(dim=1)
 
             for condition, rows in (
                 ("transition", evaluable & has_transition),
