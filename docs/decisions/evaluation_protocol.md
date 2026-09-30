@@ -70,7 +70,7 @@ Effective rank is not a model-selection score: small differences in rank are not
 
 ### 3. Task readout / turn-taking relevance
 
-For categorical readouts use **balanced accuracy** as the primary score. For continuous timing readouts use an interpretable error such as **MAE** in seconds/milliseconds, with R² as a secondary fit diagnostic where useful.
+For categorical readouts use **balanced accuracy** as the primary score. The current continuous probes report **R²**. An interpretable **MAE** in seconds/milliseconds is planned for timing readouts before they are promoted to headline results.
 
 Current role-relative readouts include, where labels are available:
 
@@ -134,3 +134,5 @@ The structure borrows only transferable principles from established benchmarks a
 - *Evaluating World Models* (arXiv:2607.06401): prediction quality and decision/control utility are distinct evaluation levels.
 
 Domain-specific metrics are not copied when the measured quantity has no conversational analogue.
+
+Exact formulas, implementation names and metric provenance are documented in [`../metrics.md`](../metrics.md).
