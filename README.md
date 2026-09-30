@@ -163,47 +163,35 @@ drive checkpointing.
 
 ## Precompute Mimi features
 
-Mimi is frozen, so its features can be computed once per recording instead
-of at every training step:
+Mimi is frozen, so its features can be precomputed once and reused across
+training runs:
 
 ```bash
 uv run turn-wm precompute-mimi \
-    --dataset egocom \
-    --media-root /path/to/egocom \
-    --output /path/to/mimi-cache \
-    --device cuda
+  --dataset dataset \
+  --media-root /path/to/media \
+  --output /path/to/mimi-cache \
+  --device cuda
 ```
 
-- Each recording of the action grid is read once from its local media
-  (respecting `media_offset_s`), resampled once to 24 kHz and streamed
-  through Mimi with its convolution and attention caches kept across chunks,
-  so the features do not depend on `--chunk-seconds`.
-- Mimi's continuous 12.5 Hz features are causally aligned to the 10 Hz
-  action grid: one 512-d row per grid step, row 0 being the recording's
-  first `decision_index`. The learned 512 -> 192 projector is not
-  precomputed; it stays part of the model.
-- The cache holds one float16 safetensors file per recording and a
-  `manifest.json` recording the Mimi model and revisions, the source dataset
-  revision, the feature rate, dim and dtype, and for every recording its
-  `start_index`, `start_time_s`, number of steps, and detected `audio_gaps`.
-- `--media-root` works as for `inspect-data` (`DATASET=PATH`, repeated, for
-  `--dataset full`). `--revision` pins Mimi, ideally to a commit SHA. The
-  output directory must be new or empty; grids and media are checked for
-  every recording before encoding starts.
-
-### Audio timeline notes
-
-Synchronization, gap handling, causal alignment, and excluded-recording details
-are documented in [docs/training.md](docs/training.md).
-
-After the per-corpus caches are in a shared release directory, deterministic
-release metadata can be rebuilt with:
+For multiple corpora, repeat `--media-root` with the `DATASET=PATH` form:
 
 ```bash
-uv run python scripts/build_mimi_release.py /path/to/mimi/v1
+uv run turn-wm precompute-mimi \
+  --dataset full \
+  --media-root dataset_a=/path/to/dataset_a \
+  --media-root dataset_b=/path/to/dataset_b \
+  --output /path/to/mimi-cache \
+  --device cuda
 ```
 
-The features will then feed training in place of the raw audio.
+The output directory must be new or empty. Use `--revision` to pin the Mimi
+checkpoint revision.
+
+The cache contains one feature file per recording plus a `manifest.json`
+describing the cache and source revisions. See [docs/training.md](docs/training.md)
+for feature alignment, cache format, synchronization handling, and validation
+details.
 
 ## Tests
 
