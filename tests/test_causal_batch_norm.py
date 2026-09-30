@@ -58,9 +58,9 @@ def test_training_rejects_batch_of_one():
         norm(torch.randn(1, 2, 3))
 
 
-def test_bn_config_normalizes_both_projectors_without_changing_v1():
-    v1 = load_config(["data.observation_source=mimi_cache"])
-    v2 = load_config(["model=lewm_bn", "data.observation_source=mimi_cache"])
+def test_default_model_uses_causal_bn_and_layernorm_variant_reproduces_v1():
+    v1 = load_config(["model=lewm_ln", "data.observation_source=mimi_cache"])
+    v2 = load_config(["data.observation_source=mimi_cache"])
 
     assert not getattr(build_model(v1).projector, "expects_sequence", False)
     model = build_model(v2)
