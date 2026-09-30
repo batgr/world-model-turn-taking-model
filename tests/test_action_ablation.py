@@ -246,7 +246,7 @@ def test_run_extraction_and_analysis(tmp_path, cache_root, loads):
     donors = tensors[SHUFFLE_DONOR].tolist()
     for row, donor in enumerate(donors):
         assert metadata["dataset"][donor] == metadata["dataset"][row]
-        assert int(tensors[FOCAL_STATE][donor]) == int(tensors[FOCAL_STATE][row])
+        assert tensors[ROLLOUT_ACTION_IDS][donor, c - 1] == tensors[ROLLOUT_ACTION_IDS][row, c - 1]
         assert torch.equal(
             tensors[SHUFFLED_ACTION_IDS][row, c:],
             tensors[ROLLOUT_ACTION_IDS][donor, c:],
@@ -338,7 +338,7 @@ def test_cli_show_prints_the_results_and_changes_no_result(
     assert "Integrity check (no future token read): passed" in printed
     assert "Skill vs persistence (primary)" in printed
     assert "observed − state_preserving" in printed
-    assert "Counterfactual one-step action effect" in printed
+    assert "Forced one-step action effect" in printed
     # The first horizon reads no future token: its exposed subset is empty.
     assert "Not evaluable: 0.1 s, event_exposed has no rows." in printed
     assert str(tmp_path / "shown" / "figures" / "rollout_ablation.png") in printed
