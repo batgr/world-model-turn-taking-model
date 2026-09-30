@@ -36,11 +36,17 @@ STATE_TO_ID = {
 PAD_STATE_ID = 3
 
 
+# Controllable ego actions used by the world model. The published action grid
+# still stores NO_EVENT / ONSET / OFFSET events; they are converted here using
+# focal_state_before so the model conditions on an explicit ego action.
 ACTION_TO_ID = {
-    "NO_EVENT": 0,
-    "ONSET": 1,
-    "OFFSET": 2,
+    "WAIT": 0,
+    "START": 1,
+    "STOP": 2,
+    "HOLD": 3,
 }
+
+TRANSITION_ACTIONS = ("START", "STOP")
 
 MASKED_ACTION_ID = len(ACTION_TO_ID)
 PAD_ACTION_ID = MASKED_ACTION_ID + 1
@@ -219,7 +225,11 @@ class TurnTakingDataset(Dataset):
                 dtype=torch.long,
             ),
             "context_action": torch.tensor(
-                self._encode_actions(actions[context]),
+                self._encode_actions(
+                    actions[context],
+                    states[context],
+                    valid[context],
+                ),
                 dtype=torch.long,
             ),
             "context_valid": torch.tensor(
@@ -231,7 +241,11 @@ class TurnTakingDataset(Dataset):
                 dtype=torch.long,
             ),
             "future_action": torch.tensor(
-                self._encode_actions(actions[future]),
+                self._encode_actions(
+                    actions[future],
+                    states[future],
+                    valid[future],
+                ),
                 dtype=torch.long,
             ),
             "future_valid": torch.tensor(
@@ -414,11 +428,60 @@ class TurnTakingDataset(Dataset):
         return encoded
 
     @staticmethod
-    def _encode_actions(values: list[str | None]) -> list[int]:
-        return [
-            MASKED_ACTION_ID if value is None else ACTION_TO_ID[value]
-            for value in values
-        ]
+    def _encode_actions(
+        values: list[str | None],
+        states: list[str],
+        valid: list[bool],
+    ) -> list[int]:
+        """Convert action-grid events to controllable ego actions.
+
+        The source grid describes vocal events. The model uses an explicit
+        state-conditioned action space:
+
+        SILENT   + NO_EVENT -> WAIT
+        SILENT   + ONSET    -> START
+        SPEAKING + NO_EVENT -> HOLD
+        SPEAKING + OFFSET   -> STOP
+
+        Invalid/masked rows and UNKNOWN focal states remain MASKED rather than
+        being assigned a controllable action.
+        """
+
+        if not (len(values) == len(states) == len(valid)):
+            raise ValueError("actions, focal states and validity must align")
+
+        encoded = []
+
+        for value, state, is_valid in zip(values, states, valid, strict=True):
+            if not is_valid or value is None or state == "UNKNOWN":
+                encoded.append(MASKED_ACTION_ID)
+                continue
+
+            if value == "NO_EVENT":
+                if state == "SILENT":
+                    action = "WAIT"
+                elif state == "SPEAKING":
+                    action = "HOLD"
+                else:
+                    raise ValueError(f"Unknown focal state: {state!r}")
+            elif value == "ONSET":
+                if state != "SILENT":
+                    raise ValueError(
+                        f"ONSET requires SILENT focal_state_before, got {state!r}"
+                    )
+                action = "START"
+            elif value == "OFFSET":
+                if state != "SPEAKING":
+                    raise ValueError(
+                        f"OFFSET requires SPEAKING focal_state_before, got {state!r}"
+                    )
+                action = "STOP"
+            else:
+                raise ValueError(f"Unknown action-grid event: {value!r}")
+
+            encoded.append(ACTION_TO_ID[action])
+
+        return encoded
 
     @staticmethod
     def _validate_slice(
