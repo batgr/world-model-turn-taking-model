@@ -524,6 +524,27 @@ def test_training_context_stays_in_configured_range():
         assert 5 <= length <= 10
 
 
+def test_action_grid_events_become_controllable_ego_actions():
+    encode = TurnTakingDataset._encode_actions
+
+    assert encode(
+        ["NO_EVENT", "ONSET", "NO_EVENT", "OFFSET"],
+        ["SILENT", "SILENT", "SPEAKING", "SPEAKING"],
+        [True, True, True, True],
+    ) == [
+        ACTION_TO_ID["WAIT"],
+        ACTION_TO_ID["START"],
+        ACTION_TO_ID["HOLD"],
+        ACTION_TO_ID["STOP"],
+    ]
+
+    assert encode(
+        [None, "NO_EVENT"],
+        ["UNKNOWN", "UNKNOWN"],
+        [False, False],
+    ) == [MASKED_ACTION_ID, MASKED_ACTION_ID]
+
+
 def test_masked_action_has_distinct_encoding():
     anchors = make_anchors(
         anchor_idx=29,
