@@ -568,8 +568,7 @@ class LeWMModule(L.LightningModule):
         return ValidationMetrics(
             self.cfg.prediction.rollout_horizons,
             persistence_baseline=evaluation.get("persistence_baseline", True),
-            cosine_similarity=evaluation.get("cosine_similarity", True),
-            latent_health=evaluation.get("latent_health", True),
+            effective_rank_health=evaluation.get("effective_rank", True),
             latent_rank_samples=evaluation.get("latent_rank_samples", 8192),
             transition_metrics=evaluation.get("transition_metrics", False),
         )
