@@ -284,10 +284,11 @@ displacement magnitudes.
 These are retained for hypothesis-driven analysis but are not headline model
 metrics and have no claimed benchmark provenance.
 
-### Observed / no-event / shuffled action ablation
+### Observed / state-preserving / shuffled action ablation
 
-The action-ablation analysis compares rollouts under the observed conditioning
-sequence against altered conditioning sequences.
+The action-ablation analysis compares rollouts under the observed ego-action
+sequence against a state-preserving future (WAIT if silent, HOLD if speaking)
+and against shuffled future ego-action sequences.
 
 This is an **experimental intervention on the input**, not a standalone
 metric. The resulting rollout errors answer whether the predictor uses its
