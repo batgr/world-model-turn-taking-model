@@ -368,7 +368,7 @@ def test_show_action_ablation_in_a_notebook(tmp_path, cache_root, loads, monkeyp
     assert shown[0][0] == "html" and "Integrity check" in shown[0][1]
     titles = [item[1] for item in shown[1:5]]
     assert "Skill vs persistence (primary)" in titles[0]
-    assert "Counterfactual one-step action effect" in titles[3]
+    assert "Forced one-step action effect" in titles[3]
     # A missing figure is said, not silently skipped.
     assert shown[5] == ("image", "rollout_ablation.png")
     assert shown[6][0] == "html" and "Missing figure" in shown[6][1]
