@@ -6,16 +6,15 @@ conversation for social-robot turn-taking.
 
 ## Data
 
-Inspect the structure of the first batch built from the public EgoCom dataset
-([`batgre/conversational-dynamics-egocom`](https://huggingface.co/datasets/batgre/conversational-dynamics-egocom)).
+Inspect the structure of the first batch built from the  dataset.
 This loads the dataset through the same data package used for training:
 
 ```bash
-uv run turn-wm inspect-data --dataset egocom
-uv run turn-wm inspect-data --dataset egocom --split validation --batch-size 4
+uv run turn-wm inspect-data --dataset dataset
+uv run turn-wm inspect-data --dataset dataset --split validation --batch-size 4
 ```
 
-`--dataset full` loads every corpus of the private release (EgoCom + Ego4D)
+`--dataset full` loads every corpus 
 into one dataset; a split includes only the corpora that publish it. Add
 `--shuffle` to inspect a seeded shuffled (mixed-corpus) batch.
 
