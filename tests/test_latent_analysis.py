@@ -92,7 +92,7 @@ def test_representations_are_taken_at_the_anchor_step():
     assert snapshot.metadata["sample_id"] == ["s0-0", "s0-1"]
     # The action taken at the anchor step itself.
     assert snapshot.metadata["action_id"] == [1, 2]
-    assert snapshot.metadata["action"] == ["ONSET", "OFFSET"]
+    assert snapshot.metadata["action"] == ["START", "STOP"]
 
 
 def test_raw_observations_go_through_the_encoder():
@@ -176,7 +176,7 @@ def test_written_artifact(tmp_path):
 
     assert torch.equal(tensors[FEATURES], snapshot.representations[FEATURES])
     assert torch.equal(tensors[LATENT], snapshot.representations[LATENT])
-    assert metadata["action"] == ["ONSET", "OFFSET"]
+    assert metadata["action"] == ["START", "STOP"]
     assert manifest["schema_version"] == 1
     assert manifest["samples"] == 2
     assert manifest["representations"] == {
