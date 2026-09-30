@@ -1,14 +1,7 @@
 # World model for conversational turn-taking
 
 A JEPA-style world model for learning the latent dynamics of multi-party
-conversation for social-robot turn-taking. Speech is encoded with frozen Mimi,
-projected into a learned latent state, and modeled by a causal Transformer
-conditioned on vocal-event actions through AdaLN-Zero. Multi-horizon rollout
-predicts future latent speech states, while SIGReg regularizes the
-representation space.
-
-**Architecture:** `audio → frozen Mimi → latent projector → action-conditioned causal Transformer → future latent states`
-
+conversation for social-robot turn-taking. 
 **Explore:** [public EgoCom dataset](https://huggingface.co/datasets/batgre/conversational-dynamics-egocom) · [training design](docs/training.md) · [V2 research program](https://github.com/batgr/world-model-turn-taking-model/blob/v2/audio-only/docs/research_program.md) · [research decisions](https://github.com/batgr/world-model-turn-taking-model/tree/v2/audio-only/docs/decisions)
 
 ## Data
