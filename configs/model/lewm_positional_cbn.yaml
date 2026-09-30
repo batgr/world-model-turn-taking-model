@@ -4,7 +4,8 @@
 # V2 encodes the complete trajectory before the losses:
 #   context_steps (30) + future_steps (10) = 40 positions.
 # The projector therefore needs statistics for 40 positions. The predictor
-# projector still needs 30, its maximum predictor input length.
+# projector intentionally also keeps 30 position-specific statistics. This is
+# an ablation under RoPE, not a requirement of the default predictor.
 defaults:
   - lewm
   - _self_
