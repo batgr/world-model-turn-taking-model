@@ -1,7 +1,11 @@
 # World model for conversational turn-taking
 
-A JEPA-style world model for learning the latent dynamics of multi-party
-conversation for social-robot turn-taking. 
+A JEPA-style latent world model for planning-based multi-party turn-taking in
+social robots. Frozen Mimi features encode speech into latent observations, and
+an action-conditioned causal predictor learns how the conversational state
+evolves over time. Its rollouts are designed to serve as the predictive model
+for a downstream planner deciding when the robot should speak, wait, or yield
+the floor.
 **Explore:** [public EgoCom dataset](https://huggingface.co/datasets/batgre/conversational-dynamics-egocom) · [training design](docs/training.md) · [V2 research program](https://github.com/batgr/world-model-turn-taking-model/blob/v2/audio-only/docs/research_program.md) · [research decisions](https://github.com/batgr/world-model-turn-taking-model/tree/v2/audio-only/docs/decisions)
 
 ## Data
