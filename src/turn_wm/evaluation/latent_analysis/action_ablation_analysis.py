@@ -2,21 +2,19 @@
 Analyze an action-ablation snapshot (`action_ablation.py`).
 
 A. Rollout ablation, per horizon and subset (ALL, EVENT_EXPOSED: at least
-   one true ONSET/OFFSET among the future tokens read before the horizon,
+   one true START/STOP among the future tokens read before the horizon,
    EVENT_UNEXPOSED: none), with the rollout-dynamics measures:
    skill vs persistence (primary), displacement alignment (secondary) and
-   movement ratio (diagnostic), for OBSERVED, NO_EVENT and SHUFFLED, and
-   the paired differences observed - no_event and observed - shuffled.
+   movement ratio (diagnostic), for OBSERVED, STATE_PRESERVING and SHUFFLED, and
+   the paired differences observed - state_preserving and observed - shuffled.
    Paired means the same rows and the same resampled recordings for every
    condition; the alignment counts only rows with a direction in every
    condition.
 
 B. Counterfactual one-step effect, per focal state at the anchor (SILENT,
    SPEAKING): ||z_hat(a1) - z_hat(a2)|| and cos(delta_z(a1), delta_z(a2)),
-   delta_z(a) = z_hat_next(a) - z_t, for ONSET vs NO_EVENT, OFFSET vs
-   NO_EVENT and ONSET vs OFFSET. SILENT + ONSET and SPEAKING + OFFSET are
-   the natural interventions; SILENT + OFFSET and SPEAKING + ONSET are
-   out-of-distribution stress tests.
+   delta_z(a) = z_hat_next(a) - z_t, for the valid pair for the current focal state. SILENT: WAIT vs START and SPEAKING: HOLD vs STOP are
+   the natural interventions; Invalid state/action combinations are not reported.
 
 Intervals: seeded 95% percentile bootstrap over recordings within each
 corpus, as in the rollout-dynamics analysis. Nothing is refitted.
@@ -46,7 +44,7 @@ from turn_wm.evaluation.latent_analysis.action_ablation import (
     COUNTERFACTUAL_NEXT,
     FOCAL_STATE,
     FORCED_ACTIONS,
-    NO_EVENT,
+    STATE_PRESERVING,
     OBSERVED,
     PRED,
     SHUFFLED,
@@ -90,13 +88,14 @@ ANALYSIS = "action_ablation"
 
 ALL, EXPOSED, UNEXPOSED = "all", "event_exposed", "event_unexposed"
 SUBSETS = (ALL, EXPOSED, UNEXPOSED)
-DIFFERENCES = ((OBSERVED, NO_EVENT), (OBSERVED, SHUFFLED))
+DIFFERENCES = ((OBSERVED, STATE_PRESERVING), (OBSERVED, SHUFFLED))
 ROLES = {SKILL: "primary", ALIGNMENT: "secondary", MOVEMENT: "diagnostic"}
 
-PAIRS = (("ONSET", "NO_EVENT"), ("OFFSET", "NO_EVENT"), ("ONSET", "OFFSET"))
 STATES = ("SILENT", "SPEAKING")
-NATURAL = {("SILENT", "ONSET"), ("SPEAKING", "OFFSET")}
-STRESS = {("SILENT", "OFFSET"), ("SPEAKING", "ONSET")}
+PAIRS_BY_STATE = {
+    "SILENT": (("START", "WAIT"),),
+    "SPEAKING": (("STOP", "HOLD"),),
+}
 
 
 # ---------------------------------------------------------------------------
@@ -291,28 +290,6 @@ def rollout_ablation(
 # ---------------------------------------------------------------------------
 
 
-NATURAL_INTERVENTION = "natural"
-STRESS_INTERVENTION = "stress test (out of distribution)"
-MIXED_INTERVENTION = "mixed: one natural, one stress-test action"
-
-
-def intervention(state: str, a: str, b: str) -> str:
-    """How natural the pair's forced events are for the focal state.
-
-    NO_EVENT is neutral; ONSET and OFFSET are natural or stress tests
-    depending on the state (SILENT + ONSET, SPEAKING + OFFSET are natural).
-    """
-
-    kinds = {(state, action) in NATURAL for action in (a, b) if action != "NO_EVENT"}
-
-    if kinds == {True}:
-        return NATURAL_INTERVENTION
-    if kinds == {False}:
-        return STRESS_INTERVENTION
-
-    return MIXED_INTERVENTION
-
-
 def _recording_mean(
     values: torch.Tensor,
     *,
@@ -408,12 +385,11 @@ def counterfactual_effects(
 
         pairs = {}
 
-        for a, b in PAIRS:
+        for a, b in PAIRS_BY_STATE[state]:
             da, db = delta[:, index[a]], delta[:, index[b]]
             both = (da.norm(dim=-1) > 0) & (db.norm(dim=-1) > 0)
             cosine = torch.where(both, F.cosine_similarity(da, db, dim=-1), torch.nan)
             pairs[f"{a} vs {b}"] = {
-                "intervention": intervention(state, a, b),
                 "prediction_distance": mean(
                     (nxt[:, index[a]] - nxt[:, index[b]]).norm(dim=-1)
                 ),
@@ -424,7 +400,9 @@ def counterfactual_effects(
             "n": len(rows),
             "n_recordings": len(clusters),
             # Context for the distances' scale, not a separate measure.
-            "mean_no_event_step": mean(delta[:, index["NO_EVENT"]].norm(dim=-1)),
+            "mean_state_preserving_step": mean(
+                delta[:, index["WAIT" if state == "SILENT" else "HOLD"]].norm(dim=-1)
+            ),
             "pairs": pairs,
         }
 
@@ -545,7 +523,7 @@ def write_action_ablation(
             ),
             "metric_roles": ROLES,
             "event_exposed": (
-                "at least one true ONSET/OFFSET among the future tokens the "
+                "at least one true START/STOP among the future tokens the "
                 "rollout reads before the horizon (steps t+1 .. t+h-1)"
             ),
             "alignment_rows": "rows with a displacement direction in every condition",
@@ -623,11 +601,6 @@ _TITLES = {
     MOVEMENT: "Movement ratio (diagnostic)",
 }
 _REFERENCES = {SKILL: 0.0, ALIGNMENT: 0.0, MOVEMENT: 1.0}
-_TICK_SUFFIX = {
-    NATURAL_INTERVENTION: "",
-    STRESS_INTERVENTION: "\n(stress test)",
-    MIXED_INTERVENTION: "\n(mixed)",
-}
 _SUBSET_TITLES = {
     ALL: "all anchors",
     EXPOSED: "event exposed",
@@ -647,7 +620,7 @@ def rollout_figure(summary: Mapping[str, Any]) -> Figure:
     ablation = summary["rollout_ablation"]
     horizons = list(ablation)
     x = [ablation[h]["horizon_s"] for h in horizons]
-    offsets = {OBSERVED: -0.015, NO_EVENT: 0.0, SHUFFLED: 0.015}
+    offsets = {OBSERVED: -0.015, STATE_PRESERVING: 0.0, SHUFFLED: 0.015}
     figure = _new_figure(12.0, 9.0)
     axes = figure.subplots(len(SUBSETS), len(METRICS), squeeze=False)
 
@@ -700,7 +673,7 @@ def rollout_figure(summary: Mapping[str, Any]) -> Figure:
 
     axes[0][0].legend(frameon=False, fontsize=8, labelcolor=SECONDARY_INK)
     figure.suptitle(
-        "Rollout under observed, NO_EVENT and shuffled future actions "
+        "Rollout under observed, state-preserving and shuffled future actions "
         "(95% paired recording bootstrap; at 0.1 s no future token is read)",
         color=INK,
         fontsize=10,
@@ -712,7 +685,7 @@ def rollout_figure(summary: Mapping[str, Any]) -> Figure:
 
 
 def counterfactual_figure(summary: Mapping[str, Any]) -> Figure:
-    """Rows: distance and delta cosine; columns: focal state; hollow: stress test."""
+    """Rows: distance and delta cosine; columns: focal state; valid actions only."""
 
     counterfactual = summary["counterfactual"]
     figure = _new_figure(10.0, 7.0)
@@ -731,8 +704,7 @@ def counterfactual_figure(summary: Mapping[str, Any]) -> Figure:
             ticks = []
 
             for x, (pair, values) in enumerate(pairs.items()):
-                natural = values["intervention"] == NATURAL_INTERVENTION
-                ticks.append(pair + _TICK_SUFFIX[values["intervention"]])
+                ticks.append(pair)
                 stat = values[key]
 
                 if stat["mean"] is None:
@@ -746,18 +718,18 @@ def counterfactual_figure(summary: Mapping[str, Any]) -> Figure:
                     color=SERIES[0],
                     marker="o",
                     markersize=8,
-                    markerfacecolor=SERIES[0] if natural else SURFACE,
+                    markerfacecolor=SERIES[0],
                     markeredgewidth=2,
                     capsize=3,
                     linewidth=2,
                 )
 
             if key == "prediction_distance":
-                scale = counterfactual[state]["mean_no_event_step"]["mean"]
+                scale = counterfactual[state]["mean_state_preserving_step"]["mean"]
                 if scale is not None:
                     ax.axhline(scale, color=MUTED, linestyle="--", linewidth=1)
                     ax.annotate(
-                        "mean ‖Δz(NO_EVENT)‖",
+                        "mean ‖Δz(state-preserving action)‖",
                         (len(pairs) - 0.5, scale),
                         ha="right",
                         va="bottom",
@@ -794,8 +766,8 @@ def counterfactual_figure(summary: Mapping[str, Any]) -> Figure:
                 ax.set_ylabel(label, color=SECONDARY_INK, fontsize=9)
 
     figure.suptitle(
-        "Counterfactual one-step action effect from the same state and context "
-        "(filled: natural intervention; hollow: stress test or mixed)",
+        "One-step action effect from the same state and context "
+        "(only state-valid controllable actions)",
         color=INK,
         fontsize=10,
         x=0.02,
@@ -839,8 +811,8 @@ def _verdict(values: Mapping[str, Any], metric: str) -> str:
 def _ablation_table(summary: Mapping[str, Any], metric: str) -> list[str]:
     lines = [
         (
-            "| horizon | subset | n (rec.) | observed | no_event | shuffled | "
-            "observed − no_event | observed − shuffled |"
+            "| horizon | subset | n (rec.) | observed | state_preserving | shuffled | "
+            "observed − state_preserving | observed − shuffled |"
         ),
         "|---|---|---|---|---|---|---|---|",
     ]
@@ -887,8 +859,8 @@ def _skill_findings(summary: Mapping[str, Any]) -> list[str]:
 
 def _counterfactual_table(summary: Mapping[str, Any]) -> list[str]:
     lines = [
-        "| focal state | pair | intervention | ‖ẑ(a1) − ẑ(a2)‖ | cos(Δz(a1), Δz(a2)) |",
-        "|---|---|---|---|---|",
+        "| focal state | valid action pair | ‖ẑ(a1) − ẑ(a2)‖ | cos(Δz(a1), Δz(a2)) |",
+        "|---|---|---|---|",
     ]
 
     for state in STATES:
@@ -897,7 +869,7 @@ def _counterfactual_table(summary: Mapping[str, Any]) -> list[str]:
         for pair, values in entry["pairs"].items():
             distance, cosine = values["prediction_distance"], values["delta_cosine"]
             lines.append(
-                f"| {state} (n={entry['n']:,}) | {pair} | {values['intervention']} | "
+                f"| {state} (n={entry['n']:,}) | {pair} | "
                 f"{_mean(distance)} | {_mean(cosine)} |"
             )
 
@@ -926,7 +898,7 @@ def ablation_report(summary: Mapping[str, Any]) -> str:
     integrity = first.get("integrity") or {}
     embeddings = ablation["action_embeddings"]
     scales = "; ".join(
-        f"{state}: {_mean(summary['counterfactual'][state]['mean_no_event_step'])}"
+        f"{state}: {_mean(summary['counterfactual'][state]['mean_state_preserving_step'])}"
         for state in STATES
     )
 
@@ -956,10 +928,10 @@ def ablation_report(summary: Mapping[str, Any]) -> str:
             "## Conditions",
             "",
             (
-                "- **observed**: the real future NO_EVENT/ONSET/OFFSET sequence, as in "
+                "- **observed**: the real future STATE_PRESERVING/START/STOP sequence, as in "
                 "the rollout-dynamics analysis."
             ),
-            "- **no_event**: every future token read by the rollout set to NO_EVENT.",
+            "- **state_preserving**: future tokens replaced by the valid state-preserving action (WAIT or HOLD).",
             (
                 "- **shuffled**: the future sequence replaced by another sample's "
                 f"complete future sequence, same corpus and focal state at the anchor "
@@ -978,7 +950,7 @@ def ablation_report(summary: Mapping[str, Any]) -> str:
             ),
             "",
             (
-                "Subsets: **event_exposed** = at least one true ONSET/OFFSET among the "
+                "Subsets: **event_exposed** = at least one true START/STOP among the "
                 "future tokens read before the horizon; **event_unexposed** = none."
             ),
             "",
@@ -1007,9 +979,9 @@ def ablation_report(summary: Mapping[str, Any]) -> str:
             "",
             (
                 "From the same state and context, only the anchor's own action is "
-                "forced to NO_EVENT, ONSET or OFFSET, and the one-step prediction "
+                "forced to WAIT, START, HOLD or STOP, and the one-step prediction "
                 "ẑ(a) = ẑ_(t+1)(a) is compared: ‖ẑ(a1) − ẑ(a2)‖ and the cosine between "
-                "Δz(a) = ẑ(a) − z_t. SILENT + ONSET and SPEAKING + OFFSET are natural "
+                "Δz(a) = ẑ(a) − z_t. SILENT: WAIT vs START and SPEAKING: HOLD vs STOP are natural "
                 "interventions; SILENT + OFFSET and SPEAKING + ONSET are "
                 "out-of-distribution stress tests."
             ),
@@ -1017,7 +989,7 @@ def ablation_report(summary: Mapping[str, Any]) -> str:
             *_counterfactual_table(summary),
             "",
             (
-                f"Scale context, mean ‖Δz(NO_EVENT)‖ per focal state: {scales}. "
+                f"Scale context, mean ‖Δz(state-preserving action)‖ per focal state: {scales}. "
                 f"Anchors with another focal state are not stratified: "
                 f"{summary['counterfactual']['unstratified_rows']}."
             ),
@@ -1052,7 +1024,7 @@ def ablation_report(summary: Mapping[str, Any]) -> str:
                 "tokens are observed conversation events, not interventions."
             ),
             (
-                "- It does not establish planner controllability: stress-test actions "
+                "- It does not establish planner controllability: forced-action comparisons "
                 "are out of distribution, and no agent chose any action."
             ),
             "- It does not establish planning utility.",
