@@ -393,7 +393,8 @@ def test_optimizer_skips_frozen_parameters():
     assert isinstance(optimizer, torch.optim.AdamW)
     assert optimizer.defaults["weight_decay"] == cfg.optimizer.weight_decay
     assert id(module.model.encoder.frozen) not in optimized
-    assert id(module.model.predictor.pos_embedding) in optimized
+    qkv = module.model.predictor.transformer.layers[0].attn.to_qkv.weight
+    assert id(qkv) in optimized
 
 
 def test_lightning_runs_a_training_and_validation_step(tmp_path):
