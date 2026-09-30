@@ -280,7 +280,7 @@ def rollout_diagnostics(summary: dict[str, Any]) -> list[dict[str, Any]]:
                     "alignment": _with_interval(values, "displacement_alignment"),
                     "alignment rows valid": values["direction_defined_fraction"],
                     "movement ratio": _with_interval(values, "movement_ratio"),
-                    "ONSET/OFFSET in future tokens": values["future_event_fraction"],
+                    "START/STOP in future tokens": values["future_event_fraction"],
                 }
             )
 
@@ -449,8 +449,8 @@ def show_concepts(
         show(image(filename=str(path)))
 
 
-_ABLATION_CONDITIONS = ("observed", "no_event", "shuffled")
-_ABLATION_DIFFERENCES = ("observed-no_event", "observed-shuffled")
+_ABLATION_CONDITIONS = ("observed", "state_preserving", "shuffled")
+_ABLATION_DIFFERENCES = ("observed-state_preserving", "observed-shuffled")
 _ABLATION_METRICS = (
     ("skill", "Skill vs persistence (primary)"),
     ("displacement_alignment", "Displacement alignment (secondary)"),
@@ -506,14 +506,13 @@ def counterfactual_rows(summary: dict[str, Any]) -> list[dict[str, Any]]:
             stats = {
                 "‖ẑ(a1) − ẑ(a2)‖": values["prediction_distance"],
                 "cos(Δz(a1), Δz(a2))": values["delta_cosine"],
-                "mean ‖Δz(NO_EVENT)‖": entry["mean_no_event_step"],
+                "mean ‖Δz(state-preserving action)‖": entry["mean_state_preserving_step"],
             }
             rows.append(
                 {
                     "focal state": state,
                     "n": entry["n"],
-                    "pair": pair,
-                    "intervention": values["intervention"],
+                    "valid action pair": pair,
                 }
                 | {
                     column: "no rows" if entry["n"] == 0 else _mean_interval(stat)
