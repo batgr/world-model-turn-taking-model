@@ -1,24 +1,17 @@
-"""Validation metrics: exact values, epoch aggregation, masks and corpora."""
+"""V2 validation metrics: rollout MSE, baselines, strata and rank."""
 
 import math
 
 import pytest
 import torch
 
-from turn_wm.training.metrics import (
-    EPS,
-    ValidationMetrics,
-    effective_rank,
-    skill_score,
-)
+from turn_wm.training.metrics import ValidationMetrics, effective_rank
 
 HORIZONS = (1, 5, 10)
-C = 3  # context steps; trajectories have C + 10 steps
+C = 3
 
 
 def trajectory(batch=1, dim=2, *, last=(1.0, 2.0), future=(2.0, 4.0)):
-    """Latents whose last context step is `last` and every future step `future`."""
-
     z = torch.zeros(batch, C + 10, dim)
     z[:, C - 1] = torch.tensor(last)
     z[:, C:] = torch.tensor(future)
@@ -30,51 +23,18 @@ def update(metrics, latents, *, rollout=None, tf=None, datasets=None, mask=None)
     metrics.update(
         latents=latents,
         tf_predictions=latents[:, :C] if tf is None else tf,
-        rollout_predictions=rollout
-        if rollout is not None
-        else {h: latents[:, C - 1] for h in HORIZONS},
+        rollout_predictions=(
+            rollout
+            if rollout is not None
+            else {h: latents[:, C - 1] for h in HORIZONS}
+        ),
         context_steps=C,
         datasets=datasets or ["egocom"] * batch,
         mask=mask,
     )
 
 
-# -- skill --------------------------------------------------------------------
-
-
-@pytest.mark.parametrize(
-    ("model", "persistence", "skill"), [(2, 4, 0.5), (4, 4, 0.0), (8, 4, -1.0)]
-)
-def test_skill_score(model, persistence, skill):
-    assert skill_score(model, persistence) == skill
-
-
-def test_skill_with_a_zero_baseline_is_finite_and_unclipped():
-    assert skill_score(0.0, 0.0) == 1.0
-    assert skill_score(1.0, 0.0) == pytest.approx(1 - 1 / EPS)
-    assert math.isfinite(skill_score(1.0, 0.0))
-
-
-def test_skill_is_the_ratio_of_epoch_errors_not_a_mean_of_batch_skills():
-    # Batch 1 (1 sample): model error 1, persistence 4 per element.
-    # Batch 2 (9 samples): model error 9, persistence 4 per element.
-    metrics = ValidationMetrics(HORIZONS, latent_health=False)
-    small = trajectory(1, last=(0.0, 0.0), future=(2.0, 2.0))
-    large = trajectory(9, last=(0.0, 0.0), future=(2.0, 2.0))
-    update(metrics, small, rollout={h: torch.full((1, 2), 1.0) for h in HORIZONS})
-    update(metrics, large, rollout={h: torch.full((9, 2), 5.0) for h in HORIZONS})
-
-    result = metrics.compute()
-
-    model_mse = (1 * 1 + 9 * 9) / 10
-    assert result["rollout_1_mse"] == pytest.approx(model_mse)
-    assert result["persistence_1_mse"] == pytest.approx(4.0)
-    assert result["skill_1"] == pytest.approx(1 - model_mse / 4)
-    naive = ((1 - 1 / 4) + (1 - 9 / 4)) / 2
-    assert result["skill_1"] != pytest.approx(naive)
-
-
-def test_results_do_not_depend_on_the_batch_size():
+def test_results_do_not_depend_on_batch_size():
     latents = torch.randn(12, C + 10, 4, generator=torch.Generator().manual_seed(0))
     rollout = {h: latents[:, C - 1] + 0.1 * h for h in HORIZONS}
 
@@ -84,243 +44,163 @@ def test_results_do_not_depend_on_the_batch_size():
         for size in sizes:
             part = slice(start, start + size)
             update(
-                metrics, latents[part], rollout={h: p[part] for h, p in rollout.items()}
+                metrics,
+                latents[part],
+                rollout={h: pred[part] for h, pred in rollout.items()},
             )
             start += size
         return metrics.compute()
 
-    one, many = run([12]), run([1, 3, 8])
-    for name in (
-        "rollout_5_mse",
-        "skill_5",
-        "tf_mse",
-        "tf_skill",
-        "cosine_10",
-        "latent_std",
-    ):
+    one = run([12])
+    many = run([1, 3, 8])
+
+    for name in ("tf_mse", "rollout_5_mse", "persistence_5_mse"):
         assert many[name] == pytest.approx(one[name]), name
 
 
-# -- baselines ----------------------------------------------------------------
-
-
 @pytest.mark.parametrize("h", HORIZONS)
-def test_rollout_persistence_copies_the_last_context_latent(h):
-    # z_last = [1, 2], target = [2, 4]: persistence error ((1)^2 + (2)^2) / 2.
-    metrics = ValidationMetrics(HORIZONS, latent_health=False)
+def test_rollout_persistence_copies_last_context_latent(h):
+    metrics = ValidationMetrics(HORIZONS, effective_rank_health=False)
     update(
-        metrics, trajectory(), rollout={k: torch.tensor([[2.0, 4.0]]) for k in HORIZONS}
+        metrics,
+        trajectory(),
+        rollout={k: torch.tensor([[2.0, 4.0]]) for k in HORIZONS},
     )
 
     result = metrics.compute()
 
-    assert result[f"persistence_{h}_mse"] == pytest.approx(2.5)
     assert result[f"rollout_{h}_mse"] == 0.0
-    assert result[f"skill_{h}"] == 1.0
+    assert result[f"persistence_{h}_mse"] == pytest.approx(2.5)
 
 
-def test_teacher_forcing_persistence_is_each_steps_own_input():
-    # z[t] = t on every dim: z[t] -> z[t + 1] errs by exactly 1 per element;
-    # the last context latent, zero or a prediction would err differently.
+def test_teacher_forcing_reports_model_mse_only():
     z = torch.arange(C + 10, dtype=torch.float32).view(1, -1, 1).expand(1, -1, 2)
-    metrics = ValidationMetrics(HORIZONS, latent_health=False)
-    update(metrics, z, tf=z[:, 1 : C + 1])  # perfect teacher-forced predictions
+    metrics = ValidationMetrics(HORIZONS, effective_rank_health=False)
+    update(metrics, z, tf=z[:, 1 : C + 1])
 
     result = metrics.compute()
 
-    assert result["tf_persistence_mse"] == 1.0
     assert result["tf_mse"] == 0.0
-    assert result["tf_skill"] == 1.0
+    assert "tf_persistence_mse" not in result
 
 
-def test_model_and_baseline_share_the_same_masked_positions():
+def test_model_and_baseline_use_same_masked_positions():
     z = (
         torch.arange(C + 10, dtype=torch.float32)
         .view(1, -1, 1)
         .expand(2, -1, 1)
         .clone()
     )
-    z[1] *= 100  # a second sample with huge errors, masked out below
+    z[1] *= 100
     mask = torch.ones(2, C + 10, dtype=torch.bool)
     mask[1] = False
 
-    metrics = ValidationMetrics(HORIZONS, latent_health=False)
+    metrics = ValidationMetrics(HORIZONS, effective_rank_health=False)
     update(metrics, z, tf=torch.zeros(2, C, 1), mask=mask)
-    result = metrics.compute()
 
-    only = ValidationMetrics(HORIZONS, latent_health=False)
+    only = ValidationMetrics(HORIZONS, effective_rank_health=False)
     update(only, z[:1], tf=torch.zeros(1, C, 1))
-    expected = only.compute()
 
-    for name in ("tf_mse", "tf_persistence_mse", "rollout_5_mse", "persistence_5_mse"):
+    result, expected = metrics.compute(), only.compute()
+    for name in ("tf_mse", "rollout_5_mse", "persistence_5_mse"):
         assert result[name] == pytest.approx(expected[name]), name
-    assert metrics.tf[""].elements == only.tf[""].elements
 
 
-def test_transition_skill_uses_rollout_actions_and_epoch_sums():
-    metrics = ValidationMetrics(HORIZONS, latent_health=False, transition_metrics=True)
-    z = trajectory(batch=3, last=(0.0, 0.0), future=(2.0, 2.0))
-
-    # H=1 predicts z[C] from z[C-1] using action[C-1].
-    # Sample 0 transitions on that last context action, sample 1 stays stable,
-    # sample 2 has that action masked and must enter neither condition.
-    context_action = torch.tensor(
-        [
-            [0, 0, 1],
-            [0, 0, 0],
-            [0, 0, 3],
-        ]
-    )
-    context_valid = torch.tensor(
-        [
-            [True] * C,
-            [True] * C,
-            [True, True, False],
-        ]
-    )
-    future_action = torch.zeros(3, 10, dtype=torch.long)
-    future_valid = torch.ones(3, 10, dtype=torch.bool)
-    predictions = {
-        h: torch.tensor([[2.0, 2.0], [0.0, 0.0], [0.0, 0.0]])
-        for h in HORIZONS
-    }
-
+def transition_update(metrics, z, *, context_action, future_action, predictions):
     metrics.update(
         latents=z,
         tf_predictions=z[:, :C],
         rollout_predictions=predictions,
         context_steps=C,
-        datasets=["egocom"] * 3,
+        datasets=["egocom"] * len(z),
         context_action=context_action,
-        context_valid=context_valid,
+        context_valid=torch.ones_like(context_action, dtype=torch.bool),
         future_action=future_action,
-        future_valid=future_valid,
+        future_valid=torch.ones_like(future_action, dtype=torch.bool),
     )
-    result = metrics.compute()
-
-    assert result["transition_1_n"] == result["transition_5_n"] == result["transition_10_n"] == 1
-    assert result["stable_1_n"] == result["stable_5_n"] == result["stable_10_n"] == 1
-    assert result["transition_5_skill"] == result["transition_10_skill"] == 1
-    assert result["transition_skill_5_10"] == 1
-    assert result["stable_5_skill"] == 0
 
 
-def test_transition_horizon_counts_round_trip_as_transition():
-    metrics = ValidationMetrics(HORIZONS, latent_health=False, transition_metrics=True)
+def test_transition_strata_use_actions_required_to_reach_each_horizon():
+    metrics = ValidationMetrics(
+        HORIZONS, effective_rank_health=False, transition_metrics=True
+    )
     z = trajectory(last=(0.0, 0.0), future=(2.0, 2.0))
 
-    # The last context action produces H1; the first future action produces H2.
-    # ONSET then OFFSET is still a transition horizon even if the vocal state
-    # has returned to its starting value by H2.
-    context_action = torch.tensor([[0, 0, 1]])
-    context_valid = torch.ones(1, C, dtype=torch.bool)
-    future_action = torch.tensor([[2] + [0] * 9])
-    future_valid = torch.ones(1, 10, dtype=torch.bool)
-    predictions = {h: torch.tensor([[2.0, 2.0]]) for h in HORIZONS}
-
-    metrics.update(
-        latents=z,
-        tf_predictions=z[:, :C],
-        rollout_predictions=predictions,
-        context_steps=C,
-        datasets=["egocom"],
-        context_action=context_action,
-        context_valid=context_valid,
-        future_action=future_action,
-        future_valid=future_valid,
-    )
-    result = metrics.compute()
-
-    assert result["transition_1_n"] == 1
-    assert result["transition_5_n"] == result["transition_10_n"] == 1
-    assert "stable_5_n" not in result
-    assert "stable_10_n" not in result
-
-
-def test_transition_horizon_stops_before_action_that_produces_next_target():
-    metrics = ValidationMetrics(HORIZONS, latent_health=False, transition_metrics=True)
-    z = trajectory(last=(0.0, 0.0), future=(2.0, 2.0))
-
-    # H5 uses a[C-1], a[C], ..., a[C+3].  The event at future_action[4]
-    # produces z[C+5] (H6), so H5 is stable while H10 is a transition.
+    # H5 uses a[C-1], a[C], ..., a[C+3]. The event at future_action[4]
+    # produces H6, so H5 is stable while H10 contains a transition.
     context_action = torch.zeros(1, C, dtype=torch.long)
-    context_valid = torch.ones(1, C, dtype=torch.bool)
     future_action = torch.tensor([[0, 0, 0, 0, 1, 0, 0, 0, 0, 0]])
-    future_valid = torch.ones(1, 10, dtype=torch.bool)
     predictions = {h: torch.tensor([[2.0, 2.0]]) for h in HORIZONS}
 
-    metrics.update(
-        latents=z,
-        tf_predictions=z[:, :C],
-        rollout_predictions=predictions,
-        context_steps=C,
-        datasets=["egocom"],
+    transition_update(
+        metrics,
+        z,
         context_action=context_action,
-        context_valid=context_valid,
         future_action=future_action,
-        future_valid=future_valid,
+        predictions=predictions,
     )
     result = metrics.compute()
 
     assert result["stable_1_n"] == 1
     assert result["stable_5_n"] == 1
     assert result["transition_10_n"] == 1
+    assert result["stable_5_mse"] == 0.0
+    assert result["transition_10_mse"] == 0.0
 
 
-def test_transition_metrics_reject_missing_rollout_actions():
-    metrics = ValidationMetrics(HORIZONS, latent_health=False, transition_metrics=True)
-    with pytest.raises(ValueError, match="require context/future actions and validity"):
+def test_round_trip_counts_as_transition_even_if_endpoint_state_returns():
+    metrics = ValidationMetrics(
+        HORIZONS, effective_rank_health=False, transition_metrics=True
+    )
+    z = trajectory(last=(0.0, 0.0), future=(2.0, 2.0))
+    context_action = torch.tensor([[0, 0, 1]])
+    future_action = torch.tensor([[2] + [0] * 9])
+    predictions = {h: torch.tensor([[2.0, 2.0]]) for h in HORIZONS}
+
+    transition_update(
+        metrics,
+        z,
+        context_action=context_action,
+        future_action=future_action,
+        predictions=predictions,
+    )
+    result = metrics.compute()
+
+    assert result["transition_1_n"] == 1
+    assert result["transition_5_n"] == 1
+    assert result["transition_10_n"] == 1
+    assert "stable_5_n" not in result
+
+
+def test_transition_stratification_requires_action_labels():
+    metrics = ValidationMetrics(
+        HORIZONS, effective_rank_health=False, transition_metrics=True
+    )
+
+    with pytest.raises(ValueError, match="requires context/future actions"):
         update(metrics, trajectory())
 
 
-# -- cosine and deltas ----------------------------------------------------------
+def test_transition_strata_report_their_persistence_baseline():
+    metrics = ValidationMetrics(
+        HORIZONS, effective_rank_health=False, transition_metrics=True
+    )
+    z = trajectory(last=(0.0, 0.0), future=(2.0, 2.0))
+    context_action = torch.tensor([[0, 0, 1]])
+    future_action = torch.zeros(1, 10, dtype=torch.long)
+    predictions = {h: torch.tensor([[1.0, 1.0]]) for h in HORIZONS}
 
-
-def test_cosine_of_equal_and_opposite_predictions():
-    metrics = ValidationMetrics(HORIZONS, latent_health=False)
-    z = trajectory(future=(3.0, 4.0))
-    update(
+    transition_update(
         metrics,
         z,
-        rollout={
-            1: torch.tensor([[3.0, 4.0]]),
-            5: torch.tensor([[-3.0, -4.0]]),
-            10: torch.zeros(1, 2),
-        },
+        context_action=context_action,
+        future_action=future_action,
+        predictions=predictions,
     )
-
     result = metrics.compute()
 
-    assert result["cosine_1"] == pytest.approx(1.0)
-    assert result["cosine_5"] == pytest.approx(-1.0)
-    assert result["cosine_10"] == 0.0  # zero-norm prediction: no NaN
-
-
-def test_persistence_like_predictions_have_zero_predicted_delta():
-    # Prediction == z_last while the target moved: the model "does not move".
-    metrics = ValidationMetrics(HORIZONS, latent_health=False)
-    update(metrics, trajectory(last=(1.0, 2.0), future=(4.0, 6.0)))
-
-    result = metrics.compute()
-
-    for h in HORIZONS:
-        assert result[f"prediction_delta_norm_{h}"] == 0.0
-        assert result[f"target_delta_norm_{h}"] == pytest.approx(5.0)
-
-
-# -- latent health ----------------------------------------------------------------
-
-
-def test_constant_latents_have_zero_std_and_known_norm():
-    metrics = ValidationMetrics(HORIZONS)
-    z = torch.full((4, C + 10, 2), 3.0)
-    update(metrics, z, rollout={h: torch.full((4, 2), 4.0) for h in HORIZONS})
-
-    result = metrics.compute()
-
-    assert result["latent_std"] == pytest.approx(0.0, abs=1e-9)
-    assert result["latent_norm"] == pytest.approx(math.sqrt(18))
-    assert result["prediction_norm"] == pytest.approx(math.sqrt(32))
+    assert result["transition_5_mse"] == 1.0
+    assert result["transition_5_persistence_mse"] == 4.0
 
 
 def test_effective_rank_orders_concentrated_and_spread_latents():
@@ -330,11 +210,10 @@ def test_effective_rank_orders_concentrated_and_spread_latents():
     spread = torch.randn(500, 8, generator=generator)
 
     assert effective_rank(rank_one) == pytest.approx(1.0, abs=1e-6)
-    assert effective_rank(spread) > 6.0
-    assert effective_rank(spread) <= 8.0
+    assert 6.0 < effective_rank(spread) <= 8.0
 
 
-def test_rank_sample_is_bounded_and_deterministic():
+def test_effective_rank_sampling_is_bounded_and_deterministic():
     def sample():
         metrics = ValidationMetrics(HORIZONS, latent_rank_samples=50)
         generator = torch.Generator().manual_seed(1)
@@ -344,19 +223,16 @@ def test_rank_sample_is_bounded_and_deterministic():
 
     first, second = sample(), sample()
 
-    assert first.shape == (50, 3)  # 10 x 4 x 13 = 520 latents seen
+    assert first.shape == (50, 3)
     assert torch.equal(first, second)
 
 
-# -- corpora --------------------------------------------------------------------
-
-
-def test_global_metrics_pool_every_element_not_the_corpus_metrics():
-    # egocom: 1 sample, model error 1, persistence 4; ego4d: 3 samples,
-    # model error 16, persistence 4 (per element).
-    metrics = ValidationMetrics(HORIZONS, latent_health=False)
+def test_global_metrics_pool_elements_and_report_corpora():
+    metrics = ValidationMetrics(HORIZONS, effective_rank_health=False)
     z = trajectory(4, last=(0.0, 0.0), future=(2.0, 2.0))
-    prediction = torch.tensor([[1.0, 1.0], [6.0, 6.0], [6.0, 6.0], [6.0, 6.0]])
+    prediction = torch.tensor(
+        [[1.0, 1.0], [6.0, 6.0], [6.0, 6.0], [6.0, 6.0]]
+    )
     update(
         metrics,
         z,
@@ -368,32 +244,34 @@ def test_global_metrics_pool_every_element_not_the_corpus_metrics():
 
     assert result["egocom/rollout_5_mse"] == 1.0
     assert result["ego4d/rollout_5_mse"] == 16.0
-    assert result["egocom/skill_5"] == pytest.approx(0.75)
-    assert result["ego4d/skill_5"] == pytest.approx(-3.0)
     assert result["rollout_5_mse"] == pytest.approx((1 + 3 * 16) / 4)
-    assert result["skill_5"] == pytest.approx(1 - 12.25 / 4)
-    assert result["skill_5"] != pytest.approx((0.75 - 3.0) / 2)
-    assert {"egocom/tf_mse", "ego4d/tf_skill", "tf_persistence_mse"} <= set(result)
+    assert result["persistence_5_mse"] == 4.0
 
 
-def test_corpus_names_come_from_the_batch():
-    metrics = ValidationMetrics(HORIZONS, latent_health=False)
-    update(metrics, trajectory(2), datasets=["corpus_a", "corpus_b"])
-
-    assert {"corpus_a/skill_10", "corpus_b/skill_10"} <= set(metrics.compute())
-
-
-def test_toggles_drop_their_metrics():
+def test_optional_diagnostics_can_be_disabled():
     metrics = ValidationMetrics(
         HORIZONS,
         persistence_baseline=False,
-        cosine_similarity=False,
-        latent_health=False,
+        effective_rank_health=False,
     )
     update(metrics, trajectory())
 
     names = set(metrics.compute())
 
-    assert "rollout_1_mse" in names and "tf_mse" in names
-    assert not {n for n in names if "skill" in n or "persistence" in n or "cosine" in n}
-    assert "latent_std" not in names
+    assert "rollout_1_mse" in names
+    assert "tf_mse" in names
+    assert not any("persistence" in name for name in names)
+    assert "effective_rank" not in names
+    assert not any(
+        token in name
+        for name in names
+        for token in ("skill", "cosine", "latent_norm", "prediction_norm")
+    )
+
+
+def test_constant_latents_have_rank_zero():
+    z = torch.full((4, C + 10, 2), 3.0)
+    metrics = ValidationMetrics(HORIZONS)
+    update(metrics, z)
+
+    assert metrics.compute()["effective_rank"] == 0.0
