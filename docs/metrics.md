@@ -9,7 +9,7 @@ The evaluation design itself is fixed in
 
 ## Principles
 
-1. Evaluate the **joint future conversational scene**, not only the ego.
+1. Evaluate three co-primary views of future conversational activity: **ego/robot**, **other participants**, and the **joint scene**.
 2. Keep **prediction**, **representation**, **action conditioning** and
    **planning** as separate evaluation levels.
 3. Prefer established metrics when they measure the same object.
@@ -299,8 +299,10 @@ counterfactual reaction is causally correct.
 This distinction is frozen even though participant-level metrics are not fully
 implemented yet.
 
-- **Marginal:** prediction quality for each non-ego participant.
-- **Joint:** quality of the complete multi-party future configuration.
+- **Ego:** prediction quality for the robot/focal speaker's future activity and turn-taking role.
+- **Aggregate other:** role-relative activity of the non-ego participants as a group.
+- **Marginal other:** prediction quality for each identifiable non-ego participant separately.
+- **Joint:** quality of the complete future conversational configuration across ego and the other participants.
 
 The motivation is directly transferable from multi-agent forecasting:
 single-agent/marginal errors can look good while the jointly predicted scene
@@ -313,14 +315,18 @@ ICCV 2023.
 https://openaccess.thecvf.com/content/ICCV2023/html/Weng_Joint_Metrics_Matter_A_Better_Standard_for_Trajectory_Forecasting_ICCV_2023_paper.html
 
 The current V2 role-relative `future_joint_speech_state` probe is a useful
-joint conversational readout. In contrast, `others_active` is only an
-aggregate-other label and must not be described as a true per-participant
-marginal metric.
+joint conversational readout. `others_active` is a first-class aggregate-other
+readout, but it must not be described as a per-participant marginal metric.
+Ego activity is also first-class: the frozen protocol includes future ego
+speaking plus turn-taking readouts such as Hold, Shift / observable yield
+outcome, onset/offset, overlap participation and backchannel events whenever
+the label semantics support them.
 
 The data layer already contains participant-aware speech primitives, including
 future speaker activity, but the model-side evaluation does not yet expose a
-stable participant-slot/identity interface across recordings. True
-participant-level marginal evaluation therefore remains pending.
+stable participant-slot/identity interface across recordings. True participant-level marginal evaluation therefore remains pending. Stable
+local participant slots are sufficient; they do not need global identities
+across recordings.
 
 ## Planning metrics: frozen family, not implemented yet
 
