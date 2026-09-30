@@ -87,14 +87,14 @@ actions.
   different lengths and sample rates (EgoCom and Ego4D).
 - **Projector / prediction head** (`lewm/mlp.py`): MLPs to and from the
   `embed_dim` latent space.
-- **Action embedder** (`lewm/embedder.py`): the five action ids of the
-  dataset (`NO_EVENT`, `ONSET`, `OFFSET`, `MASKED`, `PAD`, the last one
-  zeroed).
+- **Action embedder** (`lewm/embedder.py`): six ids: four controllable ego
+  actions (`WAIT`, `START`, `HOLD`, `STOP`) plus `MASKED` and zeroed
+  `PAD`. They are derived deterministically from the audited vocal-action
+  grid rather than replacing its source labels.
 - **Predictor** (`lewm/predictor.py`, `lewm/transformer.py`): causal
-  transformer conditioned on actions through AdaLN-zero, with one learned
-  position per step of the teacher-forced context (`num_frames =
-  data.context_steps`). Its attention is plain causal attention; how much
-  history it sees is set by the inputs it is given.
+  transformer conditioned on ego actions through AdaLN-zero. Temporal position
+  uses standard RoPE on attention queries and keys (base 10,000), so no learned
+  absolute position vector is added to the default latent sequence.
 - **SIGReg** (`lewm/sigreg.py`): regularizer keeping latents close to an
   isotropic Gaussian, which prevents collapse.
 
