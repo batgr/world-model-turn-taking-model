@@ -110,10 +110,14 @@ def validate_config(cfg: DictConfig) -> None:
             f"[1, data.context_steps={context_steps}], got {rollout_context_size}"
         )
 
-    if cfg.model.predictor.num_frames < context_steps:
+    if (
+        cfg.model.predictor.get("position_encoding", "learned") == "learned"
+        and cfg.model.predictor.num_frames < context_steps
+    ):
         raise ValueError(
             f"model.predictor.num_frames ({cfg.model.predictor.num_frames}) must "
-            f"cover the teacher-forced context ({context_steps} steps)"
+            f"cover the teacher-forced context ({context_steps} steps) when "
+            "using learned positional embeddings"
         )
 
     if not horizons or min(horizons) < 1:
