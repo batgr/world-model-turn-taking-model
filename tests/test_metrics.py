@@ -1,7 +1,5 @@
 """V2 validation metrics: rollout MSE, baselines, strata and rank."""
 
-import math
-
 import pytest
 import torch
 
