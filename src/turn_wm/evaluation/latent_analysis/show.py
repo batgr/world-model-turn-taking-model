@@ -563,7 +563,7 @@ def ablation_notes(summary: dict[str, Any]) -> list[str]:
     }
 
     if unstratified:
-        lines.append(f"Anchors in no counterfactual stratum: {unstratified}.")
+        lines.append(f"Anchors outside SILENT/SPEAKING forced-action strata: {unstratified}.")
 
     return lines
 
@@ -580,7 +580,7 @@ def show_action_ablation(
         (title, ablation_rows(summary, metric)) for metric, title in _ABLATION_METRICS
     ]
     tables.append(
-        ("Counterfactual one-step action effect", counterfactual_rows(summary))
+        ("Forced one-step action effect", counterfactual_rows(summary))
     )
     paths = [output_dir / path for path in summary["figures"]]
     missing = [path for path in paths if not path.is_file()]
