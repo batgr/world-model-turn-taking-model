@@ -8,8 +8,11 @@ encoder:
 
 predictor:
   _target_: turn_wm.models.lewm.predictor.ARPredictor
-  # Longest input: the teacher-forced context. Rollouts pass fewer steps.
+  # Kept for the learned-position reproduction variant; RoPE itself has no
+  # learned maximum sequence length.
   num_frames: ${data.context_steps}
+  position_encoding: rope
+  rope_base: 10000.0
   input_dim: ${embed_dim}
   hidden_dim: ${embed_dim}
   output_dim: ${embed_dim}
@@ -42,9 +45,8 @@ pred_proj:
   input_dim: ${embed_dim}
   output_dim: ${embed_dim}
   hidden_dim: 2048
-  # Predictor outputs carry absolute positions, so keep running statistics
-  # separately for each predictor position.
+  # RoPE does not add an absolute-position vector to the predictor output, so
+  # evaluation uses one shared set of running statistics.
   norm_fn:
-    _target_: turn_wm.models.lewm.mlp.CausalBatchNorm1d
-    _partial_: true
-    num_positions: ${model.predictor.num_frames}
+    _target_: hydra.utils.get_class
+    path: turn_wm.models.lewm.mlp.CausalBatchNorm1d
