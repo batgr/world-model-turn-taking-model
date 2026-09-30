@@ -28,13 +28,14 @@ evaluation:
   transition_metrics: true
 
 checkpoint:
-  monitor: val/transition_skill_5_10
-  mode: max
+  # Select the world model on its longest-horizon autoregressive dynamics.
+  monitor: val/rollout_10_mse
+  mode: min
 
 early_stopping:
   enabled: true
-  monitor: val/transition_skill_5_10
-  mode: max
+  monitor: val/rollout_10_mse
+  mode: min
   # Any improvement counts; revisit noise tolerance after the pilot.
   min_delta: 0.0
   patience: 2
