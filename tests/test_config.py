@@ -64,7 +64,7 @@ def test_every_target_resolves_to_a_class():
 
     found = targets(cfg)
 
-    assert len(found) == 6
+    assert len(found) == 8
 
     for path, target in found:
         assert isinstance(get_class(target), type), path
@@ -132,3 +132,14 @@ def test_training_docs_match_the_recipe():
 
     for block in blocks:
         assert_subset(OmegaConf.to_container(OmegaConf.create(block)), cfg)
+
+
+def test_v2_defaults_to_egocom_and_causal_batchnorm():
+    from turn_wm.models.lewm.mlp import CausalBatchNorm1d
+
+    cfg = load_config(["train=lewm_v2", "data.observation_source=mimi_cache"])
+    model = build_model(cfg)
+
+    assert cfg.data.dataset == "egocom"
+    assert isinstance(model.projector.net[1], CausalBatchNorm1d)
+    assert isinstance(model.pred_proj.net[1], CausalBatchNorm1d)
