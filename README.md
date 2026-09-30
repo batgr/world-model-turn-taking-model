@@ -102,13 +102,14 @@ uv run turn-wm train \
   optimizer.lr=1e-4
 ```
 
-For raw-audio debugging instead of the feature cache:
+For raw-audio debugging instead of the feature cache, provide the local media
+root for the selected dataset:
 
 ```bash
-export EGOCOM_MEDIA_ROOT=/path/to/EgoCom
-export EGO4D_MEDIA_ROOT=/path/to/Ego4D
-
-uv run turn-wm train data.observation_source=raw_audio
+uv run turn-wm train \
+  data.dataset=dataset \
+  data.observation_source=raw_audio \
+  data.media_root=/path/to/media
 ```
 
 Invalid Hydra overrides or configurations rejected by `validate_config` fail
