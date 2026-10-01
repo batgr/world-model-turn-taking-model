@@ -37,8 +37,10 @@ projector:
   hidden_dim: 2048
   # Normalize across examples at each time step without mixing future positions.
   norm_fn:
-    _target_: hydra.utils.get_class
-    path: turn_wm.models.lewm.mlp.CausalBatchNorm1d
+    _target_: turn_wm.models.lewm.mlp.make_norm
+    _partial_: true
+    kind: causal_batch_norm
+    num_positions: null
 
 pred_proj:
   _target_: turn_wm.models.lewm.mlp.MLP
@@ -50,6 +52,7 @@ pred_proj:
   # learned absolute embedding, but causal receptive fields still differ by
   # position.
   norm_fn:
-    _target_: turn_wm.models.lewm.mlp.CausalBatchNorm1d
+    _target_: turn_wm.models.lewm.mlp.make_norm
     _partial_: true
+    kind: causal_batch_norm
     num_positions: ${model.predictor.num_frames}

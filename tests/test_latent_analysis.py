@@ -266,10 +266,7 @@ def _loaded(revision: str | None = REVISION) -> LoadedData:
     )
 
 
-BATCHNORM = (
-    "+model.projector.norm_fn={_target_:hydra.utils.get_class,"
-    "path:torch.nn.BatchNorm1d}"
-)
+BATCHNORM = "model.projector.norm_fn.kind=batch_norm"
 
 
 def _config(cache_root, *overrides):

@@ -69,7 +69,7 @@ def small_config(**overrides):
 
 
 def test_v2_curriculum_follows_first_epoch_not_eight_epoch_cosine():
-    cfg = load_config(["model=lewm_bn", "train=lewm_v2"])
+    cfg = load_config(["train=lewm_v2"])
     module = LeWMModule(cfg)
     module._trainer = SimpleNamespace(
         global_step=0, num_training_batches=1000, accumulate_grad_batches=1

@@ -320,7 +320,7 @@ def test_checkpoint_callback_uses_config():
 
 
 def test_v2_recipe_tracks_full_horizon_transitions_after_first_epoch():
-    cfg = load_config(["model=lewm_bn", "train=lewm_v2"])
+    cfg = load_config(["train=lewm_v2"])
     callbacks = _build_callbacks(cfg, run_dir=Path("run"))
 
     assert (cfg.data.context_steps, cfg.prediction.rollout_context_size) == (30, 30)
@@ -337,7 +337,7 @@ def test_v2_recipe_tracks_full_horizon_transitions_after_first_epoch():
 
 
 def test_v2_early_stopping_ignores_validation_before_full_h10_epoch(monkeypatch):
-    cfg = load_config(["model=lewm_bn", "train=lewm_v2"])
+    cfg = load_config(["train=lewm_v2"])
     callback = _build_callbacks(cfg, run_dir=Path("run"))[1]
     checked = []
     monkeypatch.setattr(

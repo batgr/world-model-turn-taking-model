@@ -22,14 +22,17 @@ demonstration is a later stage and is separate from deployment on a robot.
 
 ## V2 audio-only pilot (this branch)
 
-Select `model=lewm_bn train=lewm_v2` for the coupled 30-step context and
-rollout window, 10-step horizon and transition-focused checkpoint score.
+Select `train=lewm_v2` for the coupled 30-step context and rollout window,
+10-step horizon and rollout-MSE checkpoint selection. The default model
+(`model=lewm`) uses a RoPE predictor and causal BatchNorm in both projectors;
+`lewm_ln`, `lewm_standard_bn`, `lewm_positional_cbn` and `lewm_learned_pos`
+change one component each.
 Controlled V2 ablations vary one factor at a time (SIGReg or projector
 normalization); see the [research program](docs/research_program.md) for the
 current experiment matrix, hypotheses and pending decision gates.
 
 ```bash
-uv run turn-wm train model=lewm_bn train=lewm_v2 \
+uv run turn-wm train train=lewm_v2 \
   data.dataset=full data.mimi_cache.root=/path/to/mimi-features
 ```
 

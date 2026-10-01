@@ -11,6 +11,5 @@ defaults:
 
 projector:
   norm_fn:
-    _target_: turn_wm.models.lewm.mlp.CausalBatchNorm1d
-    _partial_: true
+    kind: causal_batch_norm
     num_positions: 40

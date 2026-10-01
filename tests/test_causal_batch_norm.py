@@ -159,7 +159,6 @@ def test_training_projectors_preserve_prefix_and_receive_gradients():
     torch.manual_seed(19)
     cfg = load_config(
         [
-            "model=lewm_bn",
             "data.observation_source=mimi_cache",
             "data.context_steps=4",
             "data.future_steps=3",

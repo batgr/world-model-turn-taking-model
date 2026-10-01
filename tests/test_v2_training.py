@@ -12,7 +12,6 @@ from turn_wm.training.train import _build_callbacks
 def test_v2_fit_reaches_a_full_h10_epoch_and_scores_transitions(tmp_path):
     cfg = load_config(
         [
-            "model=lewm_bn",
             "train=lewm_v2",
             "embed_dim=32",
             "data.context_steps=4",

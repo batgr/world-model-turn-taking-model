@@ -5,10 +5,10 @@ defaults:
 
 projector:
   norm_fn:
-    _target_: hydra.utils.get_class
-    path: torch.nn.LayerNorm
+    kind: layer_norm
+    num_positions: null
 
 pred_proj:
   norm_fn:
-    _target_: hydra.utils.get_class
-    path: torch.nn.LayerNorm
+    kind: layer_norm
+    num_positions: null

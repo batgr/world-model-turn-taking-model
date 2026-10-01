@@ -1,7 +1,7 @@
 import re
 
 import pytest
-from hydra.utils import get_class
+from hydra.utils import get_object
 from omegaconf import DictConfig, OmegaConf
 from torch import nn
 
@@ -62,7 +62,7 @@ def test_shared_sizes_are_interpolated_into_the_model():
     assert cfg.model.pred_proj.input_dim == cfg.model.pred_proj.output_dim == 256
 
 
-def test_every_target_resolves_to_a_class():
+def test_every_target_resolves_to_a_callable():
     cfg = OmegaConf.to_container(load_config(), resolve=True)
 
     found = targets(cfg)
@@ -70,7 +70,7 @@ def test_every_target_resolves_to_a_class():
     assert len(found) == 8
 
     for path, target in found:
-        assert isinstance(get_class(target), type), path
+        assert callable(get_object(target)), path
 
 
 def test_overrides_apply():

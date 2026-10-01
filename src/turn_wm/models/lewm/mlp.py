@@ -85,6 +85,34 @@ class CausalBatchNorm1d(nn.Module):
         return (normalized * self.weight + self.bias).to(dtype=x.dtype)
 
 
+def make_norm(
+    num_features: int, kind: str, num_positions: int | None = None
+) -> nn.Module:
+    """The normalization of an MLP's hidden layer, chosen by name in a config.
+
+    `kind` is "causal_batch_norm", "batch_norm" or "layer_norm";
+    `num_positions` (per-position running statistics) only applies to the
+    causal BatchNorm. Configs pass this as a partial (`norm_fn`), so every
+    projector declares the same keys and a variant only changes their values.
+    """
+
+    if kind == "causal_batch_norm":
+        return CausalBatchNorm1d(num_features, num_positions=num_positions)
+
+    if num_positions is not None:
+        raise ValueError(
+            f"num_positions only applies to causal_batch_norm, not {kind!r}"
+        )
+
+    if kind == "batch_norm":
+        return nn.BatchNorm1d(num_features)
+
+    if kind == "layer_norm":
+        return nn.LayerNorm(num_features)
+
+    raise ValueError(f"Unknown normalization {kind!r}")
+
+
 class MLP(nn.Module):
     """Simple MLP with optional normalization and activation"""
 
