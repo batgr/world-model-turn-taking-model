@@ -56,25 +56,6 @@ class LeJEPAOutput:
     context_steps: int
 
 
-def lejepa_losses(
-    model: JEPA,
-    sigreg: nn.Module,
-    batch: Trajectories,
-    cfg: DictConfig,
-    rollout_horizons: Sequence[int] | None = None,
-) -> dict[str, torch.Tensor]:
-    """Teacher-forcing, rollout and SIGReg losses for one batch.
-
-    `rollout_horizons` are the active horizons (the training curriculum);
-    by default every `prediction.rollout_horizons`. The rollout only runs up
-    to the largest active horizon.
-    """
-
-    return lejepa_forward(
-        model, sigreg, batch, cfg, rollout_horizons=rollout_horizons
-    ).losses
-
-
 def lejepa_forward(
     model: JEPA,
     sigreg: nn.Module,
@@ -82,7 +63,12 @@ def lejepa_forward(
     cfg: DictConfig,
     rollout_horizons: Sequence[int] | None = None,
 ) -> LeJEPAOutput:
-    """`lejepa_losses`, also returning its latents and predictions."""
+    """Teacher-forcing, rollout and SIGReg losses of one batch, with their tensors.
+
+    `rollout_horizons` are the active horizons (the training curriculum);
+    by default every `prediction.rollout_horizons`. The rollout only runs up
+    to the largest active horizon.
+    """
 
     rollout_context_size = cfg.prediction.rollout_context_size
     rollout_horizons = sorted(

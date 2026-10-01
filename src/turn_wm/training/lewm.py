@@ -9,7 +9,6 @@ and the validation metrics.
 from __future__ import annotations
 
 import math
-from collections.abc import Sequence
 from typing import Any
 
 import lightning as L
@@ -22,7 +21,7 @@ from turn_wm.models.lewm.jepa import JEPA
 from turn_wm.models.lewm.sigreg import SIGReg
 from turn_wm.training.config import rollout_horizons_for_progress, validate_config
 from turn_wm.training.metrics import ValidationMetrics
-from turn_wm.training.objective import lejepa_forward, lejepa_losses
+from turn_wm.training.objective import lejepa_forward
 from turn_wm.training.scheduler import warmup_cosine_scheduler
 from turn_wm.training.trajectories import trajectories
 
@@ -54,7 +53,16 @@ class LeWMModule(L.LightningModule):
             on_epoch=False,
         )
 
-        return self._step(batch, "train", rollout_horizons=horizons)["loss"]
+        losses = lejepa_forward(
+            self.model,
+            self.sigreg,
+            trajectories(batch),
+            self.cfg,
+            rollout_horizons=horizons,
+        ).losses
+        self._log_losses(losses, "train", batch)
+
+        return losses["loss"]
 
     def on_validation_epoch_start(self) -> None:
         self._validation_metrics = self._new_validation_metrics()
@@ -111,7 +119,7 @@ class LeWMModule(L.LightningModule):
         )
 
     def _training_progress(self) -> float:
-        """Progress over the run (V1) or first epoch (V2), in [0, 1]."""
+        """Progress over the first epoch (V2) or the whole run (V1), in [0, 1]."""
 
         if self.cfg.prediction.curriculum.get("progress_basis", "run") == "first_epoch":
             batches = self.trainer.num_training_batches
@@ -119,16 +127,18 @@ class LeWMModule(L.LightningModule):
                 raise ValueError(
                     "First-epoch curriculum requires a finite train loader"
                 )
-            total_steps = math.ceil(batches / self.trainer.accumulate_grad_batches)
+            total = math.ceil(batches / self.trainer.accumulate_grad_batches)
+            # The first-epoch curriculum completes at the end of epoch one.
+            done = total
         else:
-            total_steps = self._total_optimizer_steps()
+            total = self._total_optimizer_steps()
+            # The run curriculum completes at the last optimizer step.
+            done = total - 1
 
-        if total_steps <= 1:
+        if total <= 1:
             return 1.0
 
-        if self.cfg.prediction.curriculum.get("progress_basis", "run") == "first_epoch":
-            return min(1.0, max(0.0, self.global_step / total_steps))
-        return min(1.0, max(0.0, self.global_step / (total_steps - 1)))
+        return min(1.0, max(0.0, self.global_step / done))
 
     def _total_optimizer_steps(self) -> int:
         # Optimizer steps, accounting for gradient accumulation, batch limits,
@@ -184,23 +194,6 @@ class LeWMModule(L.LightningModule):
                 "frequency": 1,
             },
         }
-
-    def _step(
-        self,
-        batch: dict[str, Any],
-        stage: str,
-        rollout_horizons: Sequence[int] | None = None,
-    ) -> dict[str, torch.Tensor]:
-        output = lejepa_losses(
-            self.model,
-            self.sigreg,
-            trajectories(batch),
-            self.cfg,
-            rollout_horizons=rollout_horizons,
-        )
-        self._log_losses(output, stage, batch)
-
-        return output
 
     def _log_losses(
         self, output: dict[str, torch.Tensor], stage: str, batch: dict[str, Any]

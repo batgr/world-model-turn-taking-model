@@ -24,7 +24,7 @@ from turn_wm.data.source import EGOCOM, FULL, load_data
 from turn_wm.models.encoders import mimi as mimi_module
 from turn_wm.training.config import training_window
 from turn_wm.training.lewm import LeWMModule
-from turn_wm.training.objective import lejepa_losses
+from turn_wm.training.objective import lejepa_forward
 from turn_wm.training.observations import validate_mimi_cache
 from turn_wm.training.trajectories import trajectories
 
@@ -110,7 +110,9 @@ def test_real_cache_trains_without_mimi_or_media(store, monkeypatch):
 
     module = LeWMModule(cfg)
     batch = collate_turn_taking(samples)
-    output = lejepa_losses(module.model, module.sigreg, trajectories(batch), cfg)
+    output = lejepa_forward(
+        module.model, module.sigreg, trajectories(batch), cfg
+    ).losses
     output["loss"].backward()
 
     assert torch.isfinite(output["loss"])
