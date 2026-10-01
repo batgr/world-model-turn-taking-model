@@ -466,10 +466,11 @@ def _add_extract_action_ablation(commands: argparse._SubParsersAction) -> None:
         "extract-action-ablation",
         help="Extract a run's validation rollout under action ablations.",
         description=(
-            "Run the validation rollout of a training run with the observed, "
-            "NO_EVENT and shuffled future actions, and the one-step prediction "
-            "with the anchor's action forced to NO_EVENT, ONSET and OFFSET, on a "
-            "seeded sample of the validation split. The test split is never read."
+            "Run the validation rollout of a training run with observed, "
+            "state-preserving and shuffled future ego actions, and measure the "
+            "one-step effect of forcing the anchor action. Only state-valid "
+            "WAIT/START or HOLD/STOP comparisons are reported. The test split "
+            "is never read."
         ),
     )
     _add_run_options(
@@ -515,9 +516,10 @@ def _add_analyze_action_ablation(commands: argparse._SubParsersAction) -> None:
         help="Analyze an extracted action ablation.",
         description=(
             "Rollout skill, displacement alignment and movement ratio under "
-            "observed, NO_EVENT and shuffled future actions, with paired "
-            "differences, and the counterfactual one-step action effect per focal "
-            "state. Reads the snapshot only."
+            "observed, state-preserving and shuffled future ego actions, with "
+            "paired differences, and the forced one-step action effect per focal "
+            "state (valid WAIT/START or HOLD/STOP pairs only). Reads the snapshot "
+            "only."
         ),
     )
     ablation_analysis.add_argument(
