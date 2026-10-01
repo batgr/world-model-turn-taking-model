@@ -1,0 +1,14 @@
+# Projector-normalization ablation: use LayerNorm in both projectors under the current predictor.
+defaults:
+  - lewm
+  - _self_
+
+projector:
+  norm_fn:
+    kind: layer_norm
+    num_positions: null
+
+pred_proj:
+  norm_fn:
+    kind: layer_norm
+    num_positions: null

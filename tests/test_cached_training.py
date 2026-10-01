@@ -18,13 +18,10 @@ from turn_wm.data.mimi_cache import MimiFeatureStore
 from turn_wm.models.build import build_model
 from turn_wm.models.encoders import mimi as mimi_module
 from turn_wm.models.lewm.sigreg import SIGReg
-from turn_wm.training.lewm import (
-    LeWMModule,
-    Trajectories,
-    lejepa_losses,
-    training_window,
-    trajectories,
-)
+from turn_wm.training.config import training_window
+from turn_wm.training.lewm import LeWMModule
+from turn_wm.training.objective import lejepa_forward
+from turn_wm.training.trajectories import Trajectories, trajectories
 
 FIRST_INDEX = 5
 GRID_LENGTH = 80
@@ -143,7 +140,8 @@ def test_project_features_is_exactly_the_projector():
     model = raw_model()
     features = torch.randn(2, 7, 512)
 
-    expected = model.projector(features.reshape(14, 512)).reshape(2, 7, -1)
+    # The default projector normalizes causally over (B, T, D) sequences.
+    expected = model.projector(features)
 
     torch.testing.assert_close(
         model.project_features(features), expected, rtol=0, atol=0
@@ -188,9 +186,9 @@ def test_raw_and_cached_trajectories_give_identical_losses():
     )
 
     torch.manual_seed(0)
-    raw_losses = lejepa_losses(model, SIGReg(), raw, cfg)
+    raw_losses = lejepa_forward(model, SIGReg(), raw, cfg).losses
     torch.manual_seed(0)
-    cached_losses = lejepa_losses(model, SIGReg(), cached, cfg)
+    cached_losses = lejepa_forward(model, SIGReg(), cached, cfg).losses
 
     for name, value in raw_losses.items():
         torch.testing.assert_close(cached_losses[name], value, rtol=0, atol=0)
@@ -206,11 +204,6 @@ def test_float16_cached_features_are_projected():
         rtol=0,
         atol=0,
     )
-
-
-def test_features_must_be_batched_sequences():
-    with pytest.raises(ValueError, match=r"shape \(B, T, D\)"):
-        raw_model().project_features(torch.randn(5, 512))
 
 
 def test_model_without_encoder_refuses_raw_observations(no_mimi):
@@ -288,7 +281,9 @@ def test_cached_losses_backpropagate_to_projector_and_predictor(no_mimi, cache_r
     module = LeWMModule(cfg)
     batch = next(iter(cached_loader(cfg, cache_root)))
 
-    output = lejepa_losses(module.model, module.sigreg, trajectories(batch), cfg)
+    output = lejepa_forward(
+        module.model, module.sigreg, trajectories(batch), cfg
+    ).losses
     output["loss"].backward()
 
     assert torch.isfinite(output["loss"])
@@ -339,6 +334,8 @@ def test_cached_losses_run_under_cpu_bf16_autocast(no_mimi, cache_root):
     assert batch["context_features"].dtype == torch.float16
 
     with torch.autocast("cpu", dtype=torch.bfloat16):
-        output = lejepa_losses(module.model, module.sigreg, trajectories(batch), cfg)
+        output = lejepa_forward(
+            module.model, module.sigreg, trajectories(batch), cfg
+        ).losses
 
     assert torch.isfinite(output["loss"].float())

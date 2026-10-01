@@ -665,7 +665,7 @@ def test_show_changes_no_result(snapshot_dir, sources, capsys, monkeypatch):
     show_labels(output)
 
     printed = capsys.readouterr().out
-    assert "Coverage:" in printed
+    assert "# Label-conditioned representation analysis" in printed
     assert "instantaneous.ego_speaking" in printed
     assert _hashes(output) == before
 

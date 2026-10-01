@@ -25,7 +25,6 @@ from turn_wm.data.media import (
 )
 from turn_wm.data.mimi_cache import MimiFeatures
 from turn_wm.data.reader import MediaReader, MediaWindow
-from turn_wm.data.window import build_window, validate_against_anchor
 
 STATE_TO_ID = {
     "SILENT": 0,
@@ -36,11 +35,17 @@ STATE_TO_ID = {
 PAD_STATE_ID = 3
 
 
+# Controllable ego actions used by the world model. The published action grid
+# still stores NO_EVENT / ONSET / OFFSET events; they are converted here using
+# focal_state_before so the model conditions on an explicit ego action.
 ACTION_TO_ID = {
-    "NO_EVENT": 0,
-    "ONSET": 1,
-    "OFFSET": 2,
+    "WAIT": 0,
+    "START": 1,
+    "STOP": 2,
+    "HOLD": 3,
 }
+
+TRANSITION_ACTIONS = ("START", "STOP")
 
 MASKED_ACTION_ID = len(ACTION_TO_ID)
 PAD_ACTION_ID = MASKED_ACTION_ID + 1
@@ -172,26 +177,11 @@ class TurnTakingDataset(Dataset):
 
         context_steps = self._context_steps(anchor)
 
-        validate_against_anchor(
-            context_steps=context_steps,
-            future_steps=self.window.future_steps,
-            max_context_steps=int(anchor["max_context_steps"]),
-            available_future_steps=int(anchor["future_steps"]),
-        )
-
         anchor_idx = int(anchor["anchor_idx"])
         anchor_row = int(anchor["anchor_row"])
 
-        # Validates the logical window bounds; row offsets are derived below.
-        build_window(
-            anchor_idx=anchor_idx,
-            context_steps=context_steps,
-            future_steps=self.window.future_steps,
-        )
-
-        # `anchor_row` is the physical position in action_grid.
-        # WindowBounds expresses the same geometry in logical timestep space,
-        # so offsets relative to the anchor map directly to table rows.
+        # `anchor_row` is the physical position in action_grid and the anchor
+        # is the final context step, so row offsets are the temporal window.
         context_start_row = anchor_row - context_steps + 1
         future_end_row = anchor_row + self.window.future_steps
 
@@ -219,7 +209,11 @@ class TurnTakingDataset(Dataset):
                 dtype=torch.long,
             ),
             "context_action": torch.tensor(
-                self._encode_actions(actions[context]),
+                self._encode_actions(
+                    actions[context],
+                    states[context],
+                    valid[context],
+                ),
                 dtype=torch.long,
             ),
             "context_valid": torch.tensor(
@@ -231,7 +225,11 @@ class TurnTakingDataset(Dataset):
                 dtype=torch.long,
             ),
             "future_action": torch.tensor(
-                self._encode_actions(actions[future]),
+                self._encode_actions(
+                    actions[future],
+                    states[future],
+                    valid[future],
+                ),
                 dtype=torch.long,
             ),
             "future_valid": torch.tensor(
@@ -383,13 +381,6 @@ class TurnTakingDataset(Dataset):
             self.window.max_context_steps,
         )
 
-        if available < self.window.min_context_steps:
-            raise ValueError(
-                f"Anchor {anchor['sample_id']} supports only "
-                f"{available} context steps, but the experiment requires "
-                f"at least {self.window.min_context_steps}"
-            )
-
         if not self.training:
             return available
 
@@ -414,11 +405,55 @@ class TurnTakingDataset(Dataset):
         return encoded
 
     @staticmethod
-    def _encode_actions(values: list[str | None]) -> list[int]:
-        return [
-            MASKED_ACTION_ID if value is None else ACTION_TO_ID[value]
-            for value in values
-        ]
+    def _encode_actions(
+        values: list[str | None],
+        states: list[str],
+        valid: list[bool],
+    ) -> list[int]:
+        """Convert action-grid events to controllable ego actions.
+
+        The source grid describes vocal events. The model uses an explicit
+        state-conditioned action space:
+
+        SILENT   + NO_EVENT -> WAIT
+        SILENT   + ONSET    -> START
+        SPEAKING + NO_EVENT -> HOLD
+        SPEAKING + OFFSET   -> STOP
+
+        Invalid/masked rows and UNKNOWN focal states remain MASKED rather than
+        being assigned a controllable action.
+        """
+
+        if not (len(values) == len(states) == len(valid)):
+            raise ValueError("actions, focal states and validity must align")
+
+        encoded = []
+
+        for value, state, is_valid in zip(values, states, valid, strict=True):
+            if not is_valid or value is None or state == "UNKNOWN":
+                encoded.append(MASKED_ACTION_ID)
+                continue
+
+            if value == "NO_EVENT":
+                if state == "SILENT":
+                    action = "WAIT"
+                elif state == "SPEAKING":
+                    action = "HOLD"
+                else:
+                    raise ValueError(f"Unknown focal state: {state!r}")
+            elif value == "ONSET":
+                # The data-layer action-grid invariant guarantees SILENT before
+                # ONSET; do not duplicate that contract in the model layer.
+                action = "START"
+            elif value == "OFFSET":
+                # Likewise, OFFSET is guaranteed to originate from SPEAKING.
+                action = "STOP"
+            else:
+                raise ValueError(f"Unknown action-grid event: {value!r}")
+
+            encoded.append(ACTION_TO_ID[action])
+
+        return encoded
 
     @staticmethod
     def _validate_slice(

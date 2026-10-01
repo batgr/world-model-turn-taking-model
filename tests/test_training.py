@@ -14,15 +14,15 @@ from turn_wm.config import load_config
 from turn_wm.data.dataset import MASKED_ACTION_ID, PAD_ACTION_ID
 from turn_wm.data.reader import DecodedAudio, MediaWindow
 from turn_wm.models.lewm.sigreg import SIGReg
-from turn_wm.training import lewm as training_module
-from turn_wm.training.lewm import (
-    LeWMModule,
-    lejepa_losses,
+from turn_wm.training import objective as training_module
+from turn_wm.training.config import (
     rollout_horizons_for_progress,
     training_window,
-    trajectories,
     validate_config,
 )
+from turn_wm.training.lewm import LeWMModule
+from turn_wm.training.objective import lejepa_forward
+from turn_wm.training.trajectories import trajectories
 
 SAMPLE_RATE = 1_000
 SAMPLES_PER_STEP = SAMPLE_RATE // 10
@@ -66,6 +66,27 @@ def small_config(**overrides):
         OmegaConf.update(cfg, key, value)
 
     return cfg
+
+
+def test_v2_curriculum_follows_first_epoch_not_eight_epoch_cosine():
+    cfg = load_config(["train=lewm_v2"])
+    module = LeWMModule(cfg)
+    module._trainer = SimpleNamespace(
+        global_step=0, num_training_batches=1000, accumulate_grad_batches=1
+    )
+
+    for step, expected in (
+        (0, [1]),
+        (199, [1]),
+        (200, [1, 5]),
+        (499, [1, 5]),
+        (500, [1, 5, 10]),
+        (1500, [1, 5, 10]),
+    ):
+        module._trainer.global_step = step
+        assert (
+            rollout_horizons_for_progress(cfg, module._training_progress()) == expected
+        )
 
 
 def make_model(cfg, *, encoder_dim=512, **kwargs):
@@ -154,7 +175,7 @@ def test_teacher_forcing_is_dense_over_the_whole_context():
     calls = []
     predict_spy(model, calls)
 
-    lejepa_losses(model, SIGReg(), trajectories(make_batch()), cfg)
+    lejepa_forward(model, SIGReg(), trajectories(make_batch()), cfg)
 
     teacher_forcing = calls[0]["emb"]
 
@@ -175,7 +196,7 @@ def test_teacher_forcing_targets_are_the_next_four_steps(monkeypatch):
 
     monkeypatch.setattr(training_module.F, "mse_loss", spy)
 
-    lejepa_losses(model, SIGReg(), trajectories(make_batch()), cfg)
+    lejepa_forward(model, SIGReg(), trajectories(make_batch()), cfg)
 
     # First MSE is the teacher forcing: z1..z4, the last one being zC.
     assert targets[0][0, :, 0].tolist() == [1.0, 2.0, 3.0, 4.0]
@@ -187,7 +208,7 @@ def test_rollout_never_passes_more_than_rollout_context_size():
     calls = []
     predict_spy(model, calls)
 
-    lejepa_losses(model, SIGReg(), trajectories(make_batch()), cfg)
+    lejepa_forward(model, SIGReg(), trajectories(make_batch()), cfg)
 
     # Teacher forcing, then one call per rollout step up to horizon 3.
     assert [call["emb"].shape[1] for call in calls] == [4, 2, 2, 2]
@@ -206,7 +227,7 @@ def test_rollout_never_reinjects_ground_truth_future_latents():
 
     model.predict = predict
 
-    lejepa_losses(model, SIGReg(), trajectories(make_batch()), cfg)
+    lejepa_forward(model, SIGReg(), trajectories(make_batch()), cfg)
 
     for rollout_input in calls[1:]:
         values = rollout_input[0, :, 0]
@@ -229,13 +250,15 @@ def test_rollout_uses_the_real_future_actions():
     batch["context_action"] = torch.tensor([[0, 0, 0, 1]] * 2)
     batch["future_action"] = torch.tensor([[2, 0, 1]] * 2)
 
-    lejepa_losses(model, SIGReg(), trajectories(batch), cfg)
+    lejepa_forward(model, SIGReg(), trajectories(batch), cfg)
 
     embed = model.encode_actions
     expected = embed(torch.tensor([[0, 1], [1, 2], [2, 0]]))
 
     for call, actions in zip(calls[1:], expected, strict=True):
-        assert torch.allclose(call["act"][0], actions)
+        # The same MLP uses different GEMM shapes (batch 2 vs 3); small CPU
+        # rounding differences do not change the selected action tokens.
+        assert torch.allclose(call["act"][0], actions, atol=2e-5, rtol=1e-5)
 
 
 def test_default_config_no_longer_overflows_positions():
@@ -243,9 +266,9 @@ def test_default_config_no_longer_overflows_positions():
     model = make_model(cfg)
     context, future = cfg.data.context_steps, cfg.data.future_steps
 
-    output = lejepa_losses(
+    output = lejepa_forward(
         model, SIGReg(), trajectories(make_batch(context, future)), cfg
-    )
+    ).losses
 
     assert torch.isfinite(output["loss"])
 
@@ -258,7 +281,7 @@ def test_targets_are_one_step_ahead():
     model = make_model(cfg, projector=None)
     model.predict = lambda emb, act: emb + 1
 
-    output = lejepa_losses(model, SIGReg(), trajectories(make_batch()), cfg)
+    output = lejepa_forward(model, SIGReg(), trajectories(make_batch()), cfg).losses
 
     assert output["tf_loss"].item() == 0.0
     assert output["rollout_1_loss"].item() == 0.0
@@ -269,7 +292,7 @@ def test_losses_are_finite_and_train_only_the_predictor_side():
     cfg = small_config()
     model = make_model(cfg)
 
-    output = lejepa_losses(model, SIGReg(), trajectories(make_batch()), cfg)
+    output = lejepa_forward(model, SIGReg(), trajectories(make_batch()), cfg).losses
     output["loss"].backward()
 
     assert set(output) == {
@@ -281,7 +304,9 @@ def test_losses_are_finite_and_train_only_the_predictor_side():
         "rollout_3_loss",
     }
     assert all(torch.isfinite(value) for value in output.values())
-    assert model.predictor.pos_embedding.grad is not None
+    assert model.predictor.pos_embedding is None
+    qkv_grad = model.predictor.transformer.layers[0].attn.to_qkv.weight.grad
+    assert qkv_grad is not None and torch.isfinite(qkv_grad).all()
     assert model.encoder.frozen.grad is None
 
 
@@ -289,7 +314,7 @@ def test_encoder_receives_whole_trajectories():
     cfg = small_config()
     model = make_model(cfg)
 
-    lejepa_losses(model, SIGReg(), trajectories(make_batch()), cfg)
+    lejepa_forward(model, SIGReg(), trajectories(make_batch()), cfg)
 
     assert model.encoder.calls == [
         {"lengths": [700, 700], "sample_rate": [SAMPLE_RATE, SAMPLE_RATE]}
@@ -302,7 +327,13 @@ def test_encoder_receives_whole_trajectories():
         ({"data.context_steps": 0}, "context_steps must be >= 1"),
         ({"prediction.rollout_context_size": 0}, "rollout_context_size must lie"),
         ({"prediction.rollout_context_size": 5}, "rollout_context_size must lie"),
-        ({"model.predictor.num_frames": 3}, "must cover the teacher-forced"),
+        (
+            {
+                "model.predictor.position_encoding": "learned",
+                "model.predictor.num_frames": 3,
+            },
+            "must cover the teacher-forced",
+        ),
         ({"prediction.rollout_horizons": [0, 1]}, "must be positive"),
         ({"prediction.rollout_horizons": []}, "must be positive"),
         ({"prediction.rollout_horizons": [1, 4]}, "must cover every rollout"),
@@ -364,7 +395,8 @@ def test_optimizer_skips_frozen_parameters():
     assert isinstance(optimizer, torch.optim.AdamW)
     assert optimizer.defaults["weight_decay"] == cfg.optimizer.weight_decay
     assert id(module.model.encoder.frozen) not in optimized
-    assert id(module.model.predictor.pos_embedding) in optimized
+    qkv = module.model.predictor.transformer.layers[0].attn.to_qkv.weight
+    assert id(qkv) in optimized
 
 
 def test_lightning_runs_a_training_and_validation_step(tmp_path):
@@ -400,12 +432,14 @@ def test_module_leaves_seeding_to_the_caller():
     # loading Mimi.
     cfg = small_config(**{"model.encoder._target_": "torch.nn.Identity"})
 
-    torch.manual_seed(0)
-    first = LeWMModule(cfg).model.predictor.pos_embedding
-    torch.manual_seed(0)
-    second = LeWMModule(cfg).model.predictor.pos_embedding
-    torch.manual_seed(1)
-    other = LeWMModule(cfg).model.predictor.pos_embedding
+    def qkv_weight(seed):
+        torch.manual_seed(seed)
+        module = LeWMModule(cfg)
+        return module.model.predictor.transformer.layers[0].attn.to_qkv.weight.detach()
+
+    first = qkv_weight(0)
+    second = qkv_weight(0)
+    other = qkv_weight(1)
 
     assert torch.equal(first, second)
     assert not torch.equal(first, other)
@@ -521,9 +555,9 @@ def test_rollout_only_runs_to_the_largest_active_horizon(horizons, rollout_calls
     calls = []
     predict_spy(model, calls)
 
-    output = lejepa_losses(
+    output = lejepa_forward(
         model, SIGReg(), default_batch(cfg), cfg, rollout_horizons=horizons
-    )
+    ).losses
 
     # One teacher-forcing call, then one call per rolled-out step.
     assert len(calls) == 1 + rollout_calls
@@ -549,9 +583,9 @@ def test_rollout_loss_is_the_weighted_mean_of_active_horizons(monkeypatch):
     cfg = load_config()
     fixed_mse(monkeypatch, [0.0, 1.0, 3.0])
 
-    output = lejepa_losses(
+    output = lejepa_forward(
         make_model(cfg), SIGReg(), default_batch(cfg), cfg, rollout_horizons=[1, 5]
-    )
+    ).losses
 
     assert output["rollout_loss"].item() == pytest.approx(2.0)
 
@@ -560,9 +594,9 @@ def test_rollout_mean_uses_the_horizon_weights(monkeypatch):
     cfg = load_config(["loss.rollout.horizon_weights.5=3.0"])
     fixed_mse(monkeypatch, [0.0, 1.0, 3.0])
 
-    output = lejepa_losses(
+    output = lejepa_forward(
         make_model(cfg), SIGReg(), default_batch(cfg), cfg, rollout_horizons=[1, 5]
-    )
+    ).losses
 
     # (1 * 1 + 3 * 3) / (1 + 3)
     assert output["rollout_loss"].item() == pytest.approx(2.5)
@@ -575,13 +609,13 @@ def test_rollout_magnitude_does_not_grow_with_more_horizons(monkeypatch):
 
     for horizons in ([1], [1, 5], [1, 5, 10]):
         fixed_mse(monkeypatch, [0.0] + [2.0] * len(horizons))
-        output = lejepa_losses(
+        output = lejepa_forward(
             make_model(cfg),
             SIGReg(),
             default_batch(cfg),
             cfg,
             rollout_horizons=horizons,
-        )
+        ).losses
         results.append(output["rollout_loss"].item())
 
     assert results == pytest.approx([2.0, 2.0, 2.0])
@@ -590,7 +624,7 @@ def test_rollout_magnitude_does_not_grow_with_more_horizons(monkeypatch):
 def test_default_losses_evaluate_every_configured_horizon():
     cfg = load_config()
 
-    output = lejepa_losses(make_model(cfg), SIGReg(), default_batch(cfg), cfg)
+    output = lejepa_forward(make_model(cfg), SIGReg(), default_batch(cfg), cfg).losses
 
     assert {"rollout_1_loss", "rollout_5_loss", "rollout_10_loss"} <= set(output)
 
@@ -765,23 +799,7 @@ def test_module_schedule_uses_estimated_stepping_batches_not_epochs():
 
 VALIDATION_METRICS = [
     "tf_mse",
-    "tf_persistence_mse",
-    "tf_skill",
-    "skill_mean",
-    "latent_std",
-    "latent_norm",
-    "prediction_norm",
     "effective_rank",
-    *(
-        f"{name}_{h}"
-        for h in (1, 5, 10)
-        for name in (
-            "skill",
-            "cosine",
-            "target_delta_norm",
-            "prediction_delta_norm",
-        )
-    ),
     *(f"rollout_{h}_mse" for h in (1, 5, 10)),
     *(f"persistence_{h}_mse" for h in (1, 5, 10)),
     *(
@@ -789,11 +807,8 @@ VALIDATION_METRICS = [
         for corpus in ("egocom", "ego4d")
         for name in (
             "tf_mse",
-            "tf_persistence_mse",
-            "tf_skill",
             *(f"rollout_{h}_mse" for h in (1, 5, 10)),
             *(f"persistence_{h}_mse" for h in (1, 5, 10)),
-            *(f"skill_{h}" for h in (1, 5, 10)),
         )
     ),
 ]
@@ -810,8 +825,13 @@ def test_validation_metrics_cover_every_horizon_during_the_first_stage():
     for h in (1, 3):
         for name in ("rollout", "persistence"):
             assert f"val/{name}_{h}_mse" in logged
-        for name in ("skill", "cosine", "target_delta_norm", "prediction_delta_norm"):
-            assert f"val/{name}_{h}" in logged
+
+    assert "val/effective_rank" in logged
+    assert not any(
+        token in name
+        for name in logged
+        for token in ("skill", "cosine", "latent_norm", "prediction_norm")
+    )
 
 
 def test_training_steps_do_not_compute_validation_metrics():
@@ -820,7 +840,7 @@ def test_training_steps_do_not_compute_validation_metrics():
 
     module.training_step(make_batch(), 0)
 
-    assert not [name for name in logged if "skill" in name or "persistence" in name]
+    assert not [name for name in logged if "persistence" in name]
     assert getattr(module, "_validation_metrics", None) is None
 
 

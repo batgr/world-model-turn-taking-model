@@ -60,18 +60,10 @@ class JEPA(nn.Module):
             **encoder_kwargs,
         )
 
-        if features.ndim != 3:
-            raise ValueError("encoder must return (B, T, D)")
-
         return features
 
     def project_features(self, features: torch.Tensor) -> torch.Tensor:
         """Project encoder features `(B, T, D)` to latents `(B, T, embed_dim)`."""
-
-        if features.ndim != 3:
-            raise ValueError(
-                f"features must have shape (B, T, D), got {tuple(features.shape)}"
-            )
 
         # Cached features are stored in float16; match the projector's
         # parameters (autocast then applies the training precision).
@@ -79,6 +71,9 @@ class JEPA(nn.Module):
 
         if parameter is not None and features.dtype != parameter.dtype:
             features = features.to(parameter.dtype)
+
+        if getattr(self.projector, "expects_sequence", False):
+            return self.projector(features)
 
         b = features.size(0)
 
@@ -132,16 +127,13 @@ class JEPA(nn.Module):
                 (B, T, D)
         """
 
-        if emb.shape[:2] != act_emb.shape[:2]:
-            raise ValueError(
-                "embedding and action timelines must match: "
-                f"{emb.shape[:2]} != {act_emb.shape[:2]}"
-            )
-
         preds = self.predictor(
             emb,
             act_emb,
         )
+
+        if getattr(self.pred_proj, "expects_sequence", False):
+            return self.pred_proj(preds)
 
         batch_size = preds.size(0)
 

@@ -1,0 +1,46 @@
+# @package _global_
+# Audio-only V2. This recipe changes C and W together and keeps H=10.
+defaults:
+  - lewm
+  - _self_
+
+data:
+  # First controlled V2 study: train and validate on EgoCom only.
+  # Larger-corpus training is a separate later experiment.
+  dataset: egocom
+  context_steps: 30
+
+prediction:
+  rollout_context_size: 30
+  curriculum:
+    # 20% and 50% of examples seen in epoch one; H=10 stays active thereafter.
+    progress_basis: first_epoch
+
+loader:
+  # Initial physical batch to check on the 80 GB Colab GPU before training.
+  batch_size: 512
+  drop_last: true
+
+trainer:
+  # Finite duration for cosine; the sample count determines steps per epoch.
+  max_epochs: 8
+  max_steps: -1
+  val_check_interval: 1.0
+
+evaluation:
+  transition_metrics: true
+
+checkpoint:
+  # Select the world model on its longest-horizon autoregressive dynamics.
+  monitor: val/rollout_10_mse
+  mode: min
+
+early_stopping:
+  enabled: true
+  monitor: val/rollout_10_mse
+  mode: min
+  # Any improvement counts; revisit noise tolerance after the pilot.
+  min_delta: 0.0
+  patience: 2
+  # H=10 activates halfway through epoch one, then trains for all of epoch two.
+  minimum_completed_epochs: 2

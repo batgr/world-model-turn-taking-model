@@ -6,7 +6,7 @@ an action-conditioned causal predictor learns how the conversational state
 evolves over time. Its rollouts are designed to serve as the predictive model
 for a downstream planner deciding when the robot should speak, wait, or yield
 the floor.
-**Explore:** [public EgoCom dataset](https://huggingface.co/datasets/batgre/conversational-dynamics-egocom) · [training design](docs/training.md) · [V2 research program](https://github.com/batgr/world-model-turn-taking-model/blob/v2/audio-only/docs/research_program.md) · [research decisions](https://github.com/batgr/world-model-turn-taking-model/tree/v2/audio-only/docs/decisions)
+**Explore:** [public EgoCom dataset](https://huggingface.co/datasets/batgre/conversational-dynamics-egocom) · [training design](docs/training.md) · [research program](docs/research_program.md) · [research decisions](docs/decisions/README.md)
 
 ## Data
 
@@ -51,7 +51,8 @@ Implementation map:
 - `src/turn_wm/models/lewm/predictor.py` — action-conditioned predictor
 - `src/turn_wm/models/lewm/transformer.py` — causal Transformer backbone
 - `src/turn_wm/models/lewm/sigreg.py` — SIGReg regularizer
-- `src/turn_wm/training/lewm.py` — Lightning module and training objective
+- `src/turn_wm/training/objective.py` — training objective (teacher forcing, rollout, SIGReg)
+- `src/turn_wm/training/lewm.py` — Lightning module
 
 See [docs/training.md](docs/training.md) for architecture and training details.
 
@@ -81,7 +82,11 @@ model = build_model(cfg)
 ```
 
 A new model or recipe is a new file in its group (`configs/train/xxx.yaml`,
-selected with `train=xxx`).
+selected with `train=xxx`). The default model uses a RoPE predictor and causal
+BatchNorm in both projectors; `model=lewm_ln`, `lewm_standard_bn`,
+`lewm_positional_cbn` and `lewm_learned_pos` each change one component.
+`train=lewm_v2` is the current recipe: a 30-step context and rollout window,
+horizons up to 10 steps and checkpoint selection on `val/rollout_10_mse`.
 
 ## Training
 

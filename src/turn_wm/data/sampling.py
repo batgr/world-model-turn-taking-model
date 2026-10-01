@@ -74,7 +74,7 @@ def build_sampler(
     generator.manual_seed(config.seed)
 
     return WeightedRandomSampler(
-        weights=weights,
+        weights=weights.tolist(),
         num_samples=num_samples,
         replacement=config.replacement,
         generator=generator,

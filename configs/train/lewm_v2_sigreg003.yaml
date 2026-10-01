@@ -1,0 +1,9 @@
+# @package _global_
+# V2-A: controlled ablation of SIGReg weight only.
+defaults:
+  - lewm_v2
+  - _self_
+
+loss:
+  sigreg:
+    weight: 0.03

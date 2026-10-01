@@ -1,22 +1,13 @@
-"""
-Validation metrics of the LeWM objective, aggregated over a whole epoch.
+"""Validation metrics for the V2 world model.
 
-Everything is accumulated as sums (float64) and turned into metrics once, at
-the end of the epoch, so results do not depend on the batch size. In
-particular a skill score is the ratio of epoch-level MSEs,
+The primary dynamics result is autoregressive latent rollout MSE at each
+configured horizon. Persistence is reported as a separate baseline. The same
+errors can be stratified by whether the supplied ego-action sequence contains
+a vocal transition.
 
-    skill = 1 - MSE_model / MSE_persistence,
-
-never an average of per-batch skills. Global metrics are computed from all
-elements together, never as an average of per-corpus metrics.
-
-Baselines ("persistence"):
-    teacher forcing   z_hat[t + 1] = z[t]           (the step's own input)
-    rollout, horizon  z_hat[C + h - 1] = z[C - 1]   (last ground-truth
-                                                     context latent)
-
-The metrics reuse the latents and predictions `lejepa_forward` computed for
-the losses: the predictor never runs again.
+Representation health is intentionally limited to effective rank. Task
+readouts, action ablations and planning metrics live in evaluation code rather
+than being mixed into this training-time accumulator.
 """
 
 from __future__ import annotations
@@ -27,94 +18,74 @@ from collections.abc import Sequence
 from dataclasses import dataclass, field
 
 import torch
-import torch.nn.functional as F
+
+from turn_wm.data.dataset import ACTION_TO_ID, TRANSITION_ACTIONS
 
 GLOBAL = ""
-EPS = torch.finfo(torch.float32).eps
 
 
 def skill_score(model_mse: float, persistence_mse: float) -> float:
-    """`1 - model / persistence`, unclipped; eps guards a zero baseline."""
+    """Legacy analysis helper; not part of the V2 training metric surface."""
 
-    return 1.0 - model_mse / max(persistence_mse, EPS)
+    eps = torch.finfo(torch.float32).eps
+    return 1.0 - model_mse / max(persistence_mse, eps)
 
 
 def effective_rank(latents: torch.Tensor) -> float:
-    """exp(entropy) of the normalized singular values of centred `latents` [N, D].
-
-    1 for a rank-1 cloud, up to D for variance spread evenly over D directions.
-    """
+    """Effective rank of centred rows, from normalized singular values."""
 
     if latents.shape[0] < 2:
         return float("nan")
 
     centred = latents.double() - latents.double().mean(dim=0)
-
     return entropy_rank(torch.linalg.svdvals(centred))
 
 
 def entropy_rank(weights: torch.Tensor) -> float:
-    """exp(entropy) of non-negative `weights` normalized to sum to 1.
-
-    Scale-free: `weights` and `c * weights` give the same rank. On singular
-    values it is `effective_rank`; on covariance eigenvalues, a variance-based
-    rank. 0 when every weight is (numerically) zero.
-    """
+    """exp(entropy) of non-negative weights normalized to sum to one."""
 
     weights = weights.double()
     total = weights.sum()
 
-    if total <= EPS:
+    if total <= torch.finfo(torch.float64).eps:
         return 0.0
 
     p = weights / total
     p = p[p > 0]
-
     return float(torch.exp(-(p * p.log()).sum()))
 
 
 @dataclass
-class _ErrorSums:
-    """Squared errors of a model and its persistence baseline on one set."""
-
-    model: float = 0.0
-    persistence: float = 0.0
+class _MSE:
+    squared_error: float = 0.0
     elements: int = 0
 
-    def add(self, prediction, persistence, target) -> None:
-        self.model += float((prediction - target).pow(2).sum())
-        self.persistence += float((persistence - target).pow(2).sum())
+    def add(self, prediction: torch.Tensor, target: torch.Tensor) -> None:
+        self.squared_error += float((prediction - target).pow(2).sum())
         self.elements += target.numel()
 
-    def metrics(self, prefix: str) -> dict[str, float]:
-        if not self.elements:
-            return {}
-
-        model = self.model / self.elements
-        persistence = self.persistence / self.elements
-
-        return {
-            f"{prefix}mse": model,
-            f"{prefix}persistence_mse": persistence,
-            f"{prefix}skill": skill_score(model, persistence),
-        }
+    @property
+    def value(self) -> float:
+        return self.squared_error / self.elements
 
 
 @dataclass
-class _HorizonSums:
-    errors: _ErrorSums = field(default_factory=_ErrorSums)
-    cosine: float = 0.0
-    target_delta_norm: float = 0.0
-    prediction_delta_norm: float = 0.0
-    positions: int = 0
+class _PredictionErrors:
+    model: _MSE = field(default_factory=_MSE)
+    persistence: _MSE = field(default_factory=_MSE)
+
+    def add(
+        self,
+        prediction: torch.Tensor,
+        persistence: torch.Tensor,
+        target: torch.Tensor,
+    ) -> None:
+        self.model.add(prediction, target)
+        self.persistence.add(persistence, target)
 
 
 class _LatentSample:
-    """Uniform random sample of at most `size` rows, deterministic per epoch.
-
-    Every row gets a random priority from a fixed-seed generator and the
-    `size` highest priorities are kept, so only `size` rows are stored.
-    """
+    """Deterministic bounded sample used only for effective-rank estimation."""
 
     def __init__(self, size: int, seed: int = 0) -> None:
         self.size = size
@@ -141,13 +112,19 @@ class _LatentSample:
 
 
 class ValidationMetrics:
-    """Epoch accumulator for the validation metrics; one per validation epoch.
+    """Epoch-level V2 metrics.
 
-    `update` takes one batch: trajectory latents [B, T, D], teacher-forcing
-    predictions [B, C, D], rollout predictions {h: [B, D]}, the context length
-    C and each sample's corpus name. `mask` [B, T] (optional, all valid by
-    default) marks the positions the losses supervise; model and baseline
-    are always measured on the same positions.
+    Headline dynamics:
+      - rollout_{h}_mse
+      - persistence_{h}_mse
+
+    Diagnostics:
+      - tf_mse
+      - transition/stable rollout MSE and their persistence baselines
+      - effective_rank
+
+    Prediction and persistence errors are accumulated over the whole epoch
+    before division, so results do not depend on validation batch size.
     """
 
     def __init__(
@@ -155,23 +132,24 @@ class ValidationMetrics:
         horizons: Sequence[int],
         *,
         persistence_baseline: bool = True,
-        cosine_similarity: bool = True,
-        latent_health: bool = True,
+        effective_rank_health: bool = True,
         latent_rank_samples: int = 8192,
+        transition_metrics: bool = False,
     ) -> None:
         self.horizons = sorted(horizons)
         self.persistence_baseline = persistence_baseline
-        self.cosine_similarity = cosine_similarity
-        self.latent_health = latent_health
-        self.tf: dict[str, _ErrorSums] = defaultdict(_ErrorSums)
-        self.rollout: dict[tuple[str, int], _HorizonSums] = defaultdict(_HorizonSums)
-        self.latent_sum: torch.Tensor | None = None
-        self.latent_square_sum: torch.Tensor | None = None
-        self.latent_norm_sum = 0.0
-        self.latent_count = 0
-        self.prediction_norm_sum = 0.0
-        self.prediction_count = 0
-        self.sample = _LatentSample(latent_rank_samples if latent_health else 0)
+        self.effective_rank_health = effective_rank_health
+        self.transition_metrics = transition_metrics
+
+        self.tf: dict[str, _MSE] = defaultdict(_MSE)
+        self.rollout: dict[tuple[str, int], _PredictionErrors] = defaultdict(
+            _PredictionErrors
+        )
+        self.conditions: dict[tuple[str, int], _PredictionErrors] = defaultdict(
+            _PredictionErrors
+        )
+        self.condition_counts: dict[tuple[str, int], int] = defaultdict(int)
+        self.sample = _LatentSample(latent_rank_samples if effective_rank_health else 0)
 
     @torch.no_grad()
     def update(
@@ -183,6 +161,10 @@ class ValidationMetrics:
         context_steps: int,
         datasets: Sequence[str],
         mask: torch.Tensor | None = None,
+        context_action: torch.Tensor | None = None,
+        context_valid: torch.Tensor | None = None,
+        future_action: torch.Tensor | None = None,
+        future_valid: torch.Tensor | None = None,
     ) -> None:
         z = latents.detach().double()
         tf_pred = tf_predictions.detach().double()
@@ -192,6 +174,7 @@ class ValidationMetrics:
             if mask is None
             else mask.to(device=z.device, dtype=torch.bool)
         )
+
         groups = [GLOBAL, *sorted(set(datasets))]
         members = {
             name: torch.tensor(
@@ -201,15 +184,22 @@ class ValidationMetrics:
             for name in groups
         }
 
-        # Teacher forcing: z[:, :C] -> z[:, 1 : C + 1]; baseline z[t].
         tf_valid = valid[:, :c] & valid[:, 1 : c + 1]
+        tf_target = z[:, 1 : c + 1]
 
         for name in groups:
             rows = tf_valid & members[name][:, None]
-            self.tf[name].add(tf_pred[rows], z[:, :c][rows], z[:, 1 : c + 1][rows])
+            self.tf[name].add(tf_pred[rows], tf_target[rows])
 
-        # Rollout: z[:, C + h - 1] from the context ending at z[:, C - 1].
         last = z[:, c - 1]
+
+        if self.transition_metrics and any(
+            value is None
+            for value in (context_action, context_valid, future_action, future_valid)
+        ):
+            raise ValueError(
+                "Transition stratification requires context/future actions and validity"
+            )
 
         for h in self.horizons:
             if h not in rollout_predictions:
@@ -221,104 +211,77 @@ class ValidationMetrics:
 
             for name in groups:
                 rows = ok & members[name]
-                sums = self.rollout[(name, h)]
-                sums.errors.add(pred[rows], last[rows], target[rows])
-                sums.positions += int(rows.sum())
+                self.rollout[(name, h)].add(pred[rows], last[rows], target[rows])
 
-                if self.cosine_similarity:
-                    sums.cosine += float(
-                        F.cosine_similarity(
-                            pred[rows], target[rows], dim=-1, eps=EPS
-                        ).sum()
-                    )
+            if not self.transition_metrics:
+                continue
 
-                sums.target_delta_norm += float(
-                    (target[rows] - last[rows]).norm(dim=-1).sum()
+            assert context_action is not None
+            assert context_valid is not None
+            assert future_action is not None
+            assert future_valid is not None
+
+            # z[C+h-1] is reached with a[C-1] followed by h-1 future actions.
+            transition_actions = torch.cat(
+                [context_action[:, -1:], future_action[:, : h - 1]], dim=1
+            ).to(z.device)
+            transition_valid = torch.cat(
+                [context_valid[:, -1:], future_valid[:, : h - 1]], dim=1
+            ).to(z.device)
+
+            evaluable = transition_valid.bool().all(dim=1) & ok
+            transition_ids = torch.tensor(
+                [ACTION_TO_ID[name] for name in TRANSITION_ACTIONS],
+                device=transition_actions.device,
+            )
+            has_transition = torch.isin(transition_actions, transition_ids).any(dim=1)
+
+            for condition, rows in (
+                ("transition", evaluable & has_transition),
+                ("stable", evaluable & ~has_transition),
+            ):
+                self.conditions[(condition, h)].add(
+                    pred[rows], last[rows], target[rows]
                 )
-                sums.prediction_delta_norm += float(
-                    (pred[rows] - last[rows]).norm(dim=-1).sum()
-                )
+                self.condition_counts[(condition, h)] += int(rows.sum())
 
-            if self.latent_health:
-                kept = pred[ok]
-                self.prediction_norm_sum += float(kept.norm(dim=-1).sum())
-                self.prediction_count += kept.shape[0]
-
-        if self.latent_health:
-            kept = z[valid]
-
-            if self.latent_sum is None:
-                self.latent_sum = torch.zeros(z.shape[-1], dtype=torch.float64)
-                self.latent_square_sum = torch.zeros(z.shape[-1], dtype=torch.float64)
-
-            assert self.latent_square_sum is not None
-            self.latent_sum += kept.sum(dim=0).cpu()
-            self.latent_square_sum += kept.pow(2).sum(dim=0).cpu()
-            self.latent_norm_sum += float(kept.norm(dim=-1).sum())
-            self.latent_count += kept.shape[0]
-            self.sample.add(kept)
+        if self.effective_rank_health:
+            self.sample.add(z[valid])
 
     def compute(self) -> dict[str, float]:
-        """Metric name (without the `val/` stage) -> value, for this epoch."""
+        """Return metric names without the val/ stage prefix."""
 
         metrics: dict[str, float] = {}
 
-        for name, sums in sorted(self.tf.items()):
+        for name, mse in sorted(self.tf.items()):
+            if not mse.elements:
+                continue
             prefix = f"{name}/" if name else ""
-            values = sums.metrics(f"{prefix}tf_")
+            metrics[f"{prefix}tf_mse"] = mse.value
 
-            if not self.persistence_baseline:
-                values = {k: v for k, v in values.items() if k.endswith("tf_mse")}
-
-            metrics.update(values)
-
-        skills = []
-
-        for (name, h), sums in sorted(self.rollout.items()):
-            prefix = f"{name}/" if name else ""
-
-            if not sums.positions:
+        for (name, h), errors in sorted(self.rollout.items()):
+            if not errors.model.elements:
                 continue
 
-            model = sums.errors.model / sums.errors.elements
-            metrics[f"{prefix}rollout_{h}_mse"] = model
+            prefix = f"{name}/" if name else ""
+            metrics[f"{prefix}rollout_{h}_mse"] = errors.model.value
 
             if self.persistence_baseline:
-                persistence = sums.errors.persistence / sums.errors.elements
-                metrics[f"{prefix}persistence_{h}_mse"] = persistence
-                metrics[f"{prefix}skill_{h}"] = skill_score(model, persistence)
+                metrics[f"{prefix}persistence_{h}_mse"] = errors.persistence.value
 
-                if not name:
-                    skills.append(metrics[f"skill_{h}"])
+        if self.transition_metrics:
+            for (condition, h), errors in sorted(self.conditions.items()):
+                if not errors.model.elements:
+                    continue
 
-            if not name:
-                if self.cosine_similarity:
-                    metrics[f"cosine_{h}"] = sums.cosine / sums.positions
+                metrics[f"{condition}_{h}_mse"] = errors.model.value
+                if self.persistence_baseline:
+                    metrics[f"{condition}_{h}_persistence_mse"] = (
+                        errors.persistence.value
+                    )
+                metrics[f"{condition}_{h}_n"] = self.condition_counts[(condition, h)]
 
-                metrics[f"target_delta_norm_{h}"] = (
-                    sums.target_delta_norm / sums.positions
-                )
-                metrics[f"prediction_delta_norm_{h}"] = (
-                    sums.prediction_delta_norm / sums.positions
-                )
-
-        if skills:
-            # Plain mean over horizons of the (epoch-aggregated) global skills.
-            metrics["skill_mean"] = sum(skills) / len(skills)
-
-        if self.latent_health and self.latent_count:
-            assert self.latent_sum is not None and self.latent_square_sum is not None
-            mean = self.latent_sum / self.latent_count
-            variance = (
-                self.latent_square_sum / self.latent_count - mean.pow(2)
-            ).clamp_min(0)
-            metrics["latent_std"] = float(variance.sqrt().mean())
-            metrics["latent_norm"] = self.latent_norm_sum / self.latent_count
+        if self.effective_rank_health and self.sample.rows.numel():
             metrics["effective_rank"] = effective_rank(self.sample.rows)
-
-            if self.prediction_count:
-                metrics["prediction_norm"] = (
-                    self.prediction_norm_sum / self.prediction_count
-                )
 
         return {name: value for name, value in metrics.items() if not math.isnan(value)}

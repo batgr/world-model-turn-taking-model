@@ -29,14 +29,11 @@ from turn_wm.evaluation.latent_analysis.extract import (
 )
 from turn_wm.evaluation.latent_analysis.run import extract_run
 from turn_wm.models.lewm.jepa import JEPA
-from turn_wm.training.lewm import LeWMModule, Trajectories
-from turn_wm.training.train import (
-    _config_hash,
-    _write_config,
-    _write_metadata,
-    build_run_dataset,
-    prepare_observations,
-)
+from turn_wm.training.lewm import LeWMModule
+from turn_wm.training.observations import prepare_observations
+from turn_wm.training.run_dir import hash_config, write_config, write_metadata
+from turn_wm.training.train import build_run_dataset
+from turn_wm.training.trajectories import Trajectories
 
 # ---------------------------------------------------------------------------
 # Extraction from batches
@@ -92,7 +89,7 @@ def test_representations_are_taken_at_the_anchor_step():
     assert snapshot.metadata["sample_id"] == ["s0-0", "s0-1"]
     # The action taken at the anchor step itself.
     assert snapshot.metadata["action_id"] == [1, 2]
-    assert snapshot.metadata["action"] == ["ONSET", "OFFSET"]
+    assert snapshot.metadata["action"] == ["START", "STOP"]
 
 
 def test_raw_observations_go_through_the_encoder():
@@ -176,7 +173,7 @@ def test_written_artifact(tmp_path):
 
     assert torch.equal(tensors[FEATURES], snapshot.representations[FEATURES])
     assert torch.equal(tensors[LATENT], snapshot.representations[LATENT])
-    assert metadata["action"] == ["ONSET", "OFFSET"]
+    assert metadata["action"] == ["START", "STOP"]
     assert manifest["schema_version"] == 1
     assert manifest["samples"] == 2
     assert manifest["representations"] == {
@@ -269,10 +266,7 @@ def _loaded(revision: str | None = REVISION) -> LoadedData:
     )
 
 
-BATCHNORM = (
-    "+model.projector.norm_fn={_target_:hydra.utils.get_class,"
-    "path:torch.nn.BatchNorm1d}"
-)
+BATCHNORM = "model.projector.norm_fn.kind=batch_norm"
 
 
 def _config(cache_root, *overrides):
@@ -317,11 +311,11 @@ def _make_run(tmp_path, cfg) -> tuple:
     loaded = _loaded()
     observations = prepare_observations(cfg, loaded)
 
-    _write_config(cfg, run_dir)
-    _write_metadata(
+    write_config(cfg, run_dir)
+    write_metadata(
         run_dir=run_dir,
         run_id="run-1",
-        config_hash=_config_hash(cfg),
+        config_hash=hash_config(cfg),
         cfg=cfg,
         git={"commit": "abc", "dirty": False},
         dataset_revision=REVISION,
@@ -394,7 +388,7 @@ def test_run_extracts_the_trained_model_on_validation(
     provenance = manifest["provenance"]
     assert manifest["samples"] == provenance["sampling"]["samples"] == 7
     assert provenance["run"]["run_id"] == "run-1"
-    assert provenance["run"]["config_hash"] == _config_hash(cfg)
+    assert provenance["run"]["config_hash"] == hash_config(cfg)
     assert provenance["data"]["dataset_revision"] == REVISION
     assert provenance["data"]["split"] == "validation"
     assert provenance["data"]["observation_source"] == "mimi_cache"

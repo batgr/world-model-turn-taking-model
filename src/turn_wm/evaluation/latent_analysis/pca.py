@@ -325,7 +325,7 @@ def group_structure(
         value, by_class, reason = None, {}, "not computed"
     else:
         value, by_class, reason = silhouette(
-            x[sampled], [labels[i] for i in sampled.tolist()]
+            x[sampled], [labels[int(i)] for i in sampled.tolist()]
         )
 
     return GroupStructure(

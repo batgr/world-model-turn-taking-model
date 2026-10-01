@@ -1,0 +1,15 @@
+# Causal-BatchNorm ablation: give the Mimi-to-latent projector
+# per-position running statistics as well.
+#
+# The default RoPE model already keeps per-position running statistics in the
+# predictor projector because its causal receptive field changes by position.
+# V2 encodes the complete trajectory before the losses:
+#   context_steps (30) + future_steps (10) = 40 positions.
+defaults:
+  - lewm
+  - _self_
+
+projector:
+  norm_fn:
+    kind: causal_batch_norm
+    num_positions: 40

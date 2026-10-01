@@ -15,7 +15,6 @@ from dataclasses import dataclass
 from pathlib import Path
 
 import httpx
-import pyarrow.compute as pc
 from datasets import Dataset, DatasetDict, load_dataset
 from huggingface_hub import HfApi, hf_hub_download
 
@@ -390,19 +389,14 @@ def _validate_media_manifest(dataset: Dataset, *, corpus: str) -> None:
         artifact=f"{corpus}/media_manifest",
     )
 
-    table = dataset.with_format("arrow")[:]
+    rows = dataset.to_list()
 
-    without_media = pc.and_(
-        pc.is_null(table["video_path"]),
-        pc.is_null(table["audio_path"]),
-    )
-
-    if pc.any(without_media).as_py():
+    if any(row["video_path"] is None and row["audio_path"] is None for row in rows):
         raise ValueError(f"{corpus}/media_manifest has records without video or audio")
 
-    keys = table.group_by(["dataset", "recording_id"]).aggregate([])
+    keys = {(row["dataset"], row["recording_id"]) for row in rows}
 
-    if keys.num_rows != table.num_rows:
+    if len(keys) != len(rows):
         raise ValueError(
             f"{corpus}/media_manifest has duplicate (dataset, recording_id)"
         )

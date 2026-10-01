@@ -34,7 +34,11 @@ from safetensors.torch import save_file
 from turn_wm.data.dataset import ACTION_TO_ID, MASKED_ACTION_ID
 from turn_wm.models.lewm.jepa import JEPA
 from turn_wm.progress import progress
-from turn_wm.training.lewm import Trajectories, encode_trajectories, trajectories
+from turn_wm.training.trajectories import (
+    Trajectories,
+    encode_trajectories,
+    trajectories,
+)
 
 SCHEMA_VERSION = 1
 

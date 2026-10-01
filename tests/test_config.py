@@ -1,7 +1,7 @@
 import re
 
 import pytest
-from hydra.utils import get_class
+from hydra.utils import get_object
 from omegaconf import DictConfig, OmegaConf
 from torch import nn
 
@@ -52,22 +52,25 @@ def test_default_config_selects_every_group():
 def test_shared_sizes_are_interpolated_into_the_model():
     cfg = load_config(["embed_dim=256", "data.context_steps=20"])
 
-    # The predictor's positions cover the teacher-forced context.
+    # RoPE is the default; num_frames is retained only for learned-position
+    # reproduction/ablation configs.
+    assert cfg.model.predictor.position_encoding == "rope"
+    assert cfg.model.predictor.rope_base == 10000.0
     assert cfg.model.predictor.num_frames == 20
     assert cfg.model.action_encoder.emb_dim == 256
     assert cfg.model.projector.output_dim == 256
     assert cfg.model.pred_proj.input_dim == cfg.model.pred_proj.output_dim == 256
 
 
-def test_every_target_resolves_to_a_class():
+def test_every_target_resolves_to_a_callable():
     cfg = OmegaConf.to_container(load_config(), resolve=True)
 
     found = targets(cfg)
 
-    assert len(found) == 6
+    assert len(found) == 8
 
     for path, target in found:
-        assert isinstance(get_class(target), type), path
+        assert callable(get_object(target)), path
 
 
 def test_overrides_apply():
@@ -132,3 +135,16 @@ def test_training_docs_match_the_recipe():
 
     for block in blocks:
         assert_subset(OmegaConf.to_container(OmegaConf.create(block)), cfg)
+
+
+def test_v2_defaults_to_egocom_and_causal_batchnorm():
+    from turn_wm.models.lewm.mlp import CausalBatchNorm1d
+
+    cfg = load_config(["train=lewm_v2", "data.observation_source=mimi_cache"])
+    model = build_model(cfg)
+
+    assert cfg.data.dataset == "egocom"
+    assert isinstance(model.projector.net[1], CausalBatchNorm1d)
+    assert isinstance(model.pred_proj.net[1], CausalBatchNorm1d)
+    assert model.predictor.position_encoding == "rope"
+    assert model.predictor.pos_embedding is None

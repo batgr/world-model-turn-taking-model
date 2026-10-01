@@ -8,8 +8,11 @@ encoder:
 
 predictor:
   _target_: turn_wm.models.lewm.predictor.ARPredictor
-  # Longest input: the teacher-forced context. Rollouts pass fewer steps.
+  # Kept for the learned-position reproduction variant; RoPE itself has no
+  # learned maximum sequence length.
   num_frames: ${data.context_steps}
+  position_encoding: rope
+  rope_base: 10000.0
   input_dim: ${embed_dim}
   hidden_dim: ${embed_dim}
   output_dim: ${embed_dim}
@@ -22,19 +25,34 @@ predictor:
 
 action_encoder:
   _target_: turn_wm.models.lewm.embedder.Embedder
-  num_actions: 5
+  num_actions: 6
   smoothed_dim: 10
   emb_dim: ${embed_dim}
-  padding_idx: 4
+  padding_idx: 5
 
 projector:
   _target_: turn_wm.models.lewm.mlp.MLP
   input_dim: 512
   output_dim: ${embed_dim}
   hidden_dim: 2048
+  # Normalize across examples at each time step without mixing future positions.
+  norm_fn:
+    _target_: turn_wm.models.lewm.mlp.make_norm
+    _partial_: true
+    kind: causal_batch_norm
+    num_positions: null
 
 pred_proj:
   _target_: turn_wm.models.lewm.mlp.MLP
   input_dim: ${embed_dim}
   output_dim: ${embed_dim}
   hidden_dim: 2048
+  # Training normalizes each causal predictor position independently. Keep
+  # matching running statistics per position at evaluation: RoPE removes the
+  # learned absolute embedding, but causal receptive fields still differ by
+  # position.
+  norm_fn:
+    _target_: turn_wm.models.lewm.mlp.make_norm
+    _partial_: true
+    kind: causal_batch_norm
+    num_positions: ${model.predictor.num_frames}

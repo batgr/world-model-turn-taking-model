@@ -44,9 +44,19 @@ def style(ax) -> None:
         ax.spines[side].set_color(AXIS)
 
 
+def new_figure(width: float, height: float) -> Figure:
+    from matplotlib.figure import Figure
+
+    return Figure(figsize=(width, height), facecolor=SURFACE, layout="constrained")
+
+
 def close(figure: Figure) -> None:
     # Figures built from `Figure` are not tracked by pyplot; drop the canvas.
     figure.clear()
+
+
+def number(value: float | None) -> str:
+    return "n/a" if value is None else f"{value:.3f}"
 
 
 def percent(value: float | None) -> str:

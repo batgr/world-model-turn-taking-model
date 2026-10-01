@@ -1,0 +1,9 @@
+# Pre-RoPE predictor variant for reproduction and positional-encoding ablations.
+# It changes only the predictor position encoding; the rest of the current
+# architecture and normalization recipe stays fixed.
+defaults:
+  - lewm
+  - _self_
+
+predictor:
+  position_encoding: learned

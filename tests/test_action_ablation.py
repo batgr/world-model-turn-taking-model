@@ -17,27 +17,26 @@ import torch
 from safetensors.torch import load_file
 
 from turn_wm.cli import main
-from turn_wm.data.dataset import ACTION_TO_ID
+from turn_wm.data.dataset import ACTION_TO_ID, MASKED_ACTION_ID
 from turn_wm.evaluation.latent_analysis.action_ablation import (
     CONDITIONS,
     COUNTERFACTUAL_NEXT,
-    FOCAL_STATE,
     FORCED_ACTIONS,
-    NO_EVENT,
     OBSERVED,
     PRED,
     SHUFFLE_DONOR,
     SHUFFLED,
     SHUFFLED_ACTION_IDS,
+    STATE_PRESERVING,
     ablation_representations,
     extract_action_ablation_run,
     forced_anchor_action,
-    no_event_actions,
     shuffle_donors,
     shuffled_actions,
+    state_preserving_actions,
 )
-from turn_wm.evaluation.latent_analysis.action_ablation_analysis import (
-    paired_metrics,
+from turn_wm.evaluation.latent_analysis.action_ablation_analysis import paired_metrics
+from turn_wm.evaluation.latent_analysis.action_ablation_report import (
     write_action_ablation,
 )
 from turn_wm.evaluation.latent_analysis.rollout import (
@@ -47,13 +46,10 @@ from turn_wm.evaluation.latent_analysis.rollout import (
     TRUE_FUTURE_LATENT,
     rollout_representations,
 )
-from turn_wm.evaluation.latent_analysis.rollout_dynamics import (
-    ALIGNMENT,
-    row_terms,
-)
+from turn_wm.evaluation.latent_analysis.rollout_dynamics import ALIGNMENT, row_terms
 from turn_wm.evaluation.latent_analysis.show import show_action_ablation
 from turn_wm.models.lewm.sigreg import SIGReg
-from turn_wm.training.lewm import trajectories
+from turn_wm.training.trajectories import trajectories
 
 # The synthetic run's fixtures.
 cache_root = runs.cache_root
@@ -114,21 +110,29 @@ def test_observed_is_the_existing_rollout_and_all_agree_at_one_step(validation_b
     for condition in CONDITIONS:
         assert torch.equal(result[PRED[condition]][:, 0], result[PRED[OBSERVED]][:, 0])
     # ... and the ablations do reach the later horizons.
-    for condition in (NO_EVENT, SHUFFLED):
+    for condition in (STATE_PRESERVING, SHUFFLED):
         assert not torch.equal(
             result[PRED[condition]][:, 1:], result[PRED[OBSERVED]][:, 1:]
         )
 
 
-def test_no_event_changes_only_the_future_tokens(validation_batch):
+def test_state_preserving_changes_only_the_future_tokens(validation_batch):
     cfg, _, batch = validation_batch
     actions = trajectories(batch).actions
     c = cfg.data.context_steps
 
-    ablated = no_event_actions(actions, c)
+    ablated = state_preserving_actions(actions, c)
 
     assert torch.equal(ablated[:, :c], actions[:, :c])  # context and anchor action
-    assert bool((ablated[:, c:] == ACTION_TO_ID["NO_EVENT"]).all())
+
+    anchor = actions[:, c - 1]
+    expected = torch.full_like(anchor, MASKED_ACTION_ID)
+    silent = (anchor == ACTION_TO_ID["WAIT"]) | (anchor == ACTION_TO_ID["STOP"])
+    speaking = (anchor == ACTION_TO_ID["START"]) | (anchor == ACTION_TO_ID["HOLD"])
+    expected[silent] = ACTION_TO_ID["WAIT"]
+    expected[speaking] = ACTION_TO_ID["HOLD"]
+
+    assert torch.equal(ablated[:, c:], expected[:, None].expand_as(ablated[:, c:]))
     assert not torch.equal(ablated, actions)
 
 
@@ -221,7 +225,7 @@ def test_run_extraction_and_analysis(tmp_path, cache_root, loads):
     assert snapshot == run_dir / "latent_analysis" / "last-validation-action-ablation"
     assert manifest["provenance"]["data"]["split"] == "validation"
     assert all(":validation#" in s for s in metadata["sample_id"])
-    assert tensors[COUNTERFACTUAL_NEXT].shape == (12, 3, 192)
+    assert tensors[COUNTERFACTUAL_NEXT].shape == (12, 4, 192)
 
     # Same anchors as extract-rollouts with the same seed and limit.
     from turn_wm.evaluation.latent_analysis.rollout import extract_rollout_run
@@ -238,7 +242,10 @@ def test_run_extraction_and_analysis(tmp_path, cache_root, loads):
     donors = tensors[SHUFFLE_DONOR].tolist()
     for row, donor in enumerate(donors):
         assert metadata["dataset"][donor] == metadata["dataset"][row]
-        assert int(tensors[FOCAL_STATE][donor]) == int(tensors[FOCAL_STATE][row])
+        assert (
+            tensors[ROLLOUT_ACTION_IDS][donor, c - 1]
+            == tensors[ROLLOUT_ACTION_IDS][row, c - 1]
+        )
         assert torch.equal(
             tensors[SHUFFLED_ACTION_IDS][row, c:],
             tensors[ROLLOUT_ACTION_IDS][donor, c:],
@@ -273,7 +280,7 @@ def test_run_extraction_and_analysis(tmp_path, cache_root, loads):
 
     report = (output / "report.md").read_text()
     assert "passed" in report
-    assert "useful use of the observed vocal-action conditioning channel" in report
+    assert "useful use of the observed ego-action conditioning channel" in report
     assert "does not establish planner controllability" in report
 
 
@@ -327,12 +334,13 @@ def test_cli_show_prints_the_results_and_changes_no_result(
     assert "bootstrap" in first.err and "action ablation: done in" in first.err
     assert f"action_ablation: {snapshot / 'analysis' / 'action_ablation'}" in first.out
     printed = shown.out
-    assert "Integrity check (no future token read): passed" in printed
+    assert "# Ego-action ablation and forced-action effects" in printed
+    assert "Integrity check" in printed
     assert "Skill vs persistence (primary)" in printed
-    assert "observed − no_event" in printed
-    assert "Counterfactual one-step action effect" in printed
+    assert "observed − state_preserving" in printed
+    assert "Forced one-step action effect" in printed
     # The first horizon reads no future token: its exposed subset is empty.
-    assert "Not evaluable: 0.1 s, event_exposed has no rows." in printed
+    assert "| 0.1 s | event_exposed | 0 (0) | n/a" in printed
     assert str(tmp_path / "shown" / "figures" / "rollout_ablation.png") in printed
     assert str(tmp_path / "shown" / "report.md") in printed
 
@@ -358,12 +366,9 @@ def test_show_action_ablation_in_a_notebook(tmp_path, cache_root, loads, monkeyp
     show_action_ablation(output)
 
     assert shown[0][0] == "html" and "Integrity check" in shown[0][1]
-    titles = [item[1] for item in shown[1:5]]
-    assert "Skill vs persistence (primary)" in titles[0]
-    assert "Counterfactual one-step action effect" in titles[3]
     # A missing figure is said, not silently skipped.
-    assert shown[5] == ("image", "rollout_ablation.png")
-    assert shown[6][0] == "html" and "Missing figure" in shown[6][1]
+    assert shown[1] == ("image", "rollout_ablation.png")
+    assert shown[2][0] == "html" and "Missing figure" in shown[2][1]
     assert rollouts._hashes(output) == before
 
 
@@ -377,11 +382,11 @@ def test_conditions_are_compared_on_identical_rows():
     anchor = torch.randn(40, 4, generator=generator)
     true = anchor + torch.randn(40, 4, generator=generator)
     observed = anchor + 0.5 * (true - anchor)
-    no_event = observed.clone()
-    no_event[:10] = anchor[:10]  # no predicted motion: no direction there
+    state_preserving = observed.clone()
+    state_preserving[:10] = anchor[:10]  # no predicted motion: no direction there
     terms = {
         OBSERVED: row_terms(anchor, true, observed),
-        NO_EVENT: row_terms(anchor, true, no_event),
+        STATE_PRESERVING: row_terms(anchor, true, state_preserving),
         SHUFFLED: row_terms(anchor, true, observed),
     }
 

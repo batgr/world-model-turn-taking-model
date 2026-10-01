@@ -52,12 +52,17 @@ from turn_wm.evaluation.latent_analysis.rollout_dynamics import (
     row_terms,
     trajectory_selection,
     true_latent_projection,
+)
+from turn_wm.evaluation.latent_analysis.rollout_dynamics_report import (
     write_rollout_dynamics,
 )
 from turn_wm.evaluation.latent_analysis.show import show_rollouts
 from turn_wm.models.lewm.sigreg import SIGReg
-from turn_wm.training.lewm import LeWMModule, lejepa_forward, trajectories
-from turn_wm.training.train import build_run_dataset, prepare_observations
+from turn_wm.training.lewm import LeWMModule
+from turn_wm.training.objective import lejepa_forward
+from turn_wm.training.observations import prepare_observations
+from turn_wm.training.train import build_run_dataset
+from turn_wm.training.trajectories import trajectories
 
 REVISION = runs.REVISION
 _config, _loaded, _make_run = runs._config, runs._loaded, runs._make_run
@@ -299,7 +304,7 @@ def _rollout_snapshot(tmp_path, *, split="validation"):
             }
         )
     )
-    # An ONSET at t+1 (trajectory step 15) on every other transition row:
+    # An START at t+1 (trajectory step 15) on every other transition row:
     # read for 0.5 s and 1 s, not for 0.1 s.
     actions = torch.zeros(ROWS, 24, dtype=torch.int64)
     actions[[k for k in range(ROWS) if k % 4 == 1], 15] = 1
@@ -376,7 +381,7 @@ def test_metrics_per_condition(tmp_path):
         low, high = metrics["all"]["skill_ci"]
         assert low <= metrics["all"][SKILL] <= high
         assert metrics["all"]["n_recordings"] == 4
-        # Confounding diagnostic: the ONSET at t+1 is read from 0.5 s on.
+        # Confounding diagnostic: the START at t+1 is read from 0.5 s on.
         read = h != "1"
         assert metrics["transition"]["future_event_fraction"] == (0.5 if read else 0)
         assert metrics["stable"]["future_event_fraction"] == 0
@@ -392,7 +397,7 @@ def test_metrics_per_condition(tmp_path):
 
     report = (output / "report.md").read_text()
     assert (
-        "**Is the rollout conditioned on ground-truth future action/event tokens? "
+        "**Is the rollout conditioned on ground-truth future ego-action tokens? "
         "Yes.**" in report
     )
     assert "on **transition** rows the rollout beats persistence" in report
@@ -474,7 +479,7 @@ def test_cli_analyze_rollouts(tmp_path, monkeypatch, capsys):
     snapshot = _rollout_snapshot(tmp_path)
     sources = _label_sources(tmp_path)
     monkeypatch.setattr(
-        "turn_wm.evaluation.latent_analysis.rollout_dynamics.hub_label_sources",
+        "turn_wm.evaluation.latent_analysis.rollout_dynamics_report.hub_label_sources",
         lambda provenance, labels_revision=None: sources,
     )
 
@@ -609,7 +614,7 @@ def test_cli_show_prints_the_table_and_changes_no_result(tmp_path, monkeypatch, 
     snapshot = _rollout_snapshot(tmp_path)
     sources = _label_sources(tmp_path)
     monkeypatch.setattr(
-        "turn_wm.evaluation.latent_analysis.rollout_dynamics.hub_label_sources",
+        "turn_wm.evaluation.latent_analysis.rollout_dynamics_report.hub_label_sources",
         lambda provenance, labels_revision=None: sources,
     )
     common = ["analyze-rollouts", str(snapshot), "--bootstrap", "20"]
@@ -625,8 +630,8 @@ def test_cli_show_prints_the_table_and_changes_no_result(tmp_path, monkeypatch, 
     # Input, a bar over the bootstraps and the duration, on stderr.
     assert f"analyze-rollouts: {snapshot} (" in captured.err
     assert "bootstrap" in captured.err and "analyze-rollouts: done in" in captured.err
-    assert "ground-truth future action/event tokens: yes" in printed
-    assert "ONSET/OFFSET in future tokens" in printed
+    assert "# Rollout dynamics under conversational state transitions" in printed
+    assert "future ego-action tokens" in printed
     assert str(tmp_path / "shown" / "figures" / "skill_vs_horizon.png") in printed
 
 
@@ -649,8 +654,7 @@ def test_show_rollouts_in_a_notebook(tmp_path, monkeypatch):
 
     show_rollouts(output)
 
-    assert shown[0][0] == "html" and "movement ratio" in shown[0][1]
-    assert shown[0][1].count("<tr>") == 1 + 3 * 3  # header, horizons x conditions
+    assert shown[0][0] == "html" and "# Rollout dynamics" in shown[0][1]
     assert [item[1] for item in shown[1:]] == [
         "skill_vs_horizon.png",
         "displacement_vs_horizon.png",

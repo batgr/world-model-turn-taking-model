@@ -6,20 +6,19 @@ from types import SimpleNamespace
 
 import pytest
 from datasets import Dataset
-from lightning.pytorch.callbacks import LearningRateMonitor, ModelCheckpoint
+from lightning.pytorch.callbacks import (
+    EarlyStopping,
+    LearningRateMonitor,
+    ModelCheckpoint,
+)
 from omegaconf import OmegaConf
 
 from turn_wm.config import load_config
 from turn_wm.data.mimi_cache import MimiFeatureCaches
 from turn_wm.data.source import DATASETS
 from turn_wm.training import train as train_module
-from turn_wm.training.train import (
-    _build_callbacks,
-    _build_logger,
-    _config_hash,
-    _write_config,
-    _write_metadata,
-)
+from turn_wm.training.run_dir import hash_config, write_config, write_metadata
+from turn_wm.training.train import _build_callbacks, _build_logger
 
 GRID_STEPS = 50
 
@@ -214,6 +213,16 @@ def test_run_propagates_loader_config(recorder, media_roots):
     assert val_loader.drop_last is False
 
 
+def test_training_can_drop_incomplete_batch_without_dropping_validation(
+    recorder, media_roots
+):
+    run(media_roots, "loader.drop_last=true")
+
+    train_loader, val_loader = (call["loader"] for call in recorder.loader_calls)
+    assert train_loader.drop_last is True
+    assert val_loader.drop_last is False
+
+
 def test_run_seeds_before_model_construction(recorder, media_roots):
     run(media_roots, "seed=7")
 
@@ -310,6 +319,39 @@ def test_checkpoint_callback_uses_config():
     assert checkpoint.every_n_epochs == 1
 
 
+def test_v2_recipe_tracks_full_horizon_transitions_after_first_epoch():
+    cfg = load_config(["train=lewm_v2"])
+    callbacks = _build_callbacks(cfg, run_dir=Path("run"))
+
+    assert (cfg.data.context_steps, cfg.prediction.rollout_context_size) == (30, 30)
+    assert cfg.data.future_steps == 10
+    assert cfg.loader.batch_size == 512 and cfg.loader.drop_last
+    assert cfg.trainer.max_steps == -1 and cfg.trainer.val_check_interval == 1.0
+    assert cfg.prediction.curriculum.progress_basis == "first_epoch"
+    assert [type(callback).__name__ for callback in callbacks] == [
+        "ModelCheckpoint",
+        "FullHorizonEarlyStopping",
+    ]
+    assert callbacks[0].monitor == callbacks[1].monitor == "val/rollout_10_mse"
+    assert callbacks[1].minimum_completed_epochs == 2
+
+
+def test_v2_early_stopping_ignores_validation_before_full_h10_epoch(monkeypatch):
+    cfg = load_config(["train=lewm_v2"])
+    callback = _build_callbacks(cfg, run_dir=Path("run"))[1]
+    checked = []
+    monkeypatch.setattr(
+        EarlyStopping,
+        "_run_early_stopping_check",
+        lambda self, trainer: checked.append(trainer.current_epoch),
+    )
+
+    callback._run_early_stopping_check(SimpleNamespace(current_epoch=0))
+    assert checked == []
+    callback._run_early_stopping_check(SimpleNamespace(current_epoch=1))
+    assert checked == [1]
+
+
 def test_checkpoint_can_be_disabled():
     cfg = load_config(["checkpoint.enabled=false"])
 
@@ -354,14 +396,14 @@ def test_config_hash_is_stable():
     first = load_config()
     second = load_config()
 
-    assert _config_hash(first) == _config_hash(second)
+    assert hash_config(first) == hash_config(second)
 
 
 def test_config_hash_changes_with_experiment():
     first = load_config()
     second = load_config(["optimizer.lr=3e-4"])
 
-    assert _config_hash(first) != _config_hash(second)
+    assert hash_config(first) != hash_config(second)
 
 
 def test_wandb_disabled_returns_false(tmp_path):
@@ -401,21 +443,21 @@ def test_checkpoint_is_inside_run_directory(tmp_path):
 def test_write_config_saves_the_resolved_config(tmp_path):
     cfg = load_config(["data.context_steps=20"])
 
-    _write_config(cfg, tmp_path)
+    write_config(cfg, tmp_path)
 
     saved = OmegaConf.load(tmp_path / "config.yaml")
 
     assert (tmp_path / "config.yaml").is_file()
     # Interpolations are resolved: the predictor size is written as a value.
     assert saved.model.predictor.num_frames == 20
-    assert _config_hash(saved) == _config_hash(cfg)
+    assert hash_config(saved) == hash_config(cfg)
 
 
 def test_write_metadata_records_the_run(tmp_path):
     cfg = load_config()
     git = {"commit": "abc", "dirty": False}
 
-    _write_metadata(
+    write_metadata(
         run_dir=tmp_path,
         run_id="run-1",
         config_hash="hash",
@@ -442,7 +484,7 @@ def test_run_writes_config_and_metadata_into_its_run_directory(
     cfg = run(media_roots)
 
     [run_dir] = run_dirs(tmp_path)
-    config_hash = _config_hash(cfg)
+    config_hash = hash_config(cfg)
     metadata = json.loads((run_dir / "metadata.json").read_text())
 
     assert run_dir.name.endswith(config_hash[:8])
