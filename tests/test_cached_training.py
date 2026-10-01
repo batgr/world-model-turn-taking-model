@@ -140,7 +140,8 @@ def test_project_features_is_exactly_the_projector():
     model = raw_model()
     features = torch.randn(2, 7, 512)
 
-    expected = model.projector(features.reshape(14, 512)).reshape(2, 7, -1)
+    # The default projector normalizes causally over (B, T, D) sequences.
+    expected = model.projector(features)
 
     torch.testing.assert_close(
         model.project_features(features), expected, rtol=0, atol=0

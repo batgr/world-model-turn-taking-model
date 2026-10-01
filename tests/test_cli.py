@@ -149,7 +149,7 @@ def test_inspect_data_formats_batch(fake_load, capsys):
     assert "grid: 10 Hz" in out
     assert "sample_id: r1#19" in out
     assert "3 PAD" in out
-    assert "3 MASKED\n4 PAD" in out
+    assert "4 MASKED\n5 PAD" in out
 
 
 def test_missing_split_fails_clearly(fake_load):

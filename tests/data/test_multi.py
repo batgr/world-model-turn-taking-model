@@ -113,7 +113,16 @@ def test_samples_share_one_contract_across_corpora(combined):
 
     varying = {key for key in from_a if _differs(from_a[key], from_b[key])}
 
-    assert varying == {"dataset", "sample_id", "context_state", "future_state"}
+    # NO_EVENT is WAIT in silence and HOLD in speech, so the actions follow
+    # the state that tells the two corpora apart.
+    assert varying == {
+        "dataset",
+        "sample_id",
+        "context_state",
+        "future_state",
+        "context_action",
+        "future_action",
+    }
 
 
 def _differs(left, right) -> bool:

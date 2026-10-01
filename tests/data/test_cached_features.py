@@ -12,7 +12,18 @@ from turn_wm.data.media import MediaIndex, MediaPaths
 from turn_wm.data.mimi_cache import MimiFeatureStore
 from turn_wm.data.reader import MediaReader, MediaWindow
 
-ACTIONS = list(ACTION_TO_ID)
+# A consistent cycle of (focal state, action-grid event, model action), so
+# rows can be told apart by their action.
+GRID_CYCLE = (
+    ("SILENT", "NO_EVENT", "WAIT"),
+    ("SILENT", "ONSET", "START"),
+    ("SPEAKING", "NO_EVENT", "HOLD"),
+    ("SPEAKING", "OFFSET", "STOP"),
+)
+
+
+def action_id(index: int) -> int:
+    return ACTION_TO_ID[GRID_CYCLE[index % len(GRID_CYCLE)][2]]
 
 # The grid starts at decision_index 10, as the cache record does: nothing
 # may assume that a recording starts at 0.
@@ -29,9 +40,8 @@ def make_grid() -> Dataset:
             "recording_id": ["r1"] * GRID_LENGTH,
             "decision_index": indices,
             "decision_time_s": [index / 10 for index in indices],
-            "focal_state_before": ["SILENT"] * GRID_LENGTH,
-            # The action depends on the index, so rows can be told apart.
-            "action": [ACTIONS[index % 3] for index in indices],
+            "focal_state_before": [GRID_CYCLE[i % 4][0] for i in indices],
+            "action": [GRID_CYCLE[i % 4][1] for i in indices],
             "action_valid": [True] * GRID_LENGTH,
         }
     )
@@ -91,8 +101,8 @@ def test_features_are_the_rows_of_the_window_decision_indices(store):
 def test_features_line_up_with_the_state_and_action_rows(store):
     sample = dataset(store)[0]
 
-    expected_context = [ACTION_TO_ID[ACTIONS[index % 3]] for index in range(17, 21)]
-    expected_future = [ACTION_TO_ID[ACTIONS[index % 3]] for index in range(21, 24)]
+    expected_context = [action_id(index) for index in range(17, 21)]
+    expected_future = [action_id(index) for index in range(21, 24)]
 
     assert sample["context_action"].tolist() == expected_context
     assert sample["future_action"].tolist() == expected_future
@@ -102,7 +112,7 @@ def test_features_line_up_with_the_state_and_action_rows(store):
         (sample["future_features"], sample["future_action"]),
     ):
         indices = features[:, 0].long()
-        assert [ACTION_TO_ID[ACTIONS[int(i) % 3]] for i in indices] == actions.tolist()
+        assert [action_id(int(i)) for i in indices] == actions.tolist()
 
 
 def test_cached_features_keep_the_cache_dtype(store):
