@@ -20,9 +20,7 @@ class RotaryEmbedding(nn.Module):
         if base <= 1:
             raise ValueError(f"RoPE base must be > 1, got {base}")
 
-        inv_freq = base ** (
-            -torch.arange(0, dim, 2, dtype=torch.float32) / dim
-        )
+        inv_freq = base ** (-torch.arange(0, dim, 2, dtype=torch.float32) / dim)
         self.dim = dim
         self.register_buffer("inv_freq", inv_freq, persistent=False)
 

@@ -22,9 +22,7 @@ def update(metrics, latents, *, rollout=None, tf=None, datasets=None, mask=None)
         latents=latents,
         tf_predictions=latents[:, :C] if tf is None else tf,
         rollout_predictions=(
-            rollout
-            if rollout is not None
-            else {h: latents[:, C - 1] for h in HORIZONS}
+            rollout if rollout is not None else {h: latents[:, C - 1] for h in HORIZONS}
         ),
         context_steps=C,
         datasets=datasets or ["egocom"] * batch,
@@ -228,9 +226,7 @@ def test_effective_rank_sampling_is_bounded_and_deterministic():
 def test_global_metrics_pool_elements_and_report_corpora():
     metrics = ValidationMetrics(HORIZONS, effective_rank_health=False)
     z = trajectory(4, last=(0.0, 0.0), future=(2.0, 2.0))
-    prediction = torch.tensor(
-        [[1.0, 1.0], [6.0, 6.0], [6.0, 6.0], [6.0, 6.0]]
-    )
+    prediction = torch.tensor([[1.0, 1.0], [6.0, 6.0], [6.0, 6.0], [6.0, 6.0]])
     update(
         metrics,
         z,

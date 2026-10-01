@@ -97,9 +97,7 @@ ABLATION_TENSORS = (
 # ---------------------------------------------------------------------------
 
 
-def state_preserving_actions(
-    actions: torch.Tensor, context_steps: int
-) -> torch.Tensor:
+def state_preserving_actions(actions: torch.Tensor, context_steps: int) -> torch.Tensor:
     """Replace future actions by the valid action that preserves ego state.
 
     The anchor action (step C - 1) is unchanged. Its result determines the
@@ -389,7 +387,9 @@ def extract_action_ablation(
             donor_rows=donor_rows,
         )
 
-    log("action ablation: rollout under observed, state-preserving and shuffled actions")
+    log(
+        "action ablation: rollout under observed, state-preserving and shuffled actions"
+    )
     snapshot = extract_snapshot(
         model,
         batches,

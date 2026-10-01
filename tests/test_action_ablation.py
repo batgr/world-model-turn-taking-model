@@ -242,7 +242,10 @@ def test_run_extraction_and_analysis(tmp_path, cache_root, loads):
     donors = tensors[SHUFFLE_DONOR].tolist()
     for row, donor in enumerate(donors):
         assert metadata["dataset"][donor] == metadata["dataset"][row]
-        assert tensors[ROLLOUT_ACTION_IDS][donor, c - 1] == tensors[ROLLOUT_ACTION_IDS][row, c - 1]
+        assert (
+            tensors[ROLLOUT_ACTION_IDS][donor, c - 1]
+            == tensors[ROLLOUT_ACTION_IDS][row, c - 1]
+        )
         assert torch.equal(
             tensors[SHUFFLED_ACTION_IDS][row, c:],
             tensors[ROLLOUT_ACTION_IDS][donor, c:],

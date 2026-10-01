@@ -149,9 +149,7 @@ class ValidationMetrics:
             _PredictionErrors
         )
         self.condition_counts: dict[tuple[str, int], int] = defaultdict(int)
-        self.sample = _LatentSample(
-            latent_rank_samples if effective_rank_health else 0
-        )
+        self.sample = _LatentSample(latent_rank_samples if effective_rank_health else 0)
 
     @torch.no_grad()
     def update(
@@ -286,6 +284,4 @@ class ValidationMetrics:
         if self.effective_rank_health and self.sample.rows.numel():
             metrics["effective_rank"] = effective_rank(self.sample.rows)
 
-        return {
-            name: value for name, value in metrics.items() if not math.isnan(value)
-        }
+        return {name: value for name, value in metrics.items() if not math.isnan(value)}

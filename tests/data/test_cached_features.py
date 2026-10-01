@@ -25,6 +25,7 @@ GRID_CYCLE = (
 def action_id(index: int) -> int:
     return ACTION_TO_ID[GRID_CYCLE[index % len(GRID_CYCLE)][2]]
 
+
 # The grid starts at decision_index 10, as the cache record does: nothing
 # may assume that a recording starts at 0.
 FIRST_INDEX = 10
