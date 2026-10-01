@@ -14,22 +14,22 @@ from test_latent_labels import GRID_SHA, entry
 
 from turn_wm.cli import main
 from turn_wm.data.labels import local_store
-from turn_wm.evaluation.latent_analysis.concepts import (
+from turn_wm.evaluation.latent_analysis.concept_labels import (
     CONCEPTS,
     LOCAL_WINDOW_CELLS,
     any_event,
-    grouped_cv,
     local_speakers,
     turn_rate,
     voices,
-    write_concepts,
 )
+from turn_wm.evaluation.latent_analysis.concepts import grouped_cv
+from turn_wm.evaluation.latent_analysis.concepts_report import write_concepts
 from turn_wm.evaluation.latent_analysis.extract import (
     RepresentationSnapshot,
     write_snapshot,
 )
 from turn_wm.evaluation.latent_analysis.label_source import CorpusLabelSource
-from turn_wm.evaluation.latent_analysis.probes import recording_folds
+from turn_wm.evaluation.latent_analysis.linear_probe import recording_folds
 from turn_wm.evaluation.latent_analysis.show import show_concepts
 
 STEPS = 120
@@ -418,7 +418,7 @@ def test_a_shifted_timeline_is_refused(tmp_path):
 def test_cli_and_show_change_no_artifact(tmp_path, snapshots, monkeypatch, capsys):
     sources = _sources(tmp_path)
     monkeypatch.setattr(
-        "turn_wm.evaluation.latent_analysis.concepts.hub_label_sources",
+        "turn_wm.evaluation.latent_analysis.concepts_report.hub_label_sources",
         lambda provenance, labels_revision=None: sources,
     )
     output = tmp_path / "concepts"

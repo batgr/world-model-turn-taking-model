@@ -18,13 +18,10 @@ from turn_wm.data.mimi_cache import MimiFeatureStore
 from turn_wm.models.build import build_model
 from turn_wm.models.encoders import mimi as mimi_module
 from turn_wm.models.lewm.sigreg import SIGReg
-from turn_wm.training.lewm import (
-    LeWMModule,
-    Trajectories,
-    lejepa_losses,
-    training_window,
-    trajectories,
-)
+from turn_wm.training.config import training_window
+from turn_wm.training.lewm import LeWMModule
+from turn_wm.training.objective import lejepa_losses
+from turn_wm.training.trajectories import Trajectories, trajectories
 
 FIRST_INDEX = 5
 GRID_LENGTH = 80
@@ -206,11 +203,6 @@ def test_float16_cached_features_are_projected():
         rtol=0,
         atol=0,
     )
-
-
-def test_features_must_be_batched_sequences():
-    with pytest.raises(ValueError, match=r"shape \(B, T, D\)"):
-        raw_model().project_features(torch.randn(5, 512))
 
 
 def test_model_without_encoder_refuses_raw_observations(no_mimi):

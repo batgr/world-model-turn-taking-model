@@ -379,9 +379,9 @@ def test_show_changes_no_result(snapshot_dir, tmp_path, capsys):
     shown = tmp_path / "shown" / "pca"
     assert _hashes(plain) == _hashes(shown)
 
-    # Without a notebook: the table as text, and where the figures are.
+    # Without a notebook: the persisted report and figure paths.
     printed = capsys.readouterr().out
-    assert "action silhouette | a" in printed
+    assert "# PCA analysis" in printed
     assert str(shown / "figures" / "latent_action_a.png") in printed
 
 
@@ -403,7 +403,7 @@ def test_show_in_a_notebook_displays_the_table_then_the_figures(
 
     show_pca(output)
 
-    assert shown[0][0] == "html" and "dataset silhouette" in shown[0][1]
+    assert shown[0][0] == "html" and "# PCA analysis" in shown[0][1]
     images = [item[1] for item in shown if item[0] == "image"]
     assert images[:3] == [
         "features_dataset.png",

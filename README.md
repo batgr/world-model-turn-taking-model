@@ -128,8 +128,9 @@ selected with `train=xxx`).
 
 ## Training
 
-`turn_wm.training.lewm` holds the objective and a Lightning module. The
-baseline V1 recipe (AdamW with warmup + cosine per optimizer step, loss
+`turn_wm.training.objective` holds the objective, `turn_wm.training.lewm` its
+Lightning module, `turn_wm.training.config` the recipe checks and
+`turn_wm.training.trajectories` the model inputs. The baseline V1 recipe (AdamW with warmup + cosine per optimizer step, loss
 weights, horizon curriculum) is described in [docs/training.md](docs/training.md).
 Validation tracks prediction quality, skill against a persistence baseline
 and latent health, globally and per corpus (same page).

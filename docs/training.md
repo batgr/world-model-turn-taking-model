@@ -2,7 +2,8 @@
 
 This page describes the training recipe of `configs/train/lewm.yaml`, run by
 `uv run turn-wm train` (see the README for data, media roots, runs and
-checkpoints). The objective lives in `turn_wm.training.lewm`, the learning-rate
+checkpoints). The objective lives in `turn_wm.training.objective` (Lightning module in
+`turn_wm.training.lewm`), the learning-rate
 schedule in `turn_wm.training.scheduler`.
 
 ## Baseline V1

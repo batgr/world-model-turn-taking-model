@@ -17,13 +17,8 @@ from turn_wm.config import load_config
 from turn_wm.data.mimi_cache import MimiFeatureCaches
 from turn_wm.data.source import DATASETS
 from turn_wm.training import train as train_module
-from turn_wm.training.train import (
-    _build_callbacks,
-    _build_logger,
-    _config_hash,
-    _write_config,
-    _write_metadata,
-)
+from turn_wm.training.run_dir import hash_config, write_config, write_metadata
+from turn_wm.training.train import _build_callbacks, _build_logger
 
 GRID_STEPS = 50
 
@@ -334,7 +329,8 @@ def test_v2_recipe_tracks_full_horizon_transitions_after_first_epoch():
     assert cfg.trainer.max_steps == -1 and cfg.trainer.val_check_interval == 1.0
     assert cfg.prediction.curriculum.progress_basis == "first_epoch"
     assert [type(callback).__name__ for callback in callbacks] == [
-        "ModelCheckpoint", "FullHorizonEarlyStopping"
+        "ModelCheckpoint",
+        "FullHorizonEarlyStopping",
     ]
     assert callbacks[0].monitor == callbacks[1].monitor == "val/rollout_10_mse"
     assert callbacks[1].minimum_completed_epochs == 2
@@ -345,7 +341,8 @@ def test_v2_early_stopping_ignores_validation_before_full_h10_epoch(monkeypatch)
     callback = _build_callbacks(cfg, run_dir=Path("run"))[1]
     checked = []
     monkeypatch.setattr(
-        EarlyStopping, "_run_early_stopping_check",
+        EarlyStopping,
+        "_run_early_stopping_check",
         lambda self, trainer: checked.append(trainer.current_epoch),
     )
 
@@ -399,14 +396,14 @@ def test_config_hash_is_stable():
     first = load_config()
     second = load_config()
 
-    assert _config_hash(first) == _config_hash(second)
+    assert hash_config(first) == hash_config(second)
 
 
 def test_config_hash_changes_with_experiment():
     first = load_config()
     second = load_config(["optimizer.lr=3e-4"])
 
-    assert _config_hash(first) != _config_hash(second)
+    assert hash_config(first) != hash_config(second)
 
 
 def test_wandb_disabled_returns_false(tmp_path):
@@ -446,21 +443,21 @@ def test_checkpoint_is_inside_run_directory(tmp_path):
 def test_write_config_saves_the_resolved_config(tmp_path):
     cfg = load_config(["data.context_steps=20"])
 
-    _write_config(cfg, tmp_path)
+    write_config(cfg, tmp_path)
 
     saved = OmegaConf.load(tmp_path / "config.yaml")
 
     assert (tmp_path / "config.yaml").is_file()
     # Interpolations are resolved: the predictor size is written as a value.
     assert saved.model.predictor.num_frames == 20
-    assert _config_hash(saved) == _config_hash(cfg)
+    assert hash_config(saved) == hash_config(cfg)
 
 
 def test_write_metadata_records_the_run(tmp_path):
     cfg = load_config()
     git = {"commit": "abc", "dirty": False}
 
-    _write_metadata(
+    write_metadata(
         run_dir=tmp_path,
         run_id="run-1",
         config_hash="hash",
@@ -487,7 +484,7 @@ def test_run_writes_config_and_metadata_into_its_run_directory(
     cfg = run(media_roots)
 
     [run_dir] = run_dirs(tmp_path)
-    config_hash = _config_hash(cfg)
+    config_hash = hash_config(cfg)
     metadata = json.loads((run_dir / "metadata.json").read_text())
 
     assert run_dir.name.endswith(config_hash[:8])

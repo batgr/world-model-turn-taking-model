@@ -6,9 +6,11 @@ import torch
 from datasets import Dataset, DatasetDict
 
 from turn_wm import cli
+from turn_wm.data import cli as data_cli
 from turn_wm.data import dataset as dataset_module
 from turn_wm.data.reader import DecodedAudio, DecodedVideo, MediaWindow
 from turn_wm.data.source import LoadedCorpus, LoadedData
+from turn_wm.training import cli as training_cli
 from turn_wm.training import train as train_module
 
 
@@ -82,7 +84,7 @@ def fake_load(monkeypatch):
         calls.append(source)
         return state["data"]
 
-    monkeypatch.setattr(cli, "load_data", load)
+    monkeypatch.setattr(data_cli, "load_data", load)
 
     return calls, state
 
@@ -137,7 +139,7 @@ def test_inspect_data_formats_batch(fake_load, capsys):
 
     out = capsys.readouterr().out
 
-    assert calls == [cli.DATASETS["egocom"]]
+    assert calls == [data_cli.DATASETS["egocom"]]
     assert "source: batgre/conversational-dynamics-egocom" in out
     assert "revision: default branch (unpinned)" in out
     assert "samples: 3" in out
@@ -170,7 +172,7 @@ def test_network_failure_is_reported(monkeypatch):
     def load(source):
         raise ConnectionError("offline")
 
-    monkeypatch.setattr(cli, "load_data", load)
+    monkeypatch.setattr(data_cli, "load_data", load)
 
     with pytest.raises(SystemExit, match="could not reach Hugging Face"):
         cli.main(["inspect-data"])
@@ -180,7 +182,7 @@ def test_schema_mismatch_is_reported(monkeypatch):
     def load(source):
         raise ValueError("action_grid is missing required columns: ['action']")
 
-    monkeypatch.setattr(cli, "load_data", load)
+    monkeypatch.setattr(data_cli, "load_data", load)
 
     with pytest.raises(SystemExit, match="does not match the modelling data"):
         cli.main(["inspect-data"])
@@ -406,7 +408,7 @@ def test_multi_corpus_summary(fake_load, capsys):
 
     out = capsys.readouterr().out
 
-    assert calls == [cli.DATASETS["full"]]
+    assert calls == [data_cli.DATASETS["full"]]
     assert "corpora:\n  - a\n  - b\n" in out
     assert "usable samples: 5" in out
     assert "Corpus: a" in out and "Corpus: b" in out
@@ -489,8 +491,8 @@ def test_train_loads_config_and_runs(monkeypatch):
     def fake_run(received_cfg):
         received["cfg"] = received_cfg
 
-    monkeypatch.setattr(cli, "load_config", fake_load_config)
-    monkeypatch.setattr(cli, "run_training", fake_run)
+    monkeypatch.setattr(training_cli, "load_config", fake_load_config)
+    monkeypatch.setattr(training_cli, "run_training", fake_run)
 
     assert (
         cli.main(
@@ -518,8 +520,8 @@ def test_train_accepts_no_overrides(monkeypatch):
         received["overrides"] = list(overrides)
         return cfg
 
-    monkeypatch.setattr(cli, "load_config", fake_load_config)
-    monkeypatch.setattr(cli, "run_training", lambda _: None)
+    monkeypatch.setattr(training_cli, "load_config", fake_load_config)
+    monkeypatch.setattr(training_cli, "run_training", lambda _: None)
 
     assert cli.main(["train"]) == 0
     assert received["overrides"] == []
@@ -528,7 +530,7 @@ def test_train_accepts_no_overrides(monkeypatch):
 def test_train_composes_the_real_config(monkeypatch):
     received = {}
     monkeypatch.setattr(
-        cli, "run_training", lambda cfg: received.setdefault("cfg", cfg)
+        training_cli, "run_training", lambda cfg: received.setdefault("cfg", cfg)
     )
 
     assert cli.main(["train", "data.dataset=egocom", "loader.batch_size=16"]) == 0
@@ -539,7 +541,9 @@ def test_train_composes_the_real_config(monkeypatch):
 
 @pytest.mark.parametrize("override", ["model.nope=1", "train=missing", "==="])
 def test_train_invalid_override_is_a_usage_error(monkeypatch, capsys, override):
-    monkeypatch.setattr(cli, "run_training", lambda _: pytest.fail("must not run"))
+    monkeypatch.setattr(
+        training_cli, "run_training", lambda _: pytest.fail("must not run")
+    )
 
     with pytest.raises(SystemExit) as error:
         cli.main(["train", override])
@@ -552,7 +556,7 @@ def test_train_rejected_config_is_a_clear_cli_error(monkeypatch):
     def reject(cfg):
         raise ValueError("prediction.rollout_context_size must lie in [1, 15]")
 
-    monkeypatch.setattr(cli, "run_training", reject)
+    monkeypatch.setattr(training_cli, "run_training", reject)
 
     with pytest.raises(SystemExit) as error:
         cli.main(["train", "prediction.rollout_context_size=100"])
@@ -601,7 +605,7 @@ def fake_precompute(monkeypatch, tmp_path):
         )
         return manifest
 
-    monkeypatch.setattr(cli, "precompute_mimi_cache", precompute)
+    monkeypatch.setattr(data_cli, "precompute_mimi_cache", precompute)
 
     return received
 
@@ -633,7 +637,7 @@ def test_precompute_mimi_propagates_every_option(
 
     assert cli.main(argv) == 0
 
-    assert calls == [cli.DATASETS["egocom"]]
+    assert calls == [data_cli.DATASETS["egocom"]]
     assert fake_precompute["loaded"] is state["data"]
     assert fake_precompute["media_roots"] == {"synthetic": tmp_path}
     assert fake_precompute["output_root"] == output
@@ -794,7 +798,7 @@ def test_precompute_mimi_errors_are_clear_cli_errors(
     def fail(loaded, **kwargs):
         raise error
 
-    monkeypatch.setattr(cli, "precompute_mimi_cache", fail)
+    monkeypatch.setattr(data_cli, "precompute_mimi_cache", fail)
 
     argv = [
         "precompute-mimi",

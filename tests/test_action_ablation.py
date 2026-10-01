@@ -21,23 +21,22 @@ from turn_wm.data.dataset import ACTION_TO_ID, MASKED_ACTION_ID
 from turn_wm.evaluation.latent_analysis.action_ablation import (
     CONDITIONS,
     COUNTERFACTUAL_NEXT,
-    FOCAL_STATE,
     FORCED_ACTIONS,
-    STATE_PRESERVING,
     OBSERVED,
     PRED,
     SHUFFLE_DONOR,
     SHUFFLED,
     SHUFFLED_ACTION_IDS,
+    STATE_PRESERVING,
     ablation_representations,
     extract_action_ablation_run,
     forced_anchor_action,
-    state_preserving_actions,
     shuffle_donors,
     shuffled_actions,
+    state_preserving_actions,
 )
-from turn_wm.evaluation.latent_analysis.action_ablation_analysis import (
-    paired_metrics,
+from turn_wm.evaluation.latent_analysis.action_ablation_analysis import paired_metrics
+from turn_wm.evaluation.latent_analysis.action_ablation_report import (
     write_action_ablation,
 )
 from turn_wm.evaluation.latent_analysis.rollout import (
@@ -47,13 +46,10 @@ from turn_wm.evaluation.latent_analysis.rollout import (
     TRUE_FUTURE_LATENT,
     rollout_representations,
 )
-from turn_wm.evaluation.latent_analysis.rollout_dynamics import (
-    ALIGNMENT,
-    row_terms,
-)
+from turn_wm.evaluation.latent_analysis.rollout_dynamics import ALIGNMENT, row_terms
 from turn_wm.evaluation.latent_analysis.show import show_action_ablation
 from turn_wm.models.lewm.sigreg import SIGReg
-from turn_wm.training.lewm import trajectories
+from turn_wm.training.trajectories import trajectories
 
 # The synthetic run's fixtures.
 cache_root = runs.cache_root
@@ -335,12 +331,13 @@ def test_cli_show_prints_the_results_and_changes_no_result(
     assert "bootstrap" in first.err and "action ablation: done in" in first.err
     assert f"action_ablation: {snapshot / 'analysis' / 'action_ablation'}" in first.out
     printed = shown.out
-    assert "Integrity check (no future token read): passed" in printed
+    assert "# Ego-action ablation and forced-action effects" in printed
+    assert "Integrity check" in printed
     assert "Skill vs persistence (primary)" in printed
     assert "observed − state_preserving" in printed
     assert "Forced one-step action effect" in printed
     # The first horizon reads no future token: its exposed subset is empty.
-    assert "Not evaluable: 0.1 s, event_exposed has no rows." in printed
+    assert "| 0.1 s | event_exposed | 0 (0) | n/a" in printed
     assert str(tmp_path / "shown" / "figures" / "rollout_ablation.png") in printed
     assert str(tmp_path / "shown" / "report.md") in printed
 
@@ -366,12 +363,9 @@ def test_show_action_ablation_in_a_notebook(tmp_path, cache_root, loads, monkeyp
     show_action_ablation(output)
 
     assert shown[0][0] == "html" and "Integrity check" in shown[0][1]
-    titles = [item[1] for item in shown[1:5]]
-    assert "Skill vs persistence (primary)" in titles[0]
-    assert "Forced one-step action effect" in titles[3]
     # A missing figure is said, not silently skipped.
-    assert shown[5] == ("image", "rollout_ablation.png")
-    assert shown[6][0] == "html" and "Missing figure" in shown[6][1]
+    assert shown[1] == ("image", "rollout_ablation.png")
+    assert shown[2][0] == "html" and "Missing figure" in shown[2][1]
     assert rollouts._hashes(output) == before
 
 

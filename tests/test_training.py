@@ -14,15 +14,15 @@ from turn_wm.config import load_config
 from turn_wm.data.dataset import MASKED_ACTION_ID, PAD_ACTION_ID
 from turn_wm.data.reader import DecodedAudio, MediaWindow
 from turn_wm.models.lewm.sigreg import SIGReg
-from turn_wm.training import lewm as training_module
-from turn_wm.training.lewm import (
-    LeWMModule,
-    lejepa_losses,
+from turn_wm.training import objective as training_module
+from turn_wm.training.config import (
     rollout_horizons_for_progress,
     training_window,
-    trajectories,
     validate_config,
 )
+from turn_wm.training.lewm import LeWMModule
+from turn_wm.training.objective import lejepa_losses
+from turn_wm.training.trajectories import trajectories
 
 SAMPLE_RATE = 1_000
 SAMPLES_PER_STEP = SAMPLE_RATE // 10
@@ -84,7 +84,9 @@ def test_v2_curriculum_follows_first_epoch_not_eight_epoch_cosine():
         (1500, [1, 5, 10]),
     ):
         module._trainer.global_step = step
-        assert rollout_horizons_for_progress(cfg, module._training_progress()) == expected
+        assert (
+            rollout_horizons_for_progress(cfg, module._training_progress()) == expected
+        )
 
 
 def make_model(cfg, *, encoder_dim=512, **kwargs):

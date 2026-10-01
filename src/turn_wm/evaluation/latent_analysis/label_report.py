@@ -12,8 +12,6 @@ later probes must test.
 
 from __future__ import annotations
 
-import hashlib
-import json
 from collections.abc import Mapping, Sequence
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
@@ -22,6 +20,7 @@ import pyarrow as pa
 import pyarrow.parquet as pq
 import torch
 
+from turn_wm.evaluation.latent_analysis.artifacts import sha256, write_json
 from turn_wm.evaluation.latent_analysis.label_source import (
     CATEGORICAL,
     CONVERSATIONAL_STATE,
@@ -59,6 +58,7 @@ from turn_wm.evaluation.latent_analysis.rendering import (
     SURFACE,
     close,
     limits,
+    number,
     percent,
     style,
 )
@@ -175,18 +175,18 @@ def write_labels(
         audits={c: a.provenance for c, a in audits.items()},
         source=source,
         plotted=int(plotted.sum()),
-        joined_sha256=_sha256(joined_path),
+        joined_sha256=sha256(joined_path),
         figures={
             section: [f"figures/{section}/{name}" for name in items]
             for section, items in figures.items()
         },
     )
 
-    _write_json(output_dir / "label_inventory.json", inventory)
+    write_json(output_dir / "label_inventory.json", inventory)
     (output_dir / "label_inventory.md").write_text(
         inventory_markdown(inventory, audits), encoding="utf-8"
     )
-    _write_json(output_dir / "summary.json", summary)
+    write_json(output_dir / "summary.json", summary)
     pq.write_table(metrics_table(analysis), output_dir / "metrics.parquet")
     pq.write_table(
         pa.Table.from_pylist(joined.coverage), output_dir / "coverage.parquet"
@@ -599,9 +599,9 @@ def _describe(name: str, variable: Mapping[str, Any], representations) -> str:
                 f"in `{representation}`, the classes ({classes}) account for "
                 f"{percent(overall['between_variance_fraction'])} of the variance "
                 f"(between-to-within ratio "
-                f"{_number(overall['between_to_within_variance_ratio'])}; "
-                f"silhouette natural {_number(overall['silhouette_natural'])}, "
-                f"balanced {_number(overall['silhouette_balanced'])}); within "
+                f"{number(overall['between_to_within_variance_ratio'])}; "
+                f"silhouette natural {number(overall['silhouette_natural'])}, "
+                f"balanced {number(overall['silhouette_balanced'])}); within "
                 f"corpora: {corpora}"
             )
         else:
@@ -609,8 +609,8 @@ def _describe(name: str, variable: Mapping[str, Any], representations) -> str:
             sentences.append(
                 f"in `{representation}`, {overall['samples']:,} valid rows "
                 f"(median {median:.3g}) have Spearman ρ "
-                f"{_number(overall['spearman_pc1'])} with PC1 and "
-                f"{_number(overall['spearman_pc2'])} with PC2; quantile bins account "
+                f"{number(overall['spearman_pc1'])} with PC1 and "
+                f"{number(overall['spearman_pc2'])} with PC2; quantile bins account "
                 f"for {percent(overall['between_bin_variance_fraction'])} of the "
                 f"variance; within corpora: {corpora}"
             )
@@ -644,10 +644,6 @@ def _representations(variables) -> list[str]:
         return list(variable["representations"])
 
     return []
-
-
-def _number(value) -> str:
-    return "n/a" if value is None else f"{value:.3f}"
 
 
 # ---------------------------------------------------------------------------
@@ -800,11 +796,3 @@ def _flatten(metrics: Mapping[str, Any], prefix: str = ""):
             yield name, float(value)
         elif isinstance(value, Mapping):
             yield from _flatten(value, f"{name}.")
-
-
-def _write_json(path: Path, value: Any) -> None:
-    path.write_text(json.dumps(value, indent=2) + "\n", encoding="utf-8")
-
-
-def _sha256(path: Path) -> str:
-    return hashlib.sha256(path.read_bytes()).hexdigest()

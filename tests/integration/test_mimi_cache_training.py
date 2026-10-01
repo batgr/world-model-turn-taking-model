@@ -22,13 +22,11 @@ from turn_wm.data.collate import collate_turn_taking
 from turn_wm.data.mimi_cache import MimiFeatureStore
 from turn_wm.data.source import EGOCOM, FULL, load_data
 from turn_wm.models.encoders import mimi as mimi_module
-from turn_wm.training.lewm import (
-    LeWMModule,
-    lejepa_losses,
-    training_window,
-    trajectories,
-)
-from turn_wm.training.train import validate_mimi_cache
+from turn_wm.training.config import training_window
+from turn_wm.training.lewm import LeWMModule
+from turn_wm.training.objective import lejepa_losses
+from turn_wm.training.observations import validate_mimi_cache
+from turn_wm.training.trajectories import trajectories
 
 pytestmark = pytest.mark.integration
 

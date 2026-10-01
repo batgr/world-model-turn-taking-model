@@ -5,7 +5,8 @@ from turn_wm.config import load_config
 from turn_wm.models.build import build_model
 from turn_wm.models.lewm.mlp import CausalBatchNorm1d
 from turn_wm.models.lewm.sigreg import SIGReg
-from turn_wm.training.lewm import Trajectories, lejepa_forward
+from turn_wm.training.objective import lejepa_forward
+from turn_wm.training.trajectories import Trajectories
 
 
 def test_training_prefix_does_not_depend_on_future_positions():
@@ -135,7 +136,11 @@ def test_positional_cbn_config_uses_full_v2_trajectory_for_projector():
 
     assert isinstance(projector_norm, CausalBatchNorm1d)
     assert isinstance(pred_norm, CausalBatchNorm1d)
-    assert projector_norm.num_positions == cfg.data.context_steps + cfg.data.future_steps == 40
+    assert (
+        projector_norm.num_positions
+        == cfg.data.context_steps + cfg.data.future_steps
+        == 40
+    )
     assert pred_norm.num_positions == cfg.model.predictor.num_frames == 30
 
     model.eval()

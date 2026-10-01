@@ -104,6 +104,7 @@ def analyze_labels(
     for variable in variables:
         bar.set_description(f"labels | {variable.name}")
         valid = torch.tensor([v is not None for v in variable.values])
+        values: torch.Tensor | None = None
 
         if variable.kind != CATEGORICAL:
             values = torch.tensor(
@@ -136,6 +137,7 @@ def analyze_labels(
                         condition=condition,
                     )
                 else:
+                    assert values is not None
                     result = continuous_metrics(
                         x[index],
                         values[index],
@@ -266,12 +268,12 @@ def balanced_silhouette(
     if per_class < 2:
         return None, per_class, "a class has fewer than 2 rows"
 
-    chosen = []
+    chosen: list[int] = []
 
     for rows in members.values():
         rows_tensor = torch.tensor(rows)
         order = keys[rows_tensor].argsort()[:per_class]
-        chosen += rows_tensor[order].tolist()
+        chosen.extend(int(i) for i in rows_tensor[order].tolist())
 
     chosen.sort(key=lambda i: int(keys[i]))
     value, _, reason = silhouette(x[chosen], [labels[i] for i in chosen])
@@ -381,7 +383,7 @@ def domain_structure(strengths: Mapping[str, float | None]) -> dict[str, Any]:
     return {
         "class": kind,
         "strengths": dict(strengths),
-        "strongest": max(defined, key=defined.get),
+        "strongest": max(defined, key=lambda name: defined[name]),
     }
 
 

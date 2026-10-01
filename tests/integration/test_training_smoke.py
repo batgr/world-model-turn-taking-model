@@ -15,12 +15,10 @@ from turn_wm.config import load_config
 from turn_wm.data.build import build_dataset
 from turn_wm.data.collate import collate_turn_taking
 from turn_wm.data.source import EGOCOM, load_data
-from turn_wm.training.lewm import (
-    LeWMModule,
-    lejepa_losses,
-    training_window,
-    trajectories,
-)
+from turn_wm.training.config import training_window
+from turn_wm.training.lewm import LeWMModule
+from turn_wm.training.objective import lejepa_losses
+from turn_wm.training.trajectories import trajectories
 
 pytestmark = pytest.mark.integration
 

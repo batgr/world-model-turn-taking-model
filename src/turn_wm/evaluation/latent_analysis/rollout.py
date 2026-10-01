@@ -2,7 +2,7 @@
 Extract a trajectory snapshot of the validation rollout of a trained run.
 
 The rollout is the validation rollout itself: every batch goes through
-`lejepa_forward` (`turn_wm.training.lewm`), exactly as `validation_step` runs
+`lejepa_forward` (`turn_wm.training.objective`), exactly as `validation_step` runs
 it, and the snapshot keeps the latents and predictions that function
 returns. There is no second predictor path here.
 
@@ -40,7 +40,8 @@ from turn_wm.evaluation.latent_analysis.run import DEFAULT_CHECKPOINT, open_run
 from turn_wm.models.lewm.jepa import JEPA
 from turn_wm.models.lewm.sigreg import SIGReg
 from turn_wm.progress import log
-from turn_wm.training.lewm import Trajectories, lejepa_forward
+from turn_wm.training.objective import lejepa_forward
+from turn_wm.training.trajectories import Trajectories
 
 ROLLOUT_SPLIT = "validation"
 DEFAULT_ROLLOUT_SAMPLES = 10_000
@@ -117,7 +118,7 @@ def rollout_provenance(cfg: DictConfig) -> dict[str, Any]:
     window = int(cfg.prediction.rollout_context_size)
 
     return {
-        "implementation": "turn_wm.training.lewm.lejepa_forward",
+        "implementation": "turn_wm.training.objective.lejepa_forward",
         "horizons_steps": horizons,
         "grid_step_s": 1 / GRID_RATE_HZ,
         "horizons_s": [h / GRID_RATE_HZ for h in horizons],

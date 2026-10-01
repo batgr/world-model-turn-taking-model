@@ -63,7 +63,7 @@ from turn_wm.evaluation.latent_analysis.run import DEFAULT_CHECKPOINT, open_run
 from turn_wm.models.lewm.jepa import JEPA
 from turn_wm.models.lewm.sigreg import SIGReg
 from turn_wm.progress import log, progress
-from turn_wm.training.lewm import Trajectories
+from turn_wm.training.trajectories import Trajectories
 
 ABLATION_SPLIT = "validation"
 DEFAULT_ABLATION_SAMPLES = 10_000
@@ -352,7 +352,7 @@ def extract_action_ablation(
     (e.g. the fixed-permutation validation loader).
     """
 
-    sample_ids, datasets, states, anchor_actions, futures = collect_futures(
+    sample_ids, datasets, _states, anchor_actions, futures = collect_futures(
         batches, max_samples=max_samples, total=total
     )
     groups = [

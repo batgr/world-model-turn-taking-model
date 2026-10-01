@@ -10,10 +10,7 @@ import pytest
 import torch
 
 from turn_wm.cli import main
-from turn_wm.evaluation.latent_analysis.analyze import (
-    analyze_snapshot,
-    spectrum_report,
-)
+from turn_wm.evaluation.latent_analysis.analyze import analyze_snapshot
 from turn_wm.evaluation.latent_analysis.extract import (
     RepresentationSnapshot,
     write_snapshot,
@@ -23,6 +20,7 @@ from turn_wm.evaluation.latent_analysis.spectrum import (
     analyze_spectra,
     spectrum,
 )
+from turn_wm.evaluation.latent_analysis.spectrum_report import spectrum_report
 from turn_wm.training.metrics import effective_rank
 
 
@@ -335,7 +333,7 @@ def test_cli_show_prints_the_spectrum_and_changes_no_result(
         p.name: p.read_bytes() for p in shown.iterdir()
     }
     printed = capsys.readouterr().out
-    assert "effective rank / D" in printed and "components 99%" in printed
+    assert "# Spectrum" in printed and "components for 90% / 95% / 99%" in printed
     assert str(shown / "cumulative_variance.png") in printed
     assert f"Report: {shown / 'report.md'}" in printed
 

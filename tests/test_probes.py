@@ -19,7 +19,6 @@ from test_latent_labels import GRID_SHA, entry
 
 from turn_wm.cli import main
 from turn_wm.data.labels import local_store
-from turn_wm.evaluation.latent_analysis.analyze import Snapshot
 from turn_wm.evaluation.latent_analysis.extract import (
     RepresentationSnapshot,
     write_snapshot,
@@ -29,26 +28,29 @@ from turn_wm.evaluation.latent_analysis.label_source import (
     CONTINUOUS,
     CorpusLabelSource,
 )
-from turn_wm.evaluation.latent_analysis.probes import (
+from turn_wm.evaluation.latent_analysis.linear_probe import (
     LOGISTIC_C_GRID,
     RIDGE_ALPHA_GRID,
-    ProbeData,
-    Setting,
     Standardizer,
-    analyze_probes,
     balanced_accuracy,
-    check_no_recording_leakage,
     choose_regularization,
     fit_probe,
     probe_predictions,
-    probe_settings,
     r2,
     recording_folds,
-    run_probe,
     select_regularization,
-    write_probes,
 )
+from turn_wm.evaluation.latent_analysis.probes import (
+    ProbeData,
+    Setting,
+    analyze_probes,
+    check_no_recording_leakage,
+    probe_settings,
+    run_probe,
+)
+from turn_wm.evaluation.latent_analysis.probes_report import write_probes
 from turn_wm.evaluation.latent_analysis.show import show_probes
+from turn_wm.evaluation.latent_analysis.snapshot import Snapshot
 
 CORPORA = ("ego4d", "egocom")
 STATES = ("silence", "ego_only", "others_only", "both")
@@ -563,7 +565,7 @@ def test_row_order_does_not_change_the_scores(tmp_path, snapshots):
 def test_show_changes_no_artifact(tmp_path, snapshots, monkeypatch, capsys):
     sources = _sources(tmp_path)
     monkeypatch.setattr(
-        "turn_wm.evaluation.latent_analysis.probes.hub_label_sources",
+        "turn_wm.evaluation.latent_analysis.probes_report.hub_label_sources",
         lambda provenance, labels_revision=None: sources,
     )
     train, validation = map(str, snapshots)
@@ -585,10 +587,10 @@ def test_show_changes_no_artifact(tmp_path, snapshots, monkeypatch, capsys):
     plain = snapshots[1] / "analysis" / "probes"
     assert _hashes(plain) == _hashes(tmp_path / "shown")
     printed = capsys.readouterr().out
-    assert "Key deltas (pooled, latent − features):" in printed
-    assert "instantaneous.ego_speaking: delta" in printed
+    assert "# Linear probe evaluation" in printed
+    assert "## Current conversational state" in printed
 
-    # In a notebook: the table, the deltas, then the four figures.
+    # In a notebook: the persisted report, then the four figures.
     before = _hashes(plain)
     shown = []
     ipython: Any = types.ModuleType("IPython")
@@ -602,8 +604,8 @@ def test_show_changes_no_artifact(tmp_path, snapshots, monkeypatch, capsys):
 
     show_probes(plain)
 
-    assert "Probe scores" in shown[0][1] and "Key deltas" in shown[1][1]
-    assert [item[1] for item in shown[2:]] == [
+    assert "# Linear probe evaluation" in shown[0][1]
+    assert [item[1] for item in shown[1:]] == [
         "current_state.png",
         "temporal_state.png",
         "future_state.png",

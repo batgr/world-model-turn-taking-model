@@ -43,38 +43,41 @@ evaluable, never dropped. The test split is never read.
 
 from __future__ import annotations
 
-import bisect
-import importlib.util
-import json
 import math
 import time
 from collections.abc import Mapping, Sequence
-from dataclasses import asdict, dataclass
-from pathlib import Path
-from typing import TYPE_CHECKING, Any
+from dataclasses import asdict
+from typing import Any
 
-import pyarrow as pa
-import pyarrow.parquet as pq
 import torch
 
-from turn_wm.evaluation.latent_analysis.analyze import (
-    Snapshot,
-    describe_snapshot,
-    read_snapshot,
+from turn_wm.evaluation.latent_analysis.concept_labels import (
+    CONCEPTS,
+    GROUPED_CV,
+    LOCAL_WINDOW_CELLS,
+    SPLIT,
+    Concept,
+    CorpusTables,
+    concept_values,
+    load_tables,
+    unavailable,
 )
 from turn_wm.evaluation.latent_analysis.label_source import (
-    BOOLEAN_CLASSES,
     CATEGORICAL,
-    CONTINUOUS,
-    TIME_TOLERANCE_S,
-    CorpusAudit,
     CorpusLabelSource,
     audit_corpus,
-    hub_label_sources,
+)
+from turn_wm.evaluation.latent_analysis.linear_probe import (
+    CV_FOLDS,
+    balanced_accuracy_of_sums,
+    class_sums,
+    fit_probe,
+    r2_of_sums,
+    recording_folds,
+    regression_sums,
 )
 from turn_wm.evaluation.latent_analysis.probes import (
     CONFIDENCE,
-    CV_FOLDS,
     DEFAULT_BOOTSTRAP,
     FEATURES,
     LATENT,
@@ -82,541 +85,27 @@ from turn_wm.evaluation.latent_analysis.probes import (
     POOLED,
     REPRESENTATIONS,
     Setting,
-    _above,
-    _balanced_accuracy,
-    _class_sums,
-    _comparison_panel,
-    _fmt,
-    _new_figure,
-    _projector_effect,
-    _r2,
-    _regression_sums,
-    _score_table,
-    _seed,
-    _source,
     check_snapshots,
-    fit_probe,
     probe_data,
-    recording_folds,
     run_probe,
 )
-from turn_wm.evaluation.latent_analysis.rendering import (
-    INK,
-    SECONDARY_INK,
-    SURFACE,
-    close,
+from turn_wm.evaluation.latent_analysis.probes_report import (
+    format_score,
 )
 from turn_wm.evaluation.latent_analysis.rollout_dynamics import (
     cluster_bootstrap_weights,
 )
+from turn_wm.evaluation.latent_analysis.seeding import derived_seed
+from turn_wm.evaluation.latent_analysis.snapshot import Snapshot
 from turn_wm.progress import log, progress
-
-if TYPE_CHECKING:
-    from matplotlib.figure import Figure
 
 SCHEMA_VERSION = 1
 ANALYSIS = "concepts"
 
-VOCAL, MULTI_PARTY, SOCIAL, UNRELATED = (
-    "vocal_activity",
-    "multi_party",
-    "social",
-    "non_conversational",
-)
-AXES = (VOCAL, MULTI_PARTY, SOCIAL, UNRELATED)
-AXIS_TITLES = {
-    VOCAL: "Vocal activity",
-    MULTI_PARTY: "Multi-party structure",
-    SOCIAL: "Social signals",
-    UNRELATED: "Unrelated to the conversation",
-}
 
-SPLIT, GROUPED_CV = "train_to_validation", "grouped_cv"
 SETTING_NAMES = {SPLIT: "train → validation", GROUPED_CV: "grouped CV (conversations)"}
 
-GRID_STEP_S = 0.1
-LOCAL_WINDOW_CELLS = 100  # 10 s of 100 ms cells, ending at the anchor's cell
 MAX_ROWS_PER_RECORDING = 25
-
-VOICES = ("0", "1", "2+")
-LOCAL_SPEAKERS = ("0-1", "2", "3+")
-
-
-@dataclass(frozen=True)
-class Concept:
-    name: str
-    axis: str
-    kind: str  # CATEGORICAL or CONTINUOUS
-    classes: tuple[str, ...] | None
-    protocol: str  # SPLIT or GROUPED_CV
-    corpora: tuple[str, ...]  # where the release defines it
-    labels: tuple[str, ...]  # registry labels it is derived from
-    question: str
-    definition: str
-
-
-CONCEPTS = (
-    Concept(
-        "voices_now",
-        VOCAL,
-        CATEGORICAL,
-        VOICES,
-        SPLIT,
-        ("egocom", "ego4d"),
-        ("instantaneous.active_speaker_count_subframes",),
-        "Is the number of simultaneous voices (silence, one, overlap) accessible?",
-        "max over the cell's subframes of active_speaker_count; null if any "
-        "subframe is unknown",
-    ),
-    Concept(
-        "other_onset_now",
-        VOCAL,
-        CATEGORICAL,
-        BOOLEAN_CLASSES,
-        SPLIT,
-        ("egocom", "ego4d"),
-        ("events.other_onset_subframes",),
-        "Is another participant's onset accessible? It is not in the action "
-        "channel, which carries the wearer's events only.",
-        "true if another participant starts speaking in any subframe of the "
-        "cell; false only if every subframe is known false",
-    ),
-    Concept(
-        "local_speakers_10s",
-        MULTI_PARTY,
-        CATEGORICAL,
-        LOCAL_SPEAKERS,
-        SPLIT,
-        ("egocom", "ego4d"),
-        ("instantaneous.speaker_activity",),
-        "Is the local party size (distinct speakers in the last 10 s) accessible?",
-        f"participants known to speak in the {LOCAL_WINDOW_CELLS} cells ending "
-        "at the anchor (0-1, 2, 3+); null if the window starts before the "
-        "recording or more than half of its cells have an unknown participant",
-    ),
-    Concept(
-        "participant_count",
-        MULTI_PARTY,
-        CONTINUOUS,
-        None,
-        GROUPED_CV,
-        ("ego4d",),
-        ("metadata.participants",),
-        "Is the recording's exact number of participants accessible?",
-        "participant_count of the recording (people annotated in the scene, "
-        "speaking or not); EgoCom is excluded: 53 of its 54 conversations "
-        "have 3",
-    ),
-    Concept(
-        "dyadic",
-        MULTI_PARTY,
-        CATEGORICAL,
-        BOOLEAN_CLASSES,
-        GROUPED_CV,
-        ("ego4d",),
-        ("metadata.participants",),
-        "Is a dyad (2 participants) distinguishable from a group?",
-        "participant_count == 2",
-    ),
-    Concept(
-        "addressed_to_wearer",
-        SOCIAL,
-        CATEGORICAL,
-        BOOLEAN_CLASSES,
-        SPLIT,
-        ("ego4d",),
-        ("social_native.anyone_talking_to_wearer_subframes",),
-        "Is speech addressed to the wearer (Talking-To-Me) accessible?",
-        "true if any valid subframe of the cell is true; false only if every "
-        "subframe is valid and false",
-    ),
-    Concept(
-        "wearer_native",
-        SOCIAL,
-        CATEGORICAL,
-        BOOLEAN_CLASSES,
-        GROUPED_CV,
-        ("egocom",),
-        ("metadata.participant_native_speaker", "instantaneous.ego_speaking"),
-        "Is the wearer's native-speaker status accessible while they speak?",
-        "the wearer's native_speaker, on cells where the wearer speaks",
-    ),
-    Concept(
-        "wearer_host",
-        SOCIAL,
-        CATEGORICAL,
-        BOOLEAN_CLASSES,
-        GROUPED_CV,
-        ("egocom",),
-        ("metadata.participant_is_host", "instantaneous.ego_speaking"),
-        "Is the wearer's role (host or guest) accessible while they speak?",
-        "the wearer's is_host, on cells where the wearer speaks",
-    ),
-    Concept(
-        "background_fan",
-        UNRELATED,
-        CATEGORICAL,
-        BOOLEAN_CLASSES,
-        GROUPED_CV,
-        ("egocom",),
-        ("metadata.background_conditions",),
-        "Is a background fan, a nuisance, accessible?",
-        "the recording's background_fan",
-    ),
-    Concept(
-        "background_music",
-        UNRELATED,
-        CATEGORICAL,
-        BOOLEAN_CLASSES,
-        GROUPED_CV,
-        ("egocom",),
-        ("metadata.background_conditions",),
-        "Is background music, a nuisance, accessible?",
-        "the recording's background_music",
-    ),
-    Concept(
-        "wearer_speech_rate",
-        UNRELATED,
-        CONTINUOUS,
-        None,
-        SPLIT,
-        ("egocom",),
-        ("text.speech_rate",),
-        "Is the wearer's speaking rate, a paralinguistic trait, accessible?",
-        "words_per_second of the wearer's transcribed turn containing the "
-        "anchor (a property of the whole turn, so it includes words after the "
-        "anchor); null outside a turn or when the rate is invalid",
-    ),
-)
-
-
-# ---------------------------------------------------------------------------
-# Derivations (pure; one value per row, None when missing)
-# ---------------------------------------------------------------------------
-
-
-def voices(counts: Sequence[int | None] | None) -> str | None:
-    known = [c for c in counts or () if c is not None]
-
-    if counts is None or len(known) != len(counts):
-        return None
-
-    return VOICES[min(max(known), 2)]
-
-
-def any_event(
-    values: Sequence[bool | None] | None, valid: Sequence[bool] | None = None
-) -> str | None:
-    """Tri-state "any": true as soon as one known value is true; false only
-    when every value is known false."""
-
-    if values is None:
-        return None
-
-    known = [v if valid is None or valid[i] else None for i, v in enumerate(values)]
-
-    if any(v is True for v in known):
-        return "true"
-    if all(v is False for v in known):
-        return "false"
-
-    return None
-
-
-def local_speakers(window: Sequence[Sequence[bool | None] | None]) -> str | None:
-    """Distinct participants known to speak in a full window of cells."""
-
-    if len(window) < LOCAL_WINDOW_CELLS:
-        return None
-
-    unknown = sum(cell is None or any(v is None for v in cell) for cell in window)
-
-    if unknown > len(window) / 2:
-        return None
-
-    speakers = {
-        p for cell in window if cell is not None for p, v in enumerate(cell) if v
-    }
-
-    return LOCAL_SPEAKERS[min(max(len(speakers) - 1, 0), 2)]
-
-
-def turn_rate(
-    turns: Sequence[tuple[float, float, float | None]], time_s: float
-) -> float | None:
-    """Rate of the turn [start, end) containing `time_s`; turns sorted by start."""
-
-    k = bisect.bisect_right([start for start, _, _ in turns], time_s) - 1
-
-    if k < 0:
-        return None
-
-    _, end, rate = turns[k]
-
-    return rate if time_s < end else None
-
-
-# ---------------------------------------------------------------------------
-# Label tables
-# ---------------------------------------------------------------------------
-
-
-@dataclass
-class CorpusTables:
-    """One corpus's label tables, restricted to the snapshots' recordings."""
-
-    grid: dict[str, dict[str, list[Any]]]  # recording -> column -> per cell
-    social: dict[str, dict[str, list[Any]]]
-    recordings: dict[str, dict[str, Any]]
-    wearers: dict[str, dict[str, Any]]  # recording -> the wearer's participant row
-    turns: dict[str, list[tuple[float, float, float | None]]]  # wearer's turns
-
-
-GRID_COLUMNS = (
-    "active_speaker_count_subframes",
-    "other_onset_subframes",
-    "speaker_activity",
-    "ego_speaking",
-)
-SOCIAL_COLUMNS = (
-    "anyone_talking_to_wearer_subframes",
-    "anyone_talking_to_wearer_valid_subframes",
-)
-
-
-def unavailable(audit: CorpusAudit, concept: Concept) -> str | None:
-    """Why `concept` cannot be derived for this corpus, or None."""
-
-    if audit.corpus not in concept.corpora:
-        return f"not defined for {audit.corpus}"
-
-    for label in concept.labels:
-        entry = audit.entry(label)
-
-        if entry is not None and entry.get("extractor") in audit.rejected:
-            raise ValueError(
-                f"{audit.corpus}: {label} comes from extractor {entry['extractor']}, "
-                f"{audit.rejected[entry['extractor']]}"
-            )
-
-        reason = audit.unavailable_reason(label)
-
-        if reason is not None:
-            return f"{label}: {reason}"
-
-    return None
-
-
-def load_tables(
-    source: CorpusLabelSource, audit: CorpusAudit, recordings: set[str]
-) -> CorpusTables:
-    """Read the tables the concepts need, for `recordings` only."""
-
-    def table(extractor: str, kind: str, columns: Sequence[str]) -> pa.Table | None:
-        manifest = audit.manifests.get(extractor)
-
-        if manifest is None or kind not in (manifest.get("tables") or {}):
-            return None
-
-        path = source.fetch(f"{extractor}/{manifest['tables'][kind]['file']}")
-        present = set(pq.read_schema(path).names)
-
-        return pq.read_table(
-            path,
-            columns=[c for c in columns if c in present],
-            filters=[("recording_id", "in", sorted(recordings))],
-        )
-
-    keys = ["recording_id", "decision_index", "decision_time_s"]
-    grid = table("speech", "grid", [*keys, *GRID_COLUMNS])
-    social = table("social", "grid", [*keys, *SOCIAL_COLUMNS])
-    recording_rows = table(
-        "speech",
-        "recordings",
-        [
-            "recording_id",
-            "conversation_id",
-            "wearer_index",
-            "participant_count",
-            "background_fan",
-            "background_music",
-        ],
-    )
-    participants = table(
-        "speech",
-        "participants",
-        ["recording_id", "participant_index", "is_ego", "native_speaker", "is_host"],
-    )
-    segments = table(
-        "text",
-        "segments",
-        [
-            "recording_id",
-            "participant_index",
-            "start_s",
-            "end_s",
-            "words_per_second",
-            "speech_rate_valid",
-        ],
-    )
-
-    if recording_rows is None:
-        raise ValueError(f"{source.corpus}: no speech recordings table")
-
-    recording_info = {r["recording_id"]: r for r in recording_rows.to_pylist()}
-    missing = sorted(recordings - set(recording_info))
-
-    if missing:
-        raise ValueError(
-            f"{source.corpus}: recordings {missing[:3]} are not in the label release"
-        )
-
-    wearers = {}
-
-    for row in [] if participants is None else participants.to_pylist():
-        if row["is_ego"]:
-            if row["recording_id"] in wearers:
-                raise ValueError(f"{row['recording_id']}: several wearers")
-            wearers[row["recording_id"]] = row
-
-    turns: dict[str, list[tuple[float, float, float | None]]] = {}
-
-    for row in [] if segments is None else segments.to_pylist():
-        info = recording_info[row["recording_id"]]
-
-        if row["participant_index"] != info["wearer_index"]:
-            continue
-
-        rate = row["words_per_second"] if row["speech_rate_valid"] else None
-        turns.setdefault(row["recording_id"], []).append(
-            (row["start_s"], row["end_s"], rate)
-        )
-
-    for rows in turns.values():
-        rows.sort()
-
-    return CorpusTables(
-        grid=_by_recording(grid),
-        social=_by_recording(social),
-        recordings=recording_info,
-        wearers=wearers,
-        turns=turns,
-    )
-
-
-def _by_recording(table: pa.Table | None) -> dict[str, dict[str, list[Any]]]:
-    """recording -> column -> values indexed by decision_index (checked contiguous)."""
-
-    if table is None:
-        return {}
-
-    data = table.to_pydict()
-    rows: dict[str, list[int]] = {}
-
-    for k, recording in enumerate(data["recording_id"]):
-        rows.setdefault(recording, []).append(k)
-
-    result = {}
-
-    for recording, members in rows.items():
-        members.sort(key=data["decision_index"].__getitem__)
-        part = {column: [values[k] for k in members] for column, values in data.items()}
-
-        if part["decision_index"] != list(range(len(members))):
-            raise ValueError(
-                f"{recording}: the grid's decision_index is not contiguous"
-            )
-
-        result[recording] = part
-
-    return result
-
-
-# ---------------------------------------------------------------------------
-# Values per snapshot row
-# ---------------------------------------------------------------------------
-
-
-def concept_values(
-    snapshot: Snapshot,
-    tables: Mapping[str, CorpusTables],
-    reasons: Mapping[str, Mapping[str, str | None]],
-) -> dict[str, list[Any]]:
-    """concept -> one value per snapshot row (None: missing or not derivable).
-
-    Grid rows are joined on (recording_id, decision_index = anchor_idx), and
-    their time must equal the snapshot's anchor_time.
-    """
-
-    metadata = snapshot.metadata
-    values = {c.name: [None] * len(metadata["sample_id"]) for c in CONCEPTS}
-
-    for i, (corpus, recording, anchor, time_s) in enumerate(
-        zip(
-            map(str, metadata["dataset"]),
-            map(str, metadata["recording_id"]),
-            map(int, metadata["anchor_idx"]),
-            map(float, metadata["anchor_time"]),
-            strict=True,
-        )
-    ):
-        corpus_tables = tables[corpus]
-        grid = corpus_tables.grid.get(recording)
-        cell = None
-
-        if grid is not None and anchor < len(grid["decision_index"]):
-            if abs(grid["decision_time_s"][anchor] - time_s) > TIME_TOLERANCE_S:
-                raise ValueError(
-                    f"{corpus}/{recording} decision_index {anchor}: grid time "
-                    f"{grid['decision_time_s'][anchor]} differs from the snapshot's "
-                    f"anchor_time {time_s}"
-                )
-            cell = {c: grid[c][anchor] for c in GRID_COLUMNS if c in grid}
-
-        info = corpus_tables.recordings[recording]
-        wearer = corpus_tables.wearers.get(recording) or {}
-        wearer_speaks = cell is not None and cell.get("ego_speaking") is True
-        derived: dict[str, Any] = {}
-
-        if grid is not None and cell is not None:
-            derived["voices_now"] = voices(cell.get("active_speaker_count_subframes"))
-            derived["other_onset_now"] = any_event(cell.get("other_onset_subframes"))
-            start = anchor - LOCAL_WINDOW_CELLS + 1
-            derived["local_speakers_10s"] = (
-                None
-                if start < 0
-                else local_speakers(grid["speaker_activity"][start : anchor + 1])
-            )
-
-        social = corpus_tables.social.get(recording)
-
-        if social is not None and anchor < len(social["decision_index"]):
-            derived["addressed_to_wearer"] = any_event(
-                social["anyone_talking_to_wearer_subframes"][anchor],
-                social["anyone_talking_to_wearer_valid_subframes"][anchor],
-            )
-
-        count = info.get("participant_count")
-        derived["participant_count"] = None if count is None else float(count)
-        derived["dyadic"] = None if count is None else _bool(count == 2)
-        derived["wearer_native"] = (
-            _bool(wearer.get("native_speaker")) if wearer_speaks else None
-        )
-        derived["wearer_host"] = _bool(wearer.get("is_host")) if wearer_speaks else None
-        derived["background_fan"] = _bool(info.get("background_fan"))
-        derived["background_music"] = _bool(info.get("background_music"))
-        turns = corpus_tables.turns.get(recording)
-        derived["wearer_speech_rate"] = None if not turns else turn_rate(turns, time_s)
-
-        for concept in CONCEPTS:
-            if reasons[concept.name].get(corpus) is None:
-                values[concept.name][i] = derived.get(concept.name)
-
-    return values
-
-
-def _bool(value: bool | None) -> str | None:
-    return None if value is None else BOOLEAN_CLASSES[int(bool(value))]
 
 
 # ---------------------------------------------------------------------------
@@ -671,7 +160,9 @@ def grouped_cv(
         if len(set(values)) < 2:
             return result | _not_evaluable("no target variance")
 
-    fold, count = recording_folds(groups, folds=CV_FOLDS, seed=_seed(seed, "outer"))
+    fold, count = recording_folds(
+        groups, folds=CV_FOLDS, seed=derived_seed(seed, "outer")
+    )
     predictions = {name: torch.zeros_like(y) for name in REPRESENTATIONS}
     selected: dict[str, list[float | None]] = {name: [] for name in REPRESENTATIONS}
 
@@ -687,7 +178,7 @@ def grouped_cv(
                 y[~held],
                 train_groups,
                 classes=None if classes is None else len(classes),
-                seed=_seed(seed, "inner", f),
+                seed=derived_seed(seed, "inner", f),
             )
             selected[name].append(probe.cv.selected)
 
@@ -708,27 +199,27 @@ def grouped_cv(
         clusters,
         [stratum[g] for g in clusters],
         resamples=bootstrap,
-        generator=torch.Generator().manual_seed(_seed(seed, "bootstrap")),
+        generator=torch.Generator().manual_seed(derived_seed(seed, "bootstrap")),
     )
     point, resampled = {}, {}
 
     for name in REPRESENTATIONS:
         if classes is not None:
-            sums = _class_sums(y, predictions[name], len(classes))
+            sums = class_sums(y, predictions[name], len(classes))
             per_cluster = torch.zeros(
                 len(clusters), *sums.shape[1:], dtype=torch.float64
             )
             per_cluster.index_add_(0, members, sums)
-            point[name] = _balanced_accuracy(per_cluster.sum(0))
-            resampled[name] = _balanced_accuracy(
+            point[name] = balanced_accuracy_of_sums(per_cluster.sum(0))
+            resampled[name] = balanced_accuracy_of_sums(
                 torch.einsum("bg,gkc->bkc", weights, per_cluster)
             )
         else:
-            sums = _regression_sums(y, predictions[name])
+            sums = regression_sums(y, predictions[name])
             per_cluster = torch.zeros(len(clusters), 4, dtype=torch.float64)
             per_cluster.index_add_(0, members, sums)
-            point[name] = _r2(per_cluster.sum(0))
-            resampled[name] = _r2(weights @ per_cluster)
+            point[name] = r2_of_sums(per_cluster.sum(0))
+            resampled[name] = r2_of_sums(weights @ per_cluster)
 
     point["delta"] = point[LATENT] - point[FEATURES]
     resampled["delta"] = resampled[LATENT] - resampled[FEATURES]
@@ -796,7 +287,7 @@ def grouped_rows(
                 by_recording.setdefault(key, []).append(i)
 
         for (corpus, recording), members in sorted(by_recording.items()):
-            members.sort(key=lambda i: _seed(seed, metadata["sample_id"][i]))
+            members.sort(key=lambda i: derived_seed(seed, metadata["sample_id"][i]))
             conversation = tables[corpus].recordings[recording]["conversation_id"]
             picked += [
                 (s, i, corpus, f"{corpus}/{conversation}")
@@ -911,7 +402,7 @@ def analyze_concepts(
             log(f"  {concept.name}: not evaluable ({scores[-1]['skipped']})")
             continue
 
-        concept_seed = _seed(seed, concept.name)
+        concept_seed = derived_seed(seed, concept.name)
 
         if concept.protocol == SPLIT:
             score = run_probe(
@@ -942,7 +433,7 @@ def analyze_concepts(
             + (
                 f"not evaluable ({score['skipped']})"
                 if score.get("skipped")
-                else f"features {_fmt(score, FEATURES)}, latent {_fmt(score, LATENT)}"
+                else f"features {format_score(score, FEATURES)}, latent {format_score(score, LATENT)}"
             )
             + f" in {time.perf_counter() - start:.0f}s"
         )
@@ -987,235 +478,3 @@ def _coverage(snapshot, values, corpus, classes) -> dict[str, Any]:
         entry["class_counts"] = {c: valid.count(c) for c in classes}
 
     return entry
-
-
-def write_concepts(
-    train_snapshot: Path,
-    validation_snapshot: Path,
-    *,
-    output_dir: Path | None = None,
-    labels_revision: str | None = None,
-    label_sources: Mapping[str, CorpusLabelSource] | None = None,
-    bootstrap: int = DEFAULT_BOOTSTRAP,
-) -> Path:
-    """Probe every concept; write summary, scores, figure and report."""
-
-    if importlib.util.find_spec("matplotlib") is None:
-        raise RuntimeError(
-            "Figures need matplotlib, an optional dependency. Run "
-            "`uv sync --extra analysis`."
-        )
-
-    train = read_snapshot(train_snapshot)
-    validation = read_snapshot(validation_snapshot)
-    check_snapshots(train, validation)
-    output_dir = (
-        validation.path / "analysis" / ANALYSIS if output_dir is None else output_dir
-    )
-
-    if output_dir.exists() and any(output_dir.iterdir()):
-        raise ValueError(f"Output directory is not empty: {output_dir}")
-
-    start = time.perf_counter()
-    log(f"concepts: probe-train {describe_snapshot(train)}")
-    log(f"concepts: validation {describe_snapshot(validation)}")
-    log(f"concepts: {bootstrap} bootstrap resamples; output {output_dir}")
-    sources = (
-        label_sources
-        if label_sources is not None
-        else hub_label_sources(
-            validation.manifest.get("provenance") or {},
-            labels_revision=labels_revision,
-        )
-    )
-    results = analyze_concepts(train, validation, sources, bootstrap=bootstrap)
-    log("concepts: writing figure, tables and report")
-    (output_dir / "figures").mkdir(parents=True, exist_ok=True)
-    figure = concept_figure(results)
-    figure.savefig(output_dir / "figures" / "concepts.png", dpi=150, facecolor=SURFACE)
-    close(figure)
-    pq.write_table(scores_table(results["scores"]), output_dir / "scores.parquet")
-    summary = {
-        "schema_version": SCHEMA_VERSION,
-        "analysis": ANALYSIS,
-        "source": {
-            "probe_train": _source(train),
-            "probe_validation": _source(validation),
-        },
-        **results,
-        "figures": ["figures/concepts.png"],
-    }
-    (output_dir / "summary.json").write_text(
-        json.dumps(summary, indent=2) + "\n", encoding="utf-8"
-    )
-    (output_dir / "report.md").write_text(concept_report(summary), encoding="utf-8")
-    log(f"concepts: done in {time.perf_counter() - start:.0f}s")
-
-    return output_dir
-
-
-def scores_table(scores: Sequence[Mapping[str, Any]]) -> pa.Table:
-    rows = []
-
-    for s in scores:
-        row = {
-            k: s.get(k)
-            for k in (
-                "task",
-                "axis",
-                "protocol",
-                "kind",
-                "reference",
-                "n_train",
-                "n_eval",
-                "n_eval_recordings",
-                "skipped",
-            )
-        }
-
-        for name in (*REPRESENTATIONS, "delta"):
-            interval = s.get(f"{name}_ci") or [None, None]
-            row |= {
-                f"{name}_score": s.get(f"{name}_score"),
-                f"{name}_ci_low": interval[0],
-                f"{name}_ci_high": interval[1],
-            }
-
-        rows.append(row)
-
-    return pa.Table.from_pylist(rows)
-
-
-# ---------------------------------------------------------------------------
-# Figure and report
-# ---------------------------------------------------------------------------
-
-
-def concept_figure(results: Mapping[str, Any]) -> Figure:
-    """One panel per axis: features and latent per concept, with the reference."""
-
-    scores = results["scores"]
-    figure = _new_figure(15, 4.2)
-    axes = figure.subplots(1, len(AXES), squeeze=False)[0]
-
-    for ax, axis in zip(axes, AXES, strict=True):
-        rows = [
-            s | {"task": s["task"] + (" (R²)" if s["kind"] == CONTINUOUS else "")}
-            for s in scores
-            if s["axis"] == axis
-        ]
-        _comparison_panel(ax, rows, AXIS_TITLES[axis])
-
-    axes[0].set_ylabel(
-        "Balanced accuracy (R² where marked)", color=SECONDARY_INK, fontsize=9
-    )
-    axes[0].legend(frameon=False, fontsize=8, labelcolor=SECONDARY_INK)
-    figure.suptitle(
-        "Concept probes (dashed: trivial reference; bars: 95% bootstrap over "
-        "validation recordings or, for grouped CV, conversations)",
-        color=INK,
-        fontsize=10,
-        x=0.02,
-        ha="left",
-    )
-
-    return figure
-
-
-LIMITATIONS = """\
-## Limitations
-
-- The latent is a per-frame projection of the Mimi features: a concept can
-  only be as accessible as the features allow; context (e.g. the 10 s party
-  size) reaches both only through Mimi's own streaming state.
-- wearer_native and wearer_host concern few recurring people: a probe can
-  succeed by recognizing their voices rather than the trait itself.
-- Grouped-CV concepts use train-split recordings for evaluation too (out of
-  fold, never in the fold that fits the probe); the world model saw that
-  audio during training, though never these labels.
-- participant_count counts people annotated in the scene, speaking or not.
-- wearer_speech_rate is a property of the whole turn, so it includes words
-  after the anchor.
-- Values are derived from the release's tables by the rules in each
-  concept's definition; they are not labels defined by the data repository.
-"""
-
-
-def concept_report(summary: Mapping[str, Any]) -> str:
-    provenance = summary["source"]["probe_validation"]["snapshot_provenance"] or {}
-    checkpoint = provenance.get("checkpoint") or {}
-    settings = summary["settings"]
-    lines = [
-        "# Concept probes",
-        "",
-        "## Purpose",
-        "",
-        (
-            "Which information, beyond the current conversational state, do the "
-            "Mimi features and the WM latent keep **linearly accessible**? Four "
-            "axes: vocal activity, multi-party structure, social signals, and "
-            "information unrelated to the conversation. A successful probe does "
-            "not show that the world model uses the information."
-        ),
-        "",
-        (
-            f"Checkpoint `{checkpoint.get('filename')}` (step "
-            f"{checkpoint.get('global_step')}, sha256 "
-            f"`{str(checkpoint.get('sha256'))[:12]}…`). Test split never read."
-        ),
-        "",
-        "Protocols: "
-        + "; ".join(
-            f"**{SETTING_NAMES[k]}**: {v}" for k, v in settings["protocols"].items()
-        )
-        + f". Intervals: {int(100 * settings['confidence'])}% percentile bootstrap "
-        f"({settings['bootstrap_resamples']} resamples, seeded); deltas paired.",
-        "",
-        "## Concepts",
-        "",
-        "| concept | axis | protocol | question | definition | not evaluable in |",
-        "|---|---|---|---|---|---|",
-    ]
-
-    for name, info in summary["concepts"].items():
-        missing = "; ".join(f"{c}: {r}" for c, r in info["unavailable"].items()) or "–"
-        lines.append(
-            f"| {name} | {info['axis']} | {SETTING_NAMES[info['protocol']]} | "
-            f"{info['question']} | {info['definition']} | {missing} |"
-        )
-
-    for axis in AXES:
-        rows = [s for s in summary["scores"] if s["axis"] == axis]
-        lines += ["", f"## {AXIS_TITLES[axis]}", "", *_score_table(rows), ""]
-
-        for s in rows:
-            if s["skipped"]:
-                lines.append(f"- **{s['task']}**: not evaluable ({s['skipped']}).")
-                continue
-
-            reference = s["reference"]
-            lines.append(
-                f"- **{s['task']}**: Mimi features {_verdict(s, FEATURES, reference)}; "
-                f"WM latent {_verdict(s, LATENT, reference)}; the projector "
-                f"{_projector_effect(s)} linear accessibility (Δ {_fmt(s, 'delta')})."
-            )
-
-    lines += [
-        "",
-        LIMITATIONS,
-        "## Figure",
-        "",
-        "- `figures/concepts.png`",
-        "",
-    ]
-
-    return "\n".join(lines)
-
-
-def _verdict(score, name, reference) -> str:
-    return {
-        "above": "above the reference",
-        "includes": "not distinguishable from the reference",
-        "below": "below the reference",
-        "undetermined": "undetermined",
-    }[_above(score, name, reference)]

@@ -22,7 +22,6 @@ need no change here.
 from __future__ import annotations
 
 import copy
-import hashlib
 import json
 import time
 from dataclasses import dataclass, replace
@@ -35,19 +34,19 @@ from omegaconf import DictConfig, OmegaConf
 
 from turn_wm.data.loader import DataLoaderConfig, build_dataloader
 from turn_wm.data.source import DATASETS, LoadedData, load_data
+from turn_wm.evaluation.latent_analysis.artifacts import sha256
 from turn_wm.evaluation.latent_analysis.extract import extract_snapshot, write_snapshot
 from turn_wm.models.build import observation_source
 from turn_wm.models.lewm.jepa import JEPA
 from turn_wm.progress import log
 from turn_wm.training.lewm import LeWMModule
-from turn_wm.training.train import (
+from turn_wm.training.observations import (
     RunObservations,
-    _config_hash,
-    _git_metadata,
-    build_run_dataset,
     mimi_cache_identity,
     prepare_observations,
 )
+from turn_wm.training.run_dir import git_metadata, hash_config
+from turn_wm.training.train import build_run_dataset
 
 DEFAULT_SPLIT = "validation"
 DEFAULT_CHECKPOINT = "last.ckpt"
@@ -194,7 +193,7 @@ class OpenedRun:
                 "global_step": self.checkpoint.global_step,
             },
             "extraction": {
-                "git": _git_metadata(),
+                "git": git_metadata(),
                 "device": device,
                 "precision": "float32",
             },
@@ -288,7 +287,7 @@ def load_run(run_dir: Path) -> RunRecord:
     metadata = json.loads(metadata_path.read_text(encoding="utf-8"))
     recorded_hash = metadata.get("config_hash")
 
-    if recorded_hash is not None and _config_hash(cfg) != recorded_hash:
+    if recorded_hash is not None and hash_config(cfg) != recorded_hash:
         raise ValueError(
             f"{config_path} does not match the config hash recorded in "
             f"{metadata_path}; it was edited after the run"
@@ -368,7 +367,7 @@ def load_checkpoint(record: RunRecord, checkpoint: str | Path) -> LoadedCheckpoi
     return LoadedCheckpoint(
         model=module.model,
         path=path,
-        sha256=_sha256(path),
+        sha256=sha256(path),
         epoch=state.get("epoch"),
         global_step=state.get("global_step"),
     )
@@ -384,13 +383,3 @@ def _feature_caches(observations: RunObservations) -> dict[str, Any] | None:
             "caches": mimi_cache_identity(observations.mimi_store),
         }
     }
-
-
-def _sha256(path: Path) -> str:
-    digest = hashlib.sha256()
-
-    with path.open("rb") as file:
-        for chunk in iter(lambda: file.read(1 << 20), b""):
-            digest.update(chunk)
-
-    return digest.hexdigest()

@@ -177,13 +177,16 @@ def hub_label_sources(
     api = HfApi()
 
     def grid_shas(at: str) -> dict[str, str | None]:
-        files = {
-            entry.path: entry.lfs.sha256
-            for entry in api.list_repo_tree(
-                source.repo_id, repo_type="dataset", revision=at, recursive=True
-            )
-            if getattr(entry, "lfs", None) is not None
-        }
+        files: dict[str, str | None] = {}
+
+        for entry in api.list_repo_tree(
+            source.repo_id, repo_type="dataset", revision=at, recursive=True
+        ):
+            lfs = getattr(entry, "lfs", None)
+
+            if lfs is not None:
+                files[entry.path] = getattr(lfs, "sha256", None)
+
         return {c.name: files.get(c.action_grid_file) for c in source.corpora}
 
     snapshot_grids = grid_shas(snapshot_revision)
@@ -381,6 +384,7 @@ def join_labels(
                 reason = _unsupported_shape(entry)
 
             if reason is None:
+                assert entry is not None
                 usable.append((section, entry))
             else:
                 excluded.setdefault(label, {})[corpus] = reason
@@ -389,6 +393,7 @@ def join_labels(
 
         for _, entry in usable:
             manifest = audit.manifests[entry["extractor"]]
+            assert manifest is not None
             path = f"{entry['extractor']}/{manifest['tables']['grid']['file']}"
             by_file.setdefault(path, []).append(entry)
 
@@ -429,6 +434,7 @@ def join_labels(
             for entry in entries:
                 section = next(s for s, e in usable if e is entry)
                 manifest = audit.manifests[entry["extractor"]]
+                assert manifest is not None
 
                 for variable, values in _variables(entry, table, found, manifest):
                     target = variables.get(variable.name)
