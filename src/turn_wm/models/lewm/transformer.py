@@ -76,10 +76,8 @@ class Attention(nn.Module):
         inner_dim = dim_head * heads
         project_out = not (heads == 1 and dim_head == dim)
         self.heads = heads
-        self.scale = dim_head**-0.5
         self.dropout = dropout
         self.norm = nn.LayerNorm(dim)
-        self.attend = nn.Softmax(dim=-1)
         self.to_qkv = nn.Linear(dim, inner_dim * 3, bias=False)
         self.rotary = RotaryEmbedding(dim_head, base=rope_base) if use_rope else None
         self.to_out = (
@@ -88,10 +86,8 @@ class Attention(nn.Module):
             else nn.Identity()
         )
 
-    def forward(self, x, causal=True):
-        """
-        x : (B, T, D)
-        """
+    def forward(self, x):
+        """Causal self-attention over x: (B, T, D)."""
         x = self.norm(x)
         drop = self.dropout if self.training else 0.0
         qkv = self.to_qkv(x).chunk(3, dim=-1)  # q, k, v: (B, heads, T, dim_head)
@@ -100,7 +96,7 @@ class Attention(nn.Module):
         if self.rotary is not None:
             q, k = self.rotary(q, k)
 
-        out = F.scaled_dot_product_attention(q, k, v, dropout_p=drop, is_causal=causal)
+        out = F.scaled_dot_product_attention(q, k, v, dropout_p=drop, is_causal=True)
         out = rearrange(out, "b h t d -> b t (h d)")
         return self.to_out(out)
 
@@ -166,42 +162,8 @@ class ConditionalBlock(nn.Module):
         return x
 
 
-class Block(nn.Module):
-    """Standard Transformer block"""
-
-    def __init__(
-        self,
-        dim,
-        heads,
-        dim_head,
-        mlp_dim,
-        dropout=0.0,
-        *,
-        use_rope=False,
-        rope_base=10_000.0,
-    ):
-        super().__init__()
-
-        self.attn = Attention(
-            dim,
-            heads=heads,
-            dim_head=dim_head,
-            dropout=dropout,
-            use_rope=use_rope,
-            rope_base=rope_base,
-        )
-        self.mlp = FeedForward(dim, mlp_dim, dropout=dropout)
-        self.norm1 = nn.LayerNorm(dim, elementwise_affine=False, eps=1e-6)
-        self.norm2 = nn.LayerNorm(dim, elementwise_affine=False, eps=1e-6)
-
-    def forward(self, x):
-        x = x + self.attn(self.norm1(x))
-        x = x + self.mlp(self.norm2(x))
-        return x
-
-
 class Transformer(nn.Module):
-    """Standard Transformer with support for AdaLN-zero blocks"""
+    """Causal Transformer of AdaLN-zero blocks conditioned on `c` at every step."""
 
     def __init__(
         self,
@@ -213,7 +175,6 @@ class Transformer(nn.Module):
         dim_head,
         mlp_dim,
         dropout=0.0,
-        block_class=Block,
         *,
         use_rope=False,
         rope_base=10_000.0,
@@ -242,7 +203,7 @@ class Transformer(nn.Module):
 
         for _ in range(depth):
             self.layers.append(
-                block_class(
+                ConditionalBlock(
                     hidden_dim,
                     heads,
                     dim_head,
@@ -253,14 +214,12 @@ class Transformer(nn.Module):
                 )
             )
 
-    def forward(self, x, c=None):
+    def forward(self, x, c):
         x = self.input_proj(x)
-
-        if c is not None:
-            c = self.cond_proj(c)
+        c = self.cond_proj(c)
 
         for block in self.layers:
-            x = block(x) if isinstance(block, Block) else block(x, c)
+            x = block(x, c)
         x = self.norm(x)
 
         return self.output_proj(x)

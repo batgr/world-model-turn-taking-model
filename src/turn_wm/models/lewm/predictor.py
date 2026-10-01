@@ -1,7 +1,7 @@
 import torch
 from torch import nn
 
-from turn_wm.models.lewm.transformer import ConditionalBlock, Transformer
+from turn_wm.models.lewm.transformer import Transformer
 
 
 class ARPredictor(nn.Module):
@@ -48,7 +48,6 @@ class ARPredictor(nn.Module):
             dim_head,
             mlp_dim,
             dropout,
-            block_class=ConditionalBlock,
             use_rope=position_encoding == "rope",
             rope_base=rope_base,
         )
