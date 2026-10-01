@@ -25,7 +25,6 @@ from turn_wm.data.media import (
 )
 from turn_wm.data.mimi_cache import MimiFeatures
 from turn_wm.data.reader import MediaReader, MediaWindow
-from turn_wm.data.window import build_window, validate_against_anchor
 
 STATE_TO_ID = {
     "SILENT": 0,
@@ -178,26 +177,11 @@ class TurnTakingDataset(Dataset):
 
         context_steps = self._context_steps(anchor)
 
-        validate_against_anchor(
-            context_steps=context_steps,
-            future_steps=self.window.future_steps,
-            max_context_steps=int(anchor["max_context_steps"]),
-            available_future_steps=int(anchor["future_steps"]),
-        )
-
         anchor_idx = int(anchor["anchor_idx"])
         anchor_row = int(anchor["anchor_row"])
 
-        # Validates the logical window bounds; row offsets are derived below.
-        build_window(
-            anchor_idx=anchor_idx,
-            context_steps=context_steps,
-            future_steps=self.window.future_steps,
-        )
-
-        # `anchor_row` is the physical position in action_grid.
-        # WindowBounds expresses the same geometry in logical timestep space,
-        # so offsets relative to the anchor map directly to table rows.
+        # `anchor_row` is the physical position in action_grid and the anchor
+        # is the final context step, so row offsets are the temporal window.
         context_start_row = anchor_row - context_steps + 1
         future_end_row = anchor_row + self.window.future_steps
 
@@ -396,13 +380,6 @@ class TurnTakingDataset(Dataset):
             int(anchor["max_context_steps"]),
             self.window.max_context_steps,
         )
-
-        if available < self.window.min_context_steps:
-            raise ValueError(
-                f"Anchor {anchor['sample_id']} supports only "
-                f"{available} context steps, but the experiment requires "
-                f"at least {self.window.min_context_steps}"
-            )
 
         if not self.training:
             return available

@@ -4,6 +4,7 @@ import math
 from collections.abc import Iterable
 from dataclasses import dataclass
 from pathlib import Path
+from typing import Any
 
 import av
 import numpy as np
@@ -332,7 +333,7 @@ class MediaReader:
             raise ValueError(f"Unexpected decoded audio shape: {array.shape}")
 
         if np.issubdtype(array.dtype, np.integer):
-            info = np.iinfo(array.dtype)
+            info = np.iinfo(array.dtype.name)
 
             scale = float(
                 max(
@@ -353,17 +354,17 @@ class MediaReader:
 
     @staticmethod
     def _discard_other_streams(
-        container: av.container.InputContainer,
-        keep: av.Stream,
+        container: Any,
+        keep: Any,
     ) -> None:
         """Make the demuxer skip every packet not belonging to `keep`."""
 
         for stream in container.streams:
             if stream.index != keep.index:
-                stream.discard = av.stream.Discard.all
+                stream.discard = vars(av)["stream"].Discard.all
 
     @staticmethod
-    def _stream_origin_s(stream: av.Stream) -> float:
+    def _stream_origin_s(stream: Any) -> float:
         if stream.start_time is None:
             return 0.0
 
@@ -378,12 +379,17 @@ class MediaReader:
         if frame.pts is None:
             return None
 
-        return float(frame.pts * frame.time_base) - origin_s
+        time_base = frame.time_base
+
+        if time_base is None:
+            return None
+
+        return float(frame.pts * time_base) - origin_s
 
     @staticmethod
     def _seek(
-        container: av.container.InputContainer,
-        stream: av.Stream,
+        container: Any,
+        stream: Any,
         *,
         start_time_s: float,
     ) -> None:

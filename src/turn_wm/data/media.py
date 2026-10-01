@@ -18,7 +18,7 @@ import math
 from collections.abc import Iterable, Mapping
 from dataclasses import dataclass
 from pathlib import Path, PurePosixPath
-from typing import Literal, get_args
+from typing import Any, Literal, cast, get_args
 
 from datasets import Dataset
 
@@ -143,7 +143,8 @@ class MediaIndex:
 
         records = []
 
-        for row in manifest:
+        for raw_row in manifest:
+            row = cast(dict[str, Any], raw_row)
             dataset = row["dataset"]
 
             if dataset not in roots:
