@@ -63,8 +63,9 @@ semantics while changing only the position encoding. `model=lewm_positional_cbn`
 extends per-position statistics to the Mimi projector as an explicit ablation;
 `model=lewm_learned_pos` restores the pre-RoPE learned absolute embeddings
 while holding the rest of the current architecture fixed. `model=lewm_ln`
-is the LayerNorm-projector ablation, and `model=lewm_bn` remains a
-compatibility alias for the default causal-BatchNorm design.
+is the LayerNorm-projector ablation. (`model=lewm_bn`, a compatibility alias
+for the default causal-BatchNorm design, was removed in October 2026: use the
+default `model=lewm`.)
 
 ## SIGReg reference and later tuning
 
