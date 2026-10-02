@@ -58,10 +58,10 @@ from turn_wm.evaluation.latent_analysis.rollout_dynamics_report import (
 )
 from turn_wm.evaluation.latent_analysis.show import show_rollouts
 from turn_wm.models.lewm.sigreg import SIGReg
+from turn_wm.training.datamodule import build_run_dataset
 from turn_wm.training.lewm import LeWMModule
 from turn_wm.training.objective import lejepa_forward
 from turn_wm.training.observations import prepare_observations
-from turn_wm.training.train import build_run_dataset
 from turn_wm.training.trajectories import trajectories
 
 REVISION = runs.REVISION

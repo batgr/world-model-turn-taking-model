@@ -10,7 +10,6 @@ from __future__ import annotations
 
 import importlib.util
 from collections.abc import Mapping
-from dataclasses import replace
 from pathlib import Path
 from typing import Any, cast
 
@@ -23,14 +22,11 @@ from lightning.pytorch.callbacks import (
 )
 from omegaconf import DictConfig, OmegaConf
 
-from turn_wm.data.build import build_dataset
-from turn_wm.data.loader import DataLoaderConfig, build_dataloader
-from turn_wm.data.multi import MultiCorpusDataset
-from turn_wm.data.source import DATASETS, LoadedData, load_data
-from turn_wm.training.config import training_window, validate_config
+from turn_wm.data.source import DATASETS, load_data
+from turn_wm.training.config import validate_config
+from turn_wm.training.datamodule import TurnTakingDataModule
 from turn_wm.training.lewm import LeWMModule
 from turn_wm.training.observations import (
-    RunObservations,
     prepare_observations,
     require_mimi_cache_root,
 )
@@ -86,50 +82,6 @@ def run(
         mimi_store=observations.mimi_store,
     )
 
-    train_dataset = build_run_dataset(
-        cfg,
-        loaded,
-        observations,
-        split="train",
-        training=True,
-    )
-
-    val_dataset = build_run_dataset(
-        cfg,
-        loaded,
-        observations,
-        split="validation",
-        training=False,
-    )
-
-    train_loader_config = DataLoaderConfig(
-        batch_size=cfg.loader.batch_size,
-        drop_last=cfg.loader.drop_last,
-        num_workers=cfg.loader.num_workers,
-        pin_memory=cfg.loader.pin_memory,
-        persistent_workers=cfg.loader.persistent_workers,
-        prefetch_factor=cfg.loader.prefetch_factor,
-        seed=cfg.seed,
-    )
-
-    val_loader_config = replace(
-        train_loader_config,
-        # Corpora interleaved in one fixed order: every validation (and any
-        # limit_val_batches subset) covers the same mix of EgoCom and Ego4D.
-        shuffle=True,
-        drop_last=False,
-    )
-
-    train_loader = build_dataloader(
-        train_dataset,
-        loader=train_loader_config,
-    )
-
-    val_loader = build_dataloader(
-        val_dataset,
-        loader=val_loader_config,
-    )
-
     module = LeWMModule(cfg)
 
     trainer_kwargs = OmegaConf.to_container(
@@ -171,30 +123,8 @@ def run(
 
     trainer.fit(
         module,
-        train_dataloaders=train_loader,
-        val_dataloaders=val_loader,
+        datamodule=TurnTakingDataModule(cfg, loaded, observations),
         ckpt_path=ckpt_path,
-    )
-
-
-def build_run_dataset(
-    cfg: DictConfig,
-    loaded: LoadedData,
-    observations: RunObservations,
-    *,
-    split: str,
-    training: bool,
-) -> MultiCorpusDataset:
-    """The dataset of `split` exactly as the run `cfg` sees it."""
-
-    return build_dataset(
-        loaded,
-        split=split,
-        window=training_window(cfg),
-        training=training,
-        media_roots=observations.media_roots,
-        modalities=observations.modalities,
-        mimi_store=observations.mimi_store,
     )
 
 

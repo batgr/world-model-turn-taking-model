@@ -16,6 +16,7 @@ from omegaconf import OmegaConf
 from turn_wm.config import load_config
 from turn_wm.data.mimi_cache import MimiFeatureCaches
 from turn_wm.data.source import DATASETS
+from turn_wm.training import datamodule as datamodule_module
 from turn_wm.training import train as train_module
 from turn_wm.training.run_dir import hash_config, write_config, write_metadata
 from turn_wm.training.train import _build_callbacks, _build_logger
@@ -85,11 +86,18 @@ class Recorder:
                 self.kwargs = kwargs
                 self.fit_calls = []
 
-            def fit(self, module, *, train_dataloaders, val_dataloaders, ckpt_path):
-                recorder.events.append("fit")
+            def fit(self, module, *, datamodule, ckpt_path):
+                # What Lightning does with a DataModule before training starts.
+                datamodule.setup("fit")
                 self.fit_calls.append(
-                    (module, train_dataloaders, val_dataloaders, ckpt_path)
+                    (
+                        module,
+                        datamodule.train_dataloader(),
+                        datamodule.val_dataloader(),
+                        ckpt_path,
+                    )
                 )
+                recorder.events.append("fit")
 
         trainer = FakeTrainer()
         self.trainers.append(trainer)
@@ -114,8 +122,10 @@ def recorder(monkeypatch) -> Recorder:
     recorder = Recorder()
 
     monkeypatch.setattr(train_module, "load_data", recorder.load_data)
-    monkeypatch.setattr(train_module, "build_dataset", recorder.build_dataset)
-    monkeypatch.setattr(train_module, "build_dataloader", recorder.build_dataloader)
+    monkeypatch.setattr(datamodule_module, "build_dataset", recorder.build_dataset)
+    monkeypatch.setattr(
+        datamodule_module, "build_dataloader", recorder.build_dataloader
+    )
     monkeypatch.setattr(train_module, "LeWMModule", recorder.module)
     monkeypatch.setattr(
         train_module,

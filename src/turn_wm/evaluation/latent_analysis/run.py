@@ -39,6 +39,7 @@ from turn_wm.evaluation.latent_analysis.extract import extract_snapshot, write_s
 from turn_wm.models.build import observation_source
 from turn_wm.models.lewm.jepa import JEPA
 from turn_wm.progress import log
+from turn_wm.training.datamodule import build_run_dataset
 from turn_wm.training.lewm import LeWMModule
 from turn_wm.training.observations import (
     RunObservations,
@@ -46,7 +47,6 @@ from turn_wm.training.observations import (
     prepare_observations,
 )
 from turn_wm.training.run_dir import git_metadata, hash_config
-from turn_wm.training.train import build_run_dataset
 
 DEFAULT_SPLIT = "validation"
 DEFAULT_CHECKPOINT = "last.ckpt"

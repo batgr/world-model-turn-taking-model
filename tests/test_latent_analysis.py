@@ -29,10 +29,10 @@ from turn_wm.evaluation.latent_analysis.extract import (
 )
 from turn_wm.evaluation.latent_analysis.run import extract_run
 from turn_wm.models.lewm.jepa import JEPA
+from turn_wm.training.datamodule import build_run_dataset
 from turn_wm.training.lewm import LeWMModule
 from turn_wm.training.observations import prepare_observations
 from turn_wm.training.run_dir import hash_config, write_config, write_metadata
-from turn_wm.training.train import build_run_dataset
 from turn_wm.training.trajectories import Trajectories
 
 # ---------------------------------------------------------------------------

@@ -367,3 +367,21 @@ def test_multi_corpus_batch_decodes_only_selected_modalities(
     if audio:
         # Ego4D-like audio still comes from its video container.
         assert roots["ego4d"] / "videos/r1.mp4" in decode_spies["audio"]
+
+
+def test_building_datasets_draws_no_random_numbers():
+    # The run builds its datasets in a DataModule's setup(), after the model:
+    # this is only equivalent to building them first if it draws nothing.
+    import random
+
+    import numpy as np
+    import torch
+
+    states = (torch.get_rng_state(), np.random.get_state()[1].copy(), random.getstate())
+
+    for split, training in (("train", True), ("validation", False)):
+        build_dataset(loaded_ab(), split=split, window=WINDOW, training=training)
+
+    assert torch.equal(torch.get_rng_state(), states[0])
+    assert (np.random.get_state()[1] == states[1]).all()
+    assert random.getstate() == states[2]
