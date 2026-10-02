@@ -50,7 +50,8 @@ def test_global_index_routes_to_child(combined, index, sample_id):
 
 @pytest.mark.parametrize("index", [5, 100, -6])
 def test_out_of_range_index_raises(combined, index):
-    with pytest.raises(IndexError):
+    # PyTorch's ConcatDataset: IndexError past the end, ValueError below -len.
+    with pytest.raises((IndexError, ValueError)):
         combined[index]
 
 
