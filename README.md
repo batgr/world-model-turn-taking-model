@@ -142,9 +142,15 @@ nothing behind):
 ```text
 outputs/<experiment.name>/<UTC timestamp>-<config hash>/
   config.yaml      the fully resolved configuration
-  metadata.json    run id, seed, config hash, git commit and dirty flag,
-                   dataset and its resolved revision
-  checkpoints/     best checkpoints by val/loss and last.ckpt
+  metadata.json    run id, seed, config hash, git commit and dirty flag, host,
+                   dataset and its resolved revision, every resumption
+  train.log        Lightning's messages: each validation's verdict (new best
+                   or not), resumption, warnings
+  tensorboard/     every logged metric: losses, validation metrics, LR,
+                   throughput (train/device/samples_per_sec)
+  fit-profile.txt  time per training hook, e.g. waiting for data
+                   (train_dataloader_next) vs the training step
+  checkpoints/     best checkpoints by checkpoint.monitor and last.ckpt
   wandb/           Weights & Biases files, when logging.wandb.enabled
 ```
 
@@ -153,10 +159,27 @@ directory and git-ignored) and `experiment.name` choose where runs go. The
 hash covers the whole resolved configuration, so runs of the same
 configuration share its suffix.
 
+The terminal shows Lightning's progress bar (step, loss, it/s, time left).
+A run limited by data loading rather than by the model shows up in
+`fit-profile.txt` as time spent in `train_dataloader_next`. Follow the
+metrics with TensorBoard:
+
+```bash
+uv run tensorboard --logdir outputs/
+```
+
 Checkpoints follow `checkpoint.*`: by default the three best by `val/loss`
-plus `last.ckpt` (`checkpoint.enabled=false` turns them off). Resume from a
-checkpoint, with its optimizer state, epoch and step; the resumed run gets a
-new directory (quote paths starting with `~` for Hydra):
+plus `last.ckpt` (`checkpoint.enabled=false` turns them off). An interrupted
+run is resumed in place, from its own `config.yaml` and `last.ckpt` (optimizer
+state, epoch, step and curriculum included); the resumption is recorded in
+`metadata.json`:
+
+```bash
+uv run turn-wm train --restore outputs/lewm/<run id>
+```
+
+To start a new run from another run's weights instead, give its checkpoint
+(the new run gets its own directory; quote paths starting with `~`):
 
 ```bash
 uv run turn-wm train checkpoint.resume_from=outputs/lewm/<run id>/checkpoints/last.ckpt
@@ -170,9 +193,7 @@ uv run turn-wm train logging.wandb.enabled=true logging.wandb.entity=<entity>
 ```
 
 It logs to `logging.wandb.project` (default `turn-wm`) under the run id, or
-`logging.wandb.name`, with the resolved configuration. Without it, the
-Trainer runs without a logger: metrics are not recorded anywhere and only
-drive checkpointing.
+`logging.wandb.name`, with the resolved configuration, next to TensorBoard.
 
 ## Precompute encoder features
 

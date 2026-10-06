@@ -138,6 +138,8 @@ experiment:
   name: lewm
   output_root: outputs
 
+# TensorBoard (<run_dir>/tensorboard), <run_dir>/train.log and the profiler
+# summary (<run_dir>/fit-profile.txt) are always written; W&B is optional.
 logging:
   wandb:
     enabled: false

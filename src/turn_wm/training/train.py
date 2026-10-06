@@ -19,14 +19,18 @@ from lightning.pytorch.callbacks import (
     EarlyStopping,
     LearningRateMonitor,
     ModelCheckpoint,
+    ThroughputMonitor,
 )
+from lightning.pytorch.loggers import Logger, TensorBoardLogger
+from lightning.pytorch.profilers import SimpleProfiler
 from omegaconf import DictConfig, OmegaConf
 
-from turn_wm.data.source import DATASETS, load_data
+from turn_wm.data.source import DATASETS, LoadedData, load_data
 from turn_wm.training.config import validate_config
 from turn_wm.training.datamodule import TurnTakingDataModule
 from turn_wm.training.lewm import LeWMModule
 from turn_wm.training.observations import (
+    RunObservations,
     prepare_observations,
     require_feature_cache_root,
 )
@@ -34,18 +38,81 @@ from turn_wm.training.run_dir import (
     create_run_dir,
     git_metadata,
     hash_config,
+    load_run,
+    record_restore,
     resolved_config,
     write_config,
     write_metadata,
 )
+from turn_wm.training.run_log import text_log
 
 
 def run(
     cfg: DictConfig,
     *,
     media_roots: Mapping[str, Path] | None = None,
-) -> None:
-    """Run one training experiment."""
+) -> Path:
+    """Run one training experiment in a new run directory; return it."""
+
+    loaded, observations = _prepare(cfg, media_roots)
+
+    # The run directory is created only once the experiment can start, so a
+    # rejected configuration or missing media leaves nothing behind.
+    config_hash = hash_config(cfg)
+    run_id, run_dir = create_run_dir(cfg, config_hash)
+
+    write_config(cfg, run_dir)
+    write_metadata(
+        run_dir=run_dir,
+        run_id=run_id,
+        config_hash=config_hash,
+        cfg=cfg,
+        git=git_metadata(),
+        dataset_revision=loaded.revision,
+        feature_store=observations.feature_store,
+    )
+
+    ckpt_path = cfg.checkpoint.resume_from
+
+    if ckpt_path is not None:
+        ckpt_path = Path(ckpt_path).expanduser()
+
+    _fit(cfg, run_id, run_dir, loaded, observations, ckpt_path)
+
+    return run_dir
+
+
+def restore(
+    run_dir: Path,
+    *,
+    media_roots: Mapping[str, Path] | None = None,
+) -> Path:
+    """Resume a run in its own directory, from its config and `last.ckpt`.
+
+    The saved config is used as it is (its hash is checked), so the resumed
+    run is the same experiment: same data, model, schedule and curriculum,
+    continuing at the checkpoint's step. Each resumption is recorded in
+    `metadata.json`.
+    """
+
+    record = load_run(run_dir)
+    checkpoint = record.run_dir / "checkpoints" / "last.ckpt"
+
+    if not checkpoint.is_file():
+        raise ValueError(f"{checkpoint} not found: nothing to resume from")
+
+    loaded, observations = _prepare(record.cfg, media_roots)
+    record_restore(record.run_dir, checkpoint=checkpoint)
+    run_id = str(record.metadata.get("run_id") or record.run_dir.name)
+    _fit(record.cfg, run_id, record.run_dir, loaded, observations, checkpoint)
+
+    return record.run_dir
+
+
+def _prepare(
+    cfg: DictConfig, media_roots: Mapping[str, Path] | None
+) -> tuple[LoadedData, RunObservations]:
+    """Check the config, seed, load the data and its observations."""
 
     validate_config(cfg)
 
@@ -64,30 +131,20 @@ def run(
 
     loaded = load_data(DATASETS[dataset_name])
 
-    observations = prepare_observations(cfg, loaded, media_roots=media_roots)
+    return loaded, prepare_observations(cfg, loaded, media_roots=media_roots)
 
-    # The run directory is created only once the experiment can start, so a
-    # rejected configuration or missing media leaves nothing behind.
-    config_hash = hash_config(cfg)
-    run_id, run_dir = create_run_dir(cfg, config_hash)
 
-    write_config(cfg, run_dir)
-    write_metadata(
-        run_dir=run_dir,
-        run_id=run_id,
-        config_hash=config_hash,
-        cfg=cfg,
-        git=git_metadata(),
-        dataset_revision=loaded.revision,
-        feature_store=observations.feature_store,
-    )
-
+def _fit(
+    cfg: DictConfig,
+    run_id: str,
+    run_dir: Path,
+    loaded: LoadedData,
+    observations: RunObservations,
+    ckpt_path: Path | None,
+) -> None:
     module = LeWMModule(cfg)
 
-    trainer_kwargs = OmegaConf.to_container(
-        cfg.trainer,
-        resolve=True,
-    )
+    trainer_kwargs = OmegaConf.to_container(cfg.trainer, resolve=True)
 
     if not isinstance(trainer_kwargs, dict):
         raise TypeError("cfg.trainer must resolve to a mapping")
@@ -95,37 +152,28 @@ def run(
     trainer_kwargs = cast(dict[str, Any], trainer_kwargs)
     trainer_kwargs["default_root_dir"] = str(run_dir)
 
-    callbacks = _build_callbacks(
-        cfg,
-        run_dir=run_dir,
-    )
-
-    logger = _build_logger(
-        cfg,
-        run_id=run_id,
-        run_dir=run_dir,
-    )
-
-    if logger is not False:
+    callbacks = [
+        *_build_callbacks(cfg, run_dir=run_dir),
         # The warmup/cosine LR per optimizer step, next to the losses.
-        callbacks = [*callbacks, LearningRateMonitor(logging_interval="step")]
+        LearningRateMonitor(logging_interval="step"),
+        # Samples and batches per second (train/ and validate/ throughput).
+        ThroughputMonitor(batch_size_fn=lambda batch: len(batch["sample_id"])),
+    ]
 
     trainer = L.Trainer(
         **trainer_kwargs,
         callbacks=callbacks,
-        logger=logger,
+        logger=_build_loggers(cfg, run_id=run_id, run_dir=run_dir),
+        # Time per hook (data loading vs training step): <run_dir>/fit-profile.txt.
+        profiler=SimpleProfiler(dirpath=run_dir, filename="profile"),
     )
 
-    ckpt_path = cfg.checkpoint.resume_from
-
-    if ckpt_path is not None:
-        ckpt_path = str(Path(ckpt_path).expanduser())
-
-    trainer.fit(
-        module,
-        datamodule=TurnTakingDataModule(cfg, loaded, observations),
-        ckpt_path=ckpt_path,
-    )
+    with text_log(run_dir):
+        trainer.fit(
+            module,
+            datamodule=TurnTakingDataModule(cfg, loaded, observations),
+            ckpt_path=None if ckpt_path is None else str(ckpt_path),
+        )
 
 
 def _build_callbacks(
@@ -148,6 +196,8 @@ def _build_callbacks(
                 every_n_epochs=cfg.checkpoint.every_n_epochs,
                 filename="epoch={epoch:03d}-step={step}",
                 auto_insert_metric_name=False,
+                # Logs whether each validation is a new best (and train.log).
+                verbose=True,
             )
         )
 
@@ -181,14 +231,16 @@ class FullHorizonEarlyStopping(EarlyStopping):
         super()._run_early_stopping_check(trainer)
 
 
-def _build_logger(
-    cfg: DictConfig,
-    *,
-    run_id: str,
-    run_dir: Path,
-):
+def _build_loggers(cfg: DictConfig, *, run_id: str, run_dir: Path) -> list[Logger]:
+    """TensorBoard in the run directory, always; Weights & Biases when enabled."""
+
+    # The same event directory across resumptions: one continuous run.
+    loggers: list[Logger] = [
+        TensorBoardLogger(save_dir=str(run_dir), name="", version="tensorboard")
+    ]
+
     if not cfg.logging.wandb.enabled:
-        return False
+        return loggers
 
     # Lightning imports WandbLogger without wandb and only fails when it is
     # constructed, with a generic error; check the package itself.
@@ -200,12 +252,14 @@ def _build_logger(
 
     from lightning.pytorch.loggers import WandbLogger
 
-    name = cfg.logging.wandb.name or run_id
-
-    return WandbLogger(
-        project=cfg.logging.wandb.project,
-        entity=cfg.logging.wandb.entity,
-        name=name,
-        save_dir=str(run_dir),
-        config=resolved_config(cfg),
+    loggers.append(
+        WandbLogger(
+            project=cfg.logging.wandb.project,
+            entity=cfg.logging.wandb.entity,
+            name=cfg.logging.wandb.name or run_id,
+            save_dir=str(run_dir),
+            config=resolved_config(cfg),
+        )
     )
+
+    return loggers

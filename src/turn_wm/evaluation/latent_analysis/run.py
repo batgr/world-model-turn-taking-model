@@ -32,7 +32,6 @@ import lightning as L
 import torch
 from omegaconf import DictConfig, OmegaConf
 
-from turn_wm.config import upgrade_run_config
 from turn_wm.data.loader import DataLoaderConfig, build_dataloader
 from turn_wm.data.source import DATASETS, LoadedData, load_data
 from turn_wm.evaluation.latent_analysis.artifacts import sha256
@@ -47,19 +46,10 @@ from turn_wm.training.observations import (
     feature_cache_identity,
     prepare_observations,
 )
-from turn_wm.training.run_dir import git_metadata, hash_config
+from turn_wm.training.run_dir import RunRecord, git_metadata, load_run
 
 DEFAULT_SPLIT = "validation"
 DEFAULT_CHECKPOINT = "last.ckpt"
-
-
-@dataclass(frozen=True)
-class RunRecord:
-    """A training run as written to its run directory."""
-
-    run_dir: Path
-    cfg: DictConfig
-    metadata: dict[str, Any]
 
 
 @dataclass(frozen=True)
@@ -267,34 +257,6 @@ def open_run(
         dataset=dataset,
         loader=loader,
     )
-
-
-def load_run(run_dir: Path) -> RunRecord:
-    """Read a run's saved config and metadata; refuse an edited config."""
-
-    run_dir = Path(run_dir).expanduser()
-    config_path = run_dir / "config.yaml"
-    metadata_path = run_dir / "metadata.json"
-
-    for path in (config_path, metadata_path):
-        if not path.is_file():
-            raise FileNotFoundError(f"Not a training run directory, missing {path}")
-
-    cfg = OmegaConf.load(config_path)
-
-    if not isinstance(cfg, DictConfig):
-        raise TypeError(f"{config_path} must hold a mapping")
-
-    metadata = json.loads(metadata_path.read_text(encoding="utf-8"))
-    recorded_hash = metadata.get("config_hash")
-
-    if recorded_hash is not None and hash_config(cfg) != recorded_hash:
-        raise ValueError(
-            f"{config_path} does not match the config hash recorded in "
-            f"{metadata_path}; it was edited after the run"
-        )
-
-    return RunRecord(run_dir=run_dir, cfg=upgrade_run_config(cfg), metadata=metadata)
 
 
 def load_run_data(record: RunRecord) -> LoadedData:

@@ -198,10 +198,14 @@ class LeWMModule(L.LightningModule):
     def _log_losses(
         self, output: dict[str, torch.Tensor], stage: str, batch: dict[str, Any]
     ) -> None:
-        self.log_dict(
-            {f"{stage}/{name}": value.detach() for name, value in output.items()},
-            on_step=stage == "train",
-            on_epoch=True,
-            sync_dist=True,
-            batch_size=len(batch["sample_id"]),
-        )
+        for name, value in output.items():
+            # The total loss also shows in the progress bar.
+            self.log(
+                f"{stage}/{name}",
+                value.detach(),
+                on_step=stage == "train",
+                on_epoch=True,
+                sync_dist=True,
+                batch_size=len(batch["sample_id"]),
+                prog_bar=name == "loss",
+            )

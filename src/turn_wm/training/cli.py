@@ -3,10 +3,12 @@
 from __future__ import annotations
 
 import argparse
+from pathlib import Path
 
 from hydra.errors import HydraException
 
 from turn_wm.config import load_config
+from turn_wm.training.train import restore
 from turn_wm.training.train import run as run_training
 
 
@@ -30,6 +32,16 @@ def add_train_command(commands: argparse._SubParsersAction) -> None:
         ),
     )
 
+    train.add_argument(
+        "--restore",
+        type=Path,
+        metavar="RUN_DIR",
+        help=(
+            "Resume this run directory from its config.yaml and "
+            "checkpoints/last.ckpt, in place; takes no overrides."
+        ),
+    )
+
     train.set_defaults(handler=_train)
 
 
@@ -37,10 +49,19 @@ def _train(
     args: argparse.Namespace,
     parser: argparse.ArgumentParser,
 ) -> int:
+    if args.restore is not None and args.overrides:
+        parser.error("--restore resumes the run as configured; it takes no overrides")
+
     try:
+        if args.restore is not None:
+            restore(args.restore)
+            return 0
+
         cfg = load_config(args.overrides)
     except HydraException as error:
         parser.error(f"invalid configuration override: {error}")
+    except (ValueError, FileNotFoundError) as error:
+        raise SystemExit(f"turn-wm: error: {error}") from error
 
     try:
         run_training(cfg)

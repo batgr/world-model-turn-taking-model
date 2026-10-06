@@ -10,7 +10,10 @@ from lightning.pytorch.callbacks import (
     EarlyStopping,
     LearningRateMonitor,
     ModelCheckpoint,
+    ThroughputMonitor,
 )
+from lightning.pytorch.loggers import TensorBoardLogger
+from lightning.pytorch.profilers import SimpleProfiler
 from omegaconf import OmegaConf
 
 from turn_wm.config import load_config
@@ -18,8 +21,8 @@ from turn_wm.data.feature_cache import FeatureCaches
 from turn_wm.data.source import DATASETS
 from turn_wm.training import datamodule as datamodule_module
 from turn_wm.training import train as train_module
-from turn_wm.training.run_dir import hash_config, write_config, write_metadata
-from turn_wm.training.train import _build_callbacks, _build_logger
+from turn_wm.training.run_dir import hash_config, host, write_config, write_metadata
+from turn_wm.training.train import _build_callbacks, _build_loggers
 
 GRID_STEPS = 50
 
@@ -252,12 +255,19 @@ def test_run_calls_trainer_fit(recorder, media_roots):
     callbacks = trainer.kwargs.pop("callbacks")
     default_root_dir = trainer.kwargs.pop("default_root_dir")
     logger = trainer.kwargs.pop("logger")
+    profiler = trainer.kwargs.pop("profiler")
 
     assert trainer.kwargs == OmegaConf.to_container(cfg.trainer, resolve=True)
     assert Path(default_root_dir).parent == Path("outputs") / "lewm"
-    assert logger is False
+    assert [type(item) for item in logger] == [TensorBoardLogger]
+    assert isinstance(profiler, SimpleProfiler)
+    assert Path(profiler.dirpath) == Path(default_root_dir)
     assert trainer.kwargs["max_epochs"] == 3
-    assert [type(callback) for callback in callbacks] == [ModelCheckpoint]
+    assert [type(callback) for callback in callbacks] == [
+        ModelCheckpoint,
+        LearningRateMonitor,
+        ThroughputMonitor,
+    ]
     assert trainer.fit_calls == [
         (module, "train-dataset-loader", "validation-dataset-loader", None)
     ]
@@ -371,10 +381,11 @@ def test_checkpoint_can_be_disabled():
     assert callbacks == []
 
 
-def test_disabled_checkpoint_passes_no_callbacks(recorder, media_roots):
+def test_disabled_checkpoint_saves_no_checkpoint(recorder, media_roots):
     run(media_roots, "checkpoint.enabled=false")
 
-    assert recorder.trainers[0].kwargs["callbacks"] == []
+    callbacks = recorder.trainers[0].kwargs["callbacks"]
+    assert [type(c) for c in callbacks] == [LearningRateMonitor, ThroughputMonitor]
 
 
 def test_run_resumes_from_the_configured_checkpoint(recorder, media_roots):
@@ -417,17 +428,13 @@ def test_config_hash_changes_with_experiment():
     assert hash_config(first) != hash_config(second)
 
 
-def test_wandb_disabled_returns_false(tmp_path):
+def test_tensorboard_is_always_on_in_the_run_directory(tmp_path):
     cfg = load_config()
 
-    assert (
-        _build_logger(
-            cfg,
-            run_id="test",
-            run_dir=tmp_path,
-        )
-        is False
-    )
+    [logger] = _build_loggers(cfg, run_id="test", run_dir=tmp_path)
+
+    assert isinstance(logger, TensorBoardLogger)
+    assert Path(logger.log_dir) == tmp_path / "tensorboard"
 
 
 def test_wandb_enabled_without_the_package_is_a_clear_error(tmp_path, monkeypatch):
@@ -435,7 +442,7 @@ def test_wandb_enabled_without_the_package_is_a_clear_error(tmp_path, monkeypatc
     cfg = load_config(["logging.wandb.enabled=true"])
 
     with pytest.raises(RuntimeError, match="uv sync --extra wandb"):
-        _build_logger(cfg, run_id="test", run_dir=tmp_path)
+        _build_loggers(cfg, run_id="test", run_dir=tmp_path)
 
 
 def test_checkpoint_is_inside_run_directory(tmp_path):
@@ -483,6 +490,7 @@ def test_write_metadata_records_the_run(tmp_path):
         "seed": cfg.seed,
         "config_hash": "hash",
         "git": git,
+        "host": host(),
         "dataset": "full",
         "dataset_revision": "rev-123",
         "observation_source": "feature_cache",
@@ -499,6 +507,7 @@ def test_run_writes_config_and_metadata_into_its_run_directory(
     metadata = json.loads((run_dir / "metadata.json").read_text())
 
     assert run_dir.name.endswith(config_hash[:8])
+    assert metadata["host"] == host()
     assert (run_dir / "config.yaml").is_file()
     assert metadata["run_id"] == run_dir.name
     assert metadata["config_hash"] == config_hash
@@ -711,11 +720,7 @@ def test_raw_run_records_its_observation_source(recorder, media_roots, tmp_path)
     assert "feature_cache" not in metadata
 
 
-def test_learning_rate_is_monitored_when_a_logger_is_active(
-    recorder, media_roots, monkeypatch
-):
-    monkeypatch.setattr(train_module, "_build_logger", lambda cfg, **kwargs: "logger")
-
+def test_learning_rate_is_monitored_per_step(recorder, media_roots):
     run(media_roots)
 
     callbacks = recorder.trainers[0].kwargs["callbacks"]
@@ -726,13 +731,46 @@ def test_learning_rate_is_monitored_when_a_logger_is_active(
     assert sum(isinstance(c, ModelCheckpoint) for c in callbacks) == 1
 
 
-def test_no_learning_rate_monitor_without_a_logger(recorder, media_roots):
+def test_a_run_is_resumed_in_place_from_its_last_checkpoint(
+    recorder, media_roots, tmp_path
+):
     run(media_roots)
+    [run_dir] = run_dirs(tmp_path)
+    (run_dir / "checkpoints").mkdir()
+    (run_dir / "checkpoints" / "last.ckpt").touch()
 
-    callbacks = recorder.trainers[0].kwargs["callbacks"]
+    assert train_module.restore(run_dir, media_roots=media_roots) == run_dir
 
-    assert recorder.trainers[0].kwargs["logger"] is False
-    assert not any(isinstance(c, LearningRateMonitor) for c in callbacks)
+    first, resumed = recorder.trainers
+    assert resumed.fit_calls[0][-1] == str(run_dir / "checkpoints" / "last.ckpt")
+    assert (
+        Path(resumed.kwargs["default_root_dir"]).resolve()
+        == Path(first.kwargs["default_root_dir"]).resolve()
+    )
+    assert run_dirs(tmp_path) == [run_dir]  # no new directory
+    [entry] = json.loads((run_dir / "metadata.json").read_text())["restores"]
+    assert entry["checkpoint"] == str(run_dir / "checkpoints" / "last.ckpt")
+    assert entry["host"] == host()
+
+
+def test_a_run_without_a_last_checkpoint_cannot_be_resumed(
+    recorder, media_roots, tmp_path
+):
+    run(media_roots)
+    [run_dir] = run_dirs(tmp_path)
+
+    with pytest.raises(ValueError, match="nothing to resume from"):
+        train_module.restore(run_dir, media_roots=media_roots)
+
+
+def test_an_edited_run_config_cannot_be_resumed(recorder, media_roots, tmp_path):
+    run(media_roots)
+    [run_dir] = run_dirs(tmp_path)
+    config = run_dir / "config.yaml"
+    config.write_text(config.read_text().replace("seed: 3072", "seed: 1"))
+
+    with pytest.raises(ValueError, match="edited after the run"):
+        train_module.restore(run_dir, media_roots=media_roots)
 
 
 def test_fit_never_uses_the_test_split(recorder, media_roots):

@@ -880,3 +880,50 @@ def test_lightning_validation_epoch_logs_every_metric_finite(tmp_path):
     for name in ("loss", "tf_loss", "rollout_loss", "sigreg_loss", "rollout_10_loss"):
         assert f"val/{name}" in metrics
     assert not [name for name in metrics if name.startswith("test/")]
+
+
+def test_a_run_keeps_its_messages_metrics_and_profile_in_its_directory(tmp_path):
+    from lightning.pytorch.callbacks import ModelCheckpoint, ThroughputMonitor
+    from lightning.pytorch.loggers import TensorBoardLogger
+    from lightning.pytorch.profilers import SimpleProfiler
+
+    from turn_wm.training.run_log import text_log
+
+    cfg = small_config()
+    module = LeWMModule(cfg, model=make_model(cfg))
+    batches = DataLoader([make_batch()] * 4, batch_size=None)
+    trainer = L.Trainer(
+        accelerator="cpu",
+        max_epochs=2,
+        log_every_n_steps=2,
+        logger=TensorBoardLogger(save_dir=tmp_path, name="", version="tensorboard"),
+        enable_progress_bar=False,
+        enable_model_summary=False,
+        num_sanity_val_steps=0,
+        callbacks=[
+            ModelCheckpoint(
+                dirpath=tmp_path / "checkpoints", monitor="val/loss", verbose=True
+            ),
+            # Rates over a 2-batch window (100 in training runs).
+            ThroughputMonitor(
+                batch_size_fn=lambda batch: len(batch["sample_id"]), window_size=2
+            ),
+        ],
+        profiler=SimpleProfiler(dirpath=tmp_path, filename="profile"),
+        default_root_dir=tmp_path,
+    )
+
+    with text_log(tmp_path):
+        trainer.fit(module, train_dataloaders=batches, val_dataloaders=batches)
+
+    log = (tmp_path / "train.log").read_text()
+    assert "'val/loss' reached" in log  # each validation's verdict
+    from tensorboard.backend.event_processing.event_accumulator import (
+        EventAccumulator,
+    )
+
+    events = EventAccumulator(str(tmp_path / "tensorboard")).Reload()
+    tags = set(events.Tags()["scalars"])
+    assert {"train/loss_step", "val/loss", "train/device/samples_per_sec"} <= tags
+    profile = next(tmp_path.glob("fit-profile*.txt")).read_text()
+    assert "train_dataloader_next" in profile  # time waiting for data
