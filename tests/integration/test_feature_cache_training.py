@@ -110,9 +110,7 @@ def test_real_cache_trains_without_mimi_or_media(store, monkeypatch):
 
     module = LeWMModule(cfg)
     batch = collate_turn_taking(samples)
-    output = lejepa_forward(
-        module.model, module.sigreg, trajectories(batch), cfg
-    ).losses
+    output = lejepa_forward(module.model, module.sigreg, trajectories(batch), cfg)
     output["loss"].backward()
 
     assert torch.isfinite(output["loss"])

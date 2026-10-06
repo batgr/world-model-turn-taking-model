@@ -189,9 +189,9 @@ def test_training_projectors_preserve_prefix_and_receive_gradients():
         future_steps=3,
         features=features,
     )
-    loss = lejepa_forward(
-        model, SIGReg(num_proj=16), batch, cfg, rollout_horizons=[1]
-    ).losses["loss"]
+    loss = lejepa_forward(model, SIGReg(num_proj=16), batch, cfg, rollout_horizons=[1])[
+        "loss"
+    ]
     loss.backward()
 
     for projector in (model.projector, model.pred_proj):

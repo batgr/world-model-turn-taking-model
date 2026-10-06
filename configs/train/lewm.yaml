@@ -115,15 +115,6 @@ trainer:
   precision: bf16-mixed
   gradient_clip_val: 1.0
 
-# Validation protocol (turn_wm.training.metrics). Keep the training-time
-# surface deliberately small: rollout MSE, persistence baseline and one
-# representation-collapse diagnostic.
-evaluation:
-  persistence_baseline: true
-  effective_rank: true
-  # Latents sampled per validation epoch (deterministically) for effective rank.
-  latent_rank_samples: 8192
-
 checkpoint:
   enabled: true
   monitor: val/loss

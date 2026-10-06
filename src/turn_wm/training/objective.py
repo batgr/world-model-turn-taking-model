@@ -24,14 +24,13 @@ active horizons. During training a curriculum over optimizer steps activates
 horizons progressively (`prediction.curriculum`); the mean keeps the rollout
 term's magnitude independent of how many horizons are active, so the
 curriculum changes the temporal difficulty only. Validation always evaluates
-every `prediction.rollout_horizons`, so its metrics stay comparable across
+every `prediction.rollout_horizons`, so its losses stay comparable across
 the whole run.
 """
 
 from __future__ import annotations
 
 from collections.abc import Sequence
-from dataclasses import dataclass
 
 import torch
 import torch.nn.functional as F
@@ -42,28 +41,14 @@ from turn_wm.models.lewm.jepa import JEPA
 from turn_wm.training.trajectories import Trajectories, encode_trajectories
 
 
-@dataclass(frozen=True)
-class LeJEPAOutput:
-    """Losses of one batch, with the tensors they were computed from.
-
-    Validation metrics reuse these instead of running the predictor again.
-    """
-
-    losses: dict[str, torch.Tensor]
-    latents: torch.Tensor  # (B, T, D) projected trajectory latents (targets)
-    tf_predictions: torch.Tensor  # (B, C, D), predicting latents[:, 1 : C + 1]
-    rollout_predictions: dict[int, torch.Tensor]  # h -> (B, D), latents[:, C + h - 1]
-    context_steps: int
-
-
 def lejepa_forward(
     model: JEPA,
     sigreg: nn.Module,
     batch: Trajectories,
     cfg: DictConfig,
     rollout_horizons: Sequence[int] | None = None,
-) -> LeJEPAOutput:
-    """Teacher-forcing, rollout and SIGReg losses of one batch, with their tensors.
+) -> dict[str, torch.Tensor]:
+    """Teacher-forcing, rollout and SIGReg losses of one batch.
 
     `rollout_horizons` are the active horizons (the training curriculum);
     by default every `prediction.rollout_horizons`. The rollout only runs up
@@ -112,7 +97,6 @@ def lejepa_forward(
     rollout_act = act_emb[:, :context_steps]
 
     rollout_losses: dict[int, torch.Tensor] = {}
-    rollout_predictions: dict[int, torch.Tensor] = {}
 
     for h in range(1, max_horizon + 1):
         # Only the latest `rollout_context_size` states and actions.
@@ -124,7 +108,6 @@ def lejepa_forward(
 
         if h in rollout_horizons:
             target_idx = context_steps + h - 1
-            rollout_predictions[h] = pred[:, 0]
 
             rollout_losses[h] = F.mse_loss(
                 pred,
@@ -175,18 +158,10 @@ def lejepa_forward(
         "tf_loss": tf_loss,
         "rollout_loss": rollout_loss,
         "sigreg_loss": sigreg_loss,
+        "weighted_sigreg_loss": cfg.loss.sigreg.weight * sigreg_loss,
     }
-
-    if (cfg.get("evaluation") or {}).get("transition_metrics", False):
-        output["weighted_sigreg_loss"] = cfg.loss.sigreg.weight * sigreg_loss
 
     for h in rollout_horizons:
         output[f"rollout_{h}_loss"] = rollout_losses[h]
 
-    return LeJEPAOutput(
-        losses=output,
-        latents=emb,
-        tf_predictions=tf_pred,
-        rollout_predictions=rollout_predictions,
-        context_steps=context_steps,
-    )
+    return output

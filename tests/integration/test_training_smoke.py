@@ -46,9 +46,7 @@ def test_lewm_losses_on_real_egocom_audio():
 
     assert set(batch["context_lengths"].tolist()) == {cfg.data.context_steps}
 
-    output = lejepa_forward(
-        module.model, module.sigreg, trajectories(batch), cfg
-    ).losses
+    output = lejepa_forward(module.model, module.sigreg, trajectories(batch), cfg)
     output["loss"].backward()
 
     assert all(torch.isfinite(value) for value in output.values())

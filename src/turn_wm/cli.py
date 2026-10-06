@@ -6,7 +6,6 @@ import argparse
 from collections.abc import Sequence
 
 from turn_wm.data.cli import add_data_commands
-from turn_wm.evaluation.cli import add_analysis_commands
 from turn_wm.training.cli import add_train_command
 
 
@@ -30,6 +29,5 @@ def build_parser() -> argparse.ArgumentParser:
 
     add_data_commands(commands)
     add_train_command(commands)
-    add_analysis_commands(commands)
 
     return parser

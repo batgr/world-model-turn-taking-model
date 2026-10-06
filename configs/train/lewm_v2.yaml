@@ -27,17 +27,14 @@ trainer:
   max_steps: -1
   val_check_interval: 1.0
 
-evaluation:
-  transition_metrics: true
-
 checkpoint:
   # Select the world model on its longest-horizon autoregressive dynamics.
-  monitor: val/rollout_10_mse
+  monitor: val/rollout_10_loss
   mode: min
 
 early_stopping:
   enabled: true
-  monitor: val/rollout_10_mse
+  monitor: val/rollout_10_loss
   mode: min
   # Any improvement counts; revisit noise tolerance after the pilot.
   min_delta: 0.0

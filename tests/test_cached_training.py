@@ -183,9 +183,9 @@ def test_raw_and_cached_trajectories_give_identical_losses():
     )
 
     torch.manual_seed(0)
-    raw_losses = lejepa_forward(model, SIGReg(), raw, cfg).losses
+    raw_losses = lejepa_forward(model, SIGReg(), raw, cfg)
     torch.manual_seed(0)
-    cached_losses = lejepa_forward(model, SIGReg(), cached, cfg).losses
+    cached_losses = lejepa_forward(model, SIGReg(), cached, cfg)
 
     for name, value in raw_losses.items():
         torch.testing.assert_close(cached_losses[name], value, rtol=0, atol=0)
@@ -278,9 +278,7 @@ def test_cached_losses_backpropagate_to_projector_and_predictor(no_mimi, cache_r
     module = LeWMModule(cfg)
     batch = next(iter(cached_loader(cfg, cache_root)))
 
-    output = lejepa_forward(
-        module.model, module.sigreg, trajectories(batch), cfg
-    ).losses
+    output = lejepa_forward(module.model, module.sigreg, trajectories(batch), cfg)
     output["loss"].backward()
 
     assert torch.isfinite(output["loss"])
@@ -331,8 +329,6 @@ def test_cached_losses_run_under_cpu_bf16_autocast(no_mimi, cache_root):
     assert batch["context_features"].dtype == torch.float16
 
     with torch.autocast("cpu", dtype=torch.bfloat16):
-        output = lejepa_forward(
-            module.model, module.sigreg, trajectories(batch), cfg
-        ).losses
+        output = lejepa_forward(module.model, module.sigreg, trajectories(batch), cfg)
 
     assert torch.isfinite(output["loss"].float())

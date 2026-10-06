@@ -92,7 +92,7 @@ selected with `train=xxx`). The default model uses a RoPE predictor and causal
 BatchNorm in both projectors; `model=lewm_ln`, `lewm_standard_bn`,
 `lewm_positional_cbn` and `lewm_learned_pos` each change one component.
 `train=lewm_v2` is the current recipe: a 30-step context and rollout window,
-horizons up to 10 steps and checkpoint selection on `val/rollout_10_mse`.
+horizons up to 10 steps and checkpoint selection on `val/rollout_10_loss`.
 
 ## Training
 

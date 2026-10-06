@@ -270,7 +270,7 @@ def test_default_config_no_longer_overflows_positions():
 
     output = lejepa_forward(
         model, SIGReg(), trajectories(make_batch(context, future)), cfg
-    ).losses
+    )
 
     assert torch.isfinite(output["loss"])
 
@@ -283,7 +283,7 @@ def test_targets_are_one_step_ahead():
     model = make_model(cfg, projector=None)
     model.predict = lambda emb, act: emb + 1
 
-    output = lejepa_forward(model, SIGReg(), trajectories(make_batch()), cfg).losses
+    output = lejepa_forward(model, SIGReg(), trajectories(make_batch()), cfg)
 
     assert output["tf_loss"].item() == 0.0
     assert output["rollout_1_loss"].item() == 0.0
@@ -294,7 +294,7 @@ def test_losses_are_finite_and_train_only_the_predictor_side():
     cfg = small_config()
     model = make_model(cfg)
 
-    output = lejepa_forward(model, SIGReg(), trajectories(make_batch()), cfg).losses
+    output = lejepa_forward(model, SIGReg(), trajectories(make_batch()), cfg)
     output["loss"].backward()
 
     assert set(output) == {
@@ -302,6 +302,7 @@ def test_losses_are_finite_and_train_only_the_predictor_side():
         "tf_loss",
         "rollout_loss",
         "sigreg_loss",
+        "weighted_sigreg_loss",
         "rollout_1_loss",
         "rollout_3_loss",
     }
@@ -559,7 +560,7 @@ def test_rollout_only_runs_to_the_largest_active_horizon(horizons, rollout_calls
 
     output = lejepa_forward(
         model, SIGReg(), default_batch(cfg), cfg, rollout_horizons=horizons
-    ).losses
+    )
 
     # One teacher-forcing call, then one call per rolled-out step.
     assert len(calls) == 1 + rollout_calls
@@ -587,7 +588,7 @@ def test_rollout_loss_is_the_weighted_mean_of_active_horizons(monkeypatch):
 
     output = lejepa_forward(
         make_model(cfg), SIGReg(), default_batch(cfg), cfg, rollout_horizons=[1, 5]
-    ).losses
+    )
 
     assert output["rollout_loss"].item() == pytest.approx(2.0)
 
@@ -598,7 +599,7 @@ def test_rollout_mean_uses_the_horizon_weights(monkeypatch):
 
     output = lejepa_forward(
         make_model(cfg), SIGReg(), default_batch(cfg), cfg, rollout_horizons=[1, 5]
-    ).losses
+    )
 
     # (1 * 1 + 3 * 3) / (1 + 3)
     assert output["rollout_loss"].item() == pytest.approx(2.5)
@@ -617,7 +618,7 @@ def test_rollout_magnitude_does_not_grow_with_more_horizons(monkeypatch):
             default_batch(cfg),
             cfg,
             rollout_horizons=horizons,
-        ).losses
+        )
         results.append(output["rollout_loss"].item())
 
     assert results == pytest.approx([2.0, 2.0, 2.0])
@@ -626,7 +627,7 @@ def test_rollout_magnitude_does_not_grow_with_more_horizons(monkeypatch):
 def test_default_losses_evaluate_every_configured_horizon():
     cfg = load_config()
 
-    output = lejepa_forward(make_model(cfg), SIGReg(), default_batch(cfg), cfg).losses
+    output = lejepa_forward(make_model(cfg), SIGReg(), default_batch(cfg), cfg)
 
     assert {"rollout_1_loss", "rollout_5_loss", "rollout_10_loss"} <= set(output)
 
@@ -796,54 +797,8 @@ def test_module_schedule_uses_estimated_stepping_batches_not_epochs():
 
 
 # ---------------------------------------------------------------------------
-# Validation metrics
+# Validation: losses only
 # ---------------------------------------------------------------------------
-
-VALIDATION_METRICS = [
-    "tf_mse",
-    "effective_rank",
-    *(f"rollout_{h}_mse" for h in (1, 5, 10)),
-    *(f"persistence_{h}_mse" for h in (1, 5, 10)),
-    *(
-        f"{corpus}/{name}"
-        for corpus in ("egocom", "ego4d")
-        for name in (
-            "tf_mse",
-            *(f"rollout_{h}_mse" for h in (1, 5, 10)),
-            *(f"persistence_{h}_mse" for h in (1, 5, 10)),
-        )
-    ),
-]
-
-
-def test_validation_metrics_cover_every_horizon_during_the_first_stage():
-    # Training is at stage [1] (progress 0), validation still measures h=1, 3.
-    cfg = small_config()
-    module, logged = logging_module(cfg, global_step=0)
-
-    module.validation_step(make_batch(), 0)
-    module.on_validation_epoch_end()
-
-    for h in (1, 3):
-        for name in ("rollout", "persistence"):
-            assert f"val/{name}_{h}_mse" in logged
-
-    assert "val/effective_rank" in logged
-    assert not any(
-        token in name
-        for name in logged
-        for token in ("skill", "cosine", "latent_norm", "prediction_norm")
-    )
-
-
-def test_training_steps_do_not_compute_validation_metrics():
-    cfg = small_config()
-    module, logged = logging_module(cfg, global_step=0)
-
-    module.training_step(make_batch(), 0)
-
-    assert not [name for name in logged if "persistence" in name]
-    assert getattr(module, "_validation_metrics", None) is None
 
 
 def mixed_batch(cfg, *, size=4):
@@ -852,7 +807,7 @@ def mixed_batch(cfg, *, size=4):
     return batch
 
 
-def test_lightning_validation_epoch_logs_every_metric_finite(tmp_path):
+def test_validation_logs_every_loss_and_nothing_else(tmp_path):
     # Synthetic data only: no cache, no corpus, no test split.
     cfg = load_config()
     module = LeWMModule(cfg, model=make_model(cfg))
@@ -872,13 +827,20 @@ def test_lightning_validation_epoch_logs_every_metric_finite(tmp_path):
 
     metrics = trainer.callback_metrics
 
-    for name in VALIDATION_METRICS:
-        assert f"val/{name}" in metrics, name
-        assert torch.isfinite(metrics[f"val/{name}"]), name
+    horizons = cfg.prediction.rollout_horizons
+    expected = {
+        "loss",
+        "tf_loss",
+        "rollout_loss",
+        "sigreg_loss",
+        "weighted_sigreg_loss",
+        *(f"rollout_{h}_loss" for h in horizons),
+    }
+    validation = {name for name in metrics if name.startswith("val/")}
 
-    # The existing losses are still there, and nothing touched a test split.
-    for name in ("loss", "tf_loss", "rollout_loss", "sigreg_loss", "rollout_10_loss"):
-        assert f"val/{name}" in metrics
+    # Every horizon is evaluated whatever the curriculum; only losses.
+    assert validation == {f"val/{name}" for name in expected}
+    assert all(torch.isfinite(metrics[name]) for name in validation)
     assert not [name for name in metrics if name.startswith("test/")]
 
 

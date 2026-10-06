@@ -2,6 +2,11 @@
 
 **Status:** accepted for V2 evaluation.
 
+**Update 2026-10-06:** the implementation was removed from the repository:
+training now logs its losses only, and the offline analysis package
+(`turn_wm/evaluation`) and `training/metrics.py` are gone. Recover them from
+commit `bf9e24e`; this record is kept as the design they implemented.
+
 ## Evaluation target
 
 The model is evaluated as an **action-conditioned model of future conversational activity** through three co-primary views:
