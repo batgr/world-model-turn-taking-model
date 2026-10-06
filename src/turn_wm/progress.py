@@ -1,5 +1,5 @@
 """
-Progress bars for the long offline commands (extraction, probes, analyses).
+Progress bars for the long offline commands (feature precomputation).
 
 One place decides how progress looks: tqdm on stderr, refreshed at most
 once a second so notebook logs (e.g. Colab's `!turn-wm ...`) stay small.

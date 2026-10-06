@@ -84,17 +84,12 @@ class CorpusConfig:
     action_grid_config: str
     media_manifest_config: str | None = None
     metadata_file: str = "metadata.json"
-    # Directory of the corpus's files in the repository: its action grid
-    # (`action_grid.parquet`) and optional label sidecars (`labels/`).
+    # Directory of the corpus's files in the repository (its action grid).
     data_dir: str = "data"
 
     @property
     def action_grid_file(self) -> str:
         return f"{self.data_dir}/action_grid.parquet"
-
-    @property
-    def labels_dir(self) -> str:
-        return f"{self.data_dir}/labels"
 
 
 @dataclass(frozen=True)

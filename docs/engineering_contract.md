@@ -108,8 +108,9 @@ It SHOULD load existing artifacts only, show the important figures, expose
 the main results and the report, surface missing or unsupported results,
 and work in notebook/Colab contexts.
 
-In this repository, viewers live in `turn_wm.evaluation.latent_analysis.show`
-(standard library plus IPython), and the analysis command takes `--show`.
+No analysis code currently lives in this repository (removed 2026-10-06,
+recoverable from commit `bf9e24e`); a new analysis block follows this
+contract.
 
 ## 9. Failure policy
 
