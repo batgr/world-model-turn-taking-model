@@ -54,12 +54,13 @@ import torch
 from turn_wm.evaluation.latent_analysis.concept_labels import (
     CONCEPTS,
     GROUPED_CV,
-    LOCAL_WINDOW_CELLS,
+    LOCAL_WINDOW_S,
     SPLIT,
     Concept,
     CorpusTables,
     concept_values,
     load_tables,
+    local_window_cells,
     unavailable,
 )
 from turn_wm.evaluation.latent_analysis.label_source import (
@@ -462,7 +463,12 @@ def analyze_concepts(
             },
             "min_class_support": MIN_CLASS_SUPPORT,
             "min_conversations_per_class": CV_FOLDS,
-            "local_window_cells": LOCAL_WINDOW_CELLS,
+            "local_window_s": LOCAL_WINDOW_S,
+            "local_window_cells": {
+                corpus: local_window_cells(table.grid_rate_hz)
+                for corpus, table in sorted(tables.items())
+                if table.grid_rate_hz is not None
+            },
             "bootstrap_resamples": bootstrap,
             "confidence": CONFIDENCE,
         },

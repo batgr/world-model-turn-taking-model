@@ -51,7 +51,21 @@ AXIS_TITLES = {
 SPLIT, GROUPED_CV = "train_to_validation", "grouped_cv"
 
 
-LOCAL_WINDOW_CELLS = 100  # 10 s of 100 ms cells, ending at the anchor's cell
+LOCAL_WINDOW_S = 10.0
+"""The local party-size window: this many seconds of cells, ending at the anchor."""
+
+
+def local_window_cells(grid_rate_hz: float) -> int:
+    """Cells of `LOCAL_WINDOW_S` on a grid at `grid_rate_hz` (100 at 10 Hz, 125 at 12.5 Hz)."""
+
+    cells = LOCAL_WINDOW_S * grid_rate_hz
+
+    if abs(cells - round(cells)) > 1e-6:
+        raise ValueError(
+            f"{LOCAL_WINDOW_S:g} s is not a whole number of {grid_rate_hz:g} Hz cells"
+        )
+
+    return round(cells)
 
 
 VOICES = ("0", "1", "2+")
@@ -108,8 +122,8 @@ CONCEPTS = (
         ("egocom", "ego4d"),
         ("instantaneous.speaker_activity",),
         "Is the local party size (distinct speakers in the last 10 s) accessible?",
-        f"participants known to speak in the {LOCAL_WINDOW_CELLS} cells ending "
-        "at the anchor (0-1, 2, 3+); null if the window starts before the "
+        f"participants known to speak in the {LOCAL_WINDOW_S:g} s of grid cells "
+        "ending at the anchor (0-1, 2, 3+); null if the window starts before the "
         "recording or more than half of its cells have an unknown participant",
     ),
     Concept(
@@ -236,10 +250,12 @@ def any_event(
     return None
 
 
-def local_speakers(window: Sequence[Sequence[bool | None] | None]) -> str | None:
-    """Distinct participants known to speak in a full window of cells."""
+def local_speakers(
+    window: Sequence[Sequence[bool | None] | None], cells: int
+) -> str | None:
+    """Distinct participants known to speak in a full window of `cells` cells."""
 
-    if len(window) < LOCAL_WINDOW_CELLS:
+    if len(window) < cells:
         return None
 
     unknown = sum(cell is None or any(v is None for v in cell) for cell in window)
@@ -278,6 +294,7 @@ class CorpusTables:
     recordings: dict[str, dict[str, Any]]
     wearers: dict[str, dict[str, Any]]  # recording -> the wearer's participant row
     turns: dict[str, list[tuple[float, float, float | None]]]  # wearer's turns
+    grid_rate_hz: float | None = None  # measured on the speech grid; None without it
 
 
 GRID_COLUMNS = (
@@ -405,13 +422,37 @@ def load_tables(
     for rows in turns.values():
         rows.sort()
 
+    by_recording = _by_recording(grid)
+
     return CorpusTables(
-        grid=_by_recording(grid),
+        grid=by_recording,
         social=_by_recording(social),
         recordings=recording_info,
         wearers=wearers,
         turns=turns,
+        grid_rate_hz=_grid_rate_hz(by_recording),
     )
+
+
+def _grid_rate_hz(grid: dict[str, dict[str, list[Any]]]) -> float | None:
+    """Cells per second of the speech grid: `decision_time_s = decision_index / rate`."""
+
+    rates = [
+        index / time
+        for part in grid.values()
+        for index, time in zip(part["decision_index"], part["decision_time_s"])
+        if index > 0
+    ]
+
+    if not rates:
+        return None
+
+    rate = sorted(rates)[len(rates) // 2]
+
+    if any(abs(r - rate) > 1e-6 * rate for r in rates):
+        raise ValueError("The label grid has no regular decision step")
+
+    return round(rate, 6)
 
 
 def _by_recording(table: pa.Table | None) -> dict[str, dict[str, list[Any]]]:
@@ -486,11 +527,13 @@ def concept_values(
         if grid is not None and cell is not None:
             derived["voices_now"] = voices(cell.get("active_speaker_count_subframes"))
             derived["other_onset_now"] = any_event(cell.get("other_onset_subframes"))
-            start = anchor - LOCAL_WINDOW_CELLS + 1
+            assert corpus_tables.grid_rate_hz is not None  # set with the grid
+            cells = local_window_cells(corpus_tables.grid_rate_hz)
+            start = anchor - cells + 1
             derived["local_speakers_10s"] = (
                 None
                 if start < 0
-                else local_speakers(grid["speaker_activity"][start : anchor + 1])
+                else local_speakers(grid["speaker_activity"][start : anchor + 1], cells)
             )
 
         social = corpus_tables.social.get(recording)

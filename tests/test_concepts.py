@@ -16,9 +16,9 @@ from turn_wm.cli import main
 from turn_wm.data.labels import local_store
 from turn_wm.evaluation.latent_analysis.concept_labels import (
     CONCEPTS,
-    LOCAL_WINDOW_CELLS,
     any_event,
     local_speakers,
+    local_window_cells,
     turn_rate,
     voices,
 )
@@ -60,16 +60,25 @@ def test_any_event_is_tri_state():
 
 
 def test_local_speakers_needs_a_full_known_window():
-    one = [[True, False, False]] * LOCAL_WINDOW_CELLS
-    assert local_speakers(one) == "0-1"
-    assert local_speakers([[False, False, False]] * LOCAL_WINDOW_CELLS) == "0-1"
+    cells = local_window_cells(10.0)
+    one = [[True, False, False]] * cells
+    assert local_speakers(one, cells) == "0-1"
+    assert local_speakers([[False, False, False]] * cells, cells) == "0-1"
     two = [[True, False, False]] * 50 + [[False, True, False]] * 50
-    assert local_speakers(two) == "2"
+    assert local_speakers(two, cells) == "2"
     three = two[:-1] + [[False, False, True]]
-    assert local_speakers(three) == "3+"
-    assert local_speakers(one[:-1]) is None  # window starts before the recording
+    assert local_speakers(three, cells) == "3+"
+    assert local_speakers(one[:-1], cells) is None  # starts before the recording
     unknown = [[None, False, False]] * 51 + [[True, False, False]] * 49
-    assert local_speakers(unknown) is None
+    assert local_speakers(unknown, cells) is None
+
+
+def test_the_local_window_is_ten_seconds_at_any_grid_rate():
+    assert local_window_cells(10.0) == 100
+    assert local_window_cells(12.5) == 125
+
+    with pytest.raises(ValueError, match="not a whole number"):
+        local_window_cells(12.34)
 
 
 def test_turn_rate_reads_the_turn_containing_the_anchor():
@@ -440,3 +449,19 @@ def test_cli_and_show_change_no_artifact(tmp_path, snapshots, monkeypatch, capsy
     assert f"concepts: {output}" in printed
     assert "voices_now" in printed and "multi_party" in printed
     assert {p: p.read_bytes() for p in output.rglob("*") if p.is_file()} == before
+
+
+def test_the_grid_rate_is_measured_on_the_label_grid():
+    from turn_wm.evaluation.latent_analysis.concept_labels import _grid_rate_hz
+
+    def grid(rate):
+        return {
+            "r": {
+                "decision_index": list(range(5)),
+                "decision_time_s": [i / rate for i in range(5)],
+            }
+        }
+
+    assert _grid_rate_hz(grid(10.0)) == 10.0
+    assert _grid_rate_hz(grid(12.5)) == 12.5
+    assert _grid_rate_hz({}) is None
