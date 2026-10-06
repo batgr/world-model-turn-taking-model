@@ -165,11 +165,33 @@ FULL = HuggingFaceSource(
     corpora=(_private_corpus("egocom"), _private_corpus("ego4d")),
 )
 
+# The same releases on a 12.5 Hz decision grid (80 ms steps, one per Mimi
+# frame); train them with data.grid_rate_hz=12.5.
+_PRIVATE_REPO_12_5_HZ = "batgre/conversational-dynamics-full-12.5hz"
+
+EGOCOM_12_5_HZ = HuggingFaceSource(
+    repo_id="batgre/conversational-dynamics-egocom-12.5hz",
+    corpora=EGOCOM.corpora,
+)
+
+EGO4D_12_5_HZ = HuggingFaceSource(
+    repo_id=_PRIVATE_REPO_12_5_HZ,
+    corpora=EGO4D.corpora,
+)
+
+FULL_12_5_HZ = HuggingFaceSource(
+    repo_id=_PRIVATE_REPO_12_5_HZ,
+    corpora=FULL.corpora,
+)
+
 # Published datasets addressable by name from the CLI and experiments.
 DATASETS: dict[str, HuggingFaceSource] = {
     "egocom": EGOCOM,
     "ego4d": EGO4D,
     "full": FULL,
+    "egocom_12.5hz": EGOCOM_12_5_HZ,
+    "ego4d_12.5hz": EGO4D_12_5_HZ,
+    "full_12.5hz": FULL_12_5_HZ,
 }
 
 

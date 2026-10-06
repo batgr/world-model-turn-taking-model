@@ -19,7 +19,10 @@ uv run turn-wm inspect-data --dataset dataset --split validation --batch-size 4
 ```
 
 `--dataset full` loads every configured corpus into one dataset; a split
-includes only the corpora that publish it. Add `--shuffle` to inspect a
+includes only the corpora that publish it. The same releases on a 12.5 Hz grid
+(80 ms steps, one per Mimi frame) are `egocom_12.5hz`, `ego4d_12.5hz` and
+`full_12.5hz`; train on them with `data.grid_rate_hz=12.5` and step counts in
+80 ms steps. Add `--shuffle` to inspect a
 seeded shuffled mixed-corpus batch.
 
 ```bash

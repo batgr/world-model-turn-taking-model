@@ -441,3 +441,12 @@ def test_unknown_corpus_lookup(fake_hub):
 
     with pytest.raises(KeyError, match="No corpus 'other'"):
         loaded.corpus("other")
+
+
+def test_the_12_5_hz_releases_are_registered_next_to_the_10_hz_ones():
+    from turn_wm.data.source import DATASETS
+
+    for name in ("egocom", "ego4d", "full"):
+        base, faster = DATASETS[name], DATASETS[f"{name}_12.5hz"]
+        assert faster.repo_id == f"{base.repo_id}-12.5hz"
+        assert faster.corpora == base.corpora
