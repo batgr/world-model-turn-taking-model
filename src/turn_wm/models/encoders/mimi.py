@@ -13,7 +13,6 @@ without holding the full recording's activations at once.
 from __future__ import annotations
 
 from collections.abc import Sequence
-from dataclasses import dataclass
 from typing import Any
 
 import torch
@@ -23,14 +22,6 @@ from transformers.models.mimi.modeling_mimi import MimiConv1dPaddingCache
 
 from turn_wm.models.encoders.audio import stack_waveforms
 from turn_wm.models.encoders.base import Encoder
-
-
-@dataclass
-class MimiStreamState:
-    """Caches carried from one streamed chunk to the next."""
-
-    past_key_values: Any | None
-    padding_cache: MimiConv1dPaddingCache
 
 
 class FrozenMimiEncoder(Encoder):
@@ -75,37 +66,23 @@ class FrozenMimiEncoder(Encoder):
 
         return self.encode_native(waveform)
 
-    def _new_stream_state(self) -> MimiStreamState:
+    def _padding_cache(self) -> MimiConv1dPaddingCache:
         """Empty caches for every causal convolution, as `MimiModel.encode`."""
 
-        paddings = []
-        modes = []
-        channels = []
+        # Mimi's causal convolutions (typed as plain modules by transformers).
+        layers: list[Any] = [
+            self.model.encoder.get_submodule(name)
+            for name in self.model.encoder._mimiconv1d_layer_names
+        ]
 
-        for layer_name in self.model.encoder._mimiconv1d_layer_names:
-            layer = self.model.encoder.get_submodule(layer_name)
+        if self.model.downsample is not None:
+            layers.append(self.model.downsample)
 
-            paddings.append(layer.padding_total)
-            modes.append(layer.pad_mode)
-            channels.append(layer.in_channels)
-
-        downsample = self.model.downsample
-
-        if downsample is not None:
-            paddings.append(downsample.padding_total)
-            modes.append(downsample.pad_mode)
-            channels.append(downsample.in_channels)
-
-        padding_cache = MimiConv1dPaddingCache(
-            num_layers=len(paddings),
-            per_layer_padding=paddings,
-            per_layer_padding_mode=modes,
-            per_layer_in_channels=channels,
-        )
-
-        return MimiStreamState(
-            past_key_values=None,
-            padding_cache=padding_cache,
+        return MimiConv1dPaddingCache(
+            num_layers=len(layers),
+            per_layer_padding=[layer.padding_total for layer in layers],
+            per_layer_padding_mode=[layer.pad_mode for layer in layers],
+            per_layer_in_channels=[layer.in_channels for layer in layers],
         )
 
     @torch.no_grad()
@@ -159,55 +136,48 @@ class FrozenMimiEncoder(Encoder):
         if remainder:
             waveform = nn.functional.pad(waveform, (0, self.frame_samples - remainder))
 
-        state = self._new_stream_state()
+        padding_cache = self._padding_cache()
+        past_key_values = None
         device = self.device()
         outputs = []
 
         for start in range(0, waveform.shape[-1], chunk_samples):
-            chunk = waveform[:, :, start : start + chunk_samples].to(
-                device=device,
-                dtype=torch.float32,
+            chunk = waveform[:, :, start : start + chunk_samples].to(device)
+            latents, past_key_values = self._latents(
+                chunk, padding_cache=padding_cache, past_key_values=past_key_values
             )
-
-            embeddings = self.model.encoder(
-                chunk,
-                padding_cache=state.padding_cache,
-            )
-
-            encoded = self.model.encoder_transformer(
-                embeddings.transpose(1, 2),
-                past_key_values=state.past_key_values,
-                use_cache=True,
-                return_dict=True,
-            )
-
-            state.past_key_values = encoded.past_key_values
-
-            embeddings = encoded.last_hidden_state.transpose(1, 2)
-
-            if self.model.downsample is not None:
-                embeddings = self.model.downsample(
-                    embeddings,
-                    padding_cache=state.padding_cache,
-                )
-
-            outputs.append(embeddings.transpose(1, 2).cpu())
+            outputs.append(latents.cpu())
 
         return torch.cat(outputs, dim=1)[0]
 
     def encode_native(self, waveform: torch.Tensor) -> torch.Tensor:
         """Continuous latents before quantization, `(B, frames, output_dim)`."""
 
-        embeddings = self.model.encoder(waveform)
+        return self._latents(waveform)[0]
 
+    def _latents(
+        self,
+        waveform: torch.Tensor,
+        *,
+        padding_cache: MimiConv1dPaddingCache | None = None,
+        past_key_values: Any | None = None,
+    ) -> tuple[torch.Tensor, Any]:
+        """Encoder, encoder transformer and downsampling of `(B, 1, samples)`.
+
+        With caches, a chunk continues the stream they hold (and updates
+        them); without, the waveform is encoded on its own.
+        """
+
+        embeddings = self.model.encoder(waveform, padding_cache=padding_cache)
         encoded = self.model.encoder_transformer(
             embeddings.transpose(1, 2),
+            past_key_values=past_key_values,
+            use_cache=padding_cache is not None,
             return_dict=True,
         )
-
         embeddings = encoded.last_hidden_state.transpose(1, 2)
 
         if self.model.downsample is not None:
-            embeddings = self.model.downsample(embeddings)
+            embeddings = self.model.downsample(embeddings, padding_cache=padding_cache)
 
-        return embeddings.transpose(1, 2)
+        return embeddings.transpose(1, 2), encoded.past_key_values

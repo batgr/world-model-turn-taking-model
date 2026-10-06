@@ -91,7 +91,7 @@ def _add_precompute_features(commands: argparse._SubParsersAction) -> None:
     )
     precompute.add_argument(
         "--chunk-seconds",
-        type=_positive_float,
+        type=positive_float,
         default=20.0,
         help=(
             "Audio per call for encoders that stream (Mimi: rounded down to "
@@ -224,25 +224,25 @@ def _add_inspect_data(commands: argparse._SubParsersAction) -> None:
     )
     inspect.add_argument(
         "--batch-size",
-        type=_positive_int,
+        type=positive_int,
         default=32,
         help="Number of samples in the inspected batch (default: 32).",
     )
     inspect.add_argument(
         "--context-min",
-        type=_positive_int,
+        type=positive_int,
         default=_DEFAULT_WINDOW.min_context_steps,
         help="Minimum context steps (default: %(default)s).",
     )
     inspect.add_argument(
         "--context-max",
-        type=_positive_int,
+        type=positive_int,
         default=_DEFAULT_WINDOW.max_context_steps,
         help="Maximum context steps (default: %(default)s).",
     )
     inspect.add_argument(
         "--future-steps",
-        type=_positive_int,
+        type=positive_int,
         default=_DEFAULT_WINDOW.future_steps,
         help="Future steps to predict (default: %(default)s).",
     )
@@ -447,7 +447,7 @@ def _modalities(value: str) -> tuple[MediaModality, ...]:
         raise argparse.ArgumentTypeError(str(error)) from None
 
 
-def _positive_float(value: str) -> float:
+def positive_float(value: str) -> float:
     try:
         number = float(value)
     except ValueError:
@@ -459,7 +459,7 @@ def _positive_float(value: str) -> float:
     return number
 
 
-def _positive_int(value: str) -> int:
+def positive_int(value: str) -> int:
     try:
         number = int(value)
     except ValueError:

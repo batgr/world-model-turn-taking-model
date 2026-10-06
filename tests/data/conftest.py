@@ -2,7 +2,7 @@ from pathlib import Path
 
 import pytest
 
-from turn_wm.data.reader import MediaReader
+from turn_wm.data import reader
 
 
 @pytest.fixture
@@ -13,12 +13,12 @@ def decode_spies(monkeypatch):
 
     for modality, recorded in calls.items():
         name = f"_read_{modality}"
-        original = getattr(MediaReader, name)
+        original = getattr(reader, name)
 
-        def spy(self, path, *, _original=original, _calls=recorded, **kwargs):
+        def spy(path, *args, _original=original, _calls=recorded):
             _calls.append(path)
-            return _original(self, path, **kwargs)
+            return _original(path, *args)
 
-        monkeypatch.setattr(MediaReader, name, spy)
+        monkeypatch.setattr(reader, name, spy)
 
     return calls

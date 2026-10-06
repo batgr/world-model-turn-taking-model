@@ -1,8 +1,8 @@
-"""JEPA Implementation
+"""JEPA: a frozen encoder, a trainable projector and an action-conditioned predictor.
 
 Observations reach the latent space through one path: encoder features
 `(B, T, D)` go through `project_features` (the trainable projector). Raw
-observations are encoded first (`encode`) by any `Encoder`;
+observations are encoded first (`encode_features`) by any `Encoder`;
 precomputed features (a feature cache) skip the encoder, which is then `None`
 and never built.
 """
@@ -12,7 +12,6 @@ from __future__ import annotations
 from collections.abc import Sequence
 
 import torch
-from einops import rearrange
 from torch import nn
 
 
@@ -30,16 +29,8 @@ class JEPA(nn.Module):
         self.encoder = encoder
         self.predictor = predictor
         self.action_encoder = action_encoder
-
         self.projector = projector or nn.Identity()
         self.pred_proj = pred_proj or nn.Identity()
-
-    def encode(
-        self, inputs: Sequence[torch.Tensor], rates: Sequence[float]
-    ) -> torch.Tensor:
-        """Encode raw observations, then project them to the latent space."""
-
-        return self.project_features(self.encode_features(inputs, rates))
 
     def encode_features(
         self, inputs: Sequence[torch.Tensor], rates: Sequence[float]
@@ -64,82 +55,23 @@ class JEPA(nn.Module):
         if parameter is not None and features.dtype != parameter.dtype:
             features = features.to(parameter.dtype)
 
-        if getattr(self.projector, "expects_sequence", False):
-            return self.projector(features)
+        return _per_step(self.projector, features)
 
-        b = features.size(0)
+    def encode_actions(self, actions: torch.Tensor) -> torch.Tensor:
+        """Action ids `(B, T)` -> action embeddings `(B, T, D_action)`."""
 
-        emb = rearrange(
-            features,
-            "b t d -> (b t) d",
-        )
-
-        emb = self.projector(emb)
-
-        emb = rearrange(
-            emb,
-            "(b t) d -> b t d",
-            b=b,
-        )
-
-        return emb
-
-    def encode_actions(
-        self,
-        actions: torch.Tensor,
-    ) -> torch.Tensor:
-        """
-        Args:
-            actions:
-                (B, T)
-
-        Returns:
-            action embeddings:
-                (B, T, D_action)
-        """
         return self.action_encoder(actions)
 
-    def predict(
-        self,
-        emb: torch.Tensor,
-        act_emb: torch.Tensor,
-    ) -> torch.Tensor:
-        """
-        Predict next-state embeddings.
+    def predict(self, emb: torch.Tensor, act_emb: torch.Tensor) -> torch.Tensor:
+        """Next-step latents `(B, T, D)` from latents and action embeddings."""
 
-        Args:
-            emb:
-                (B, T, D)
+        return _per_step(self.pred_proj, self.predictor(emb, act_emb))
 
-            act_emb:
-                (B, T, D_action)
 
-        Returns:
-            predictions:
-                (B, T, D)
-        """
+def _per_step(module: nn.Module, x: torch.Tensor) -> torch.Tensor:
+    """`module` on `(B, T, D)`: on whole sequences if it expects them, else per step."""
 
-        preds = self.predictor(
-            emb,
-            act_emb,
-        )
+    if getattr(module, "expects_sequence", False):
+        return module(x)
 
-        if getattr(self.pred_proj, "expects_sequence", False):
-            return self.pred_proj(preds)
-
-        batch_size = preds.size(0)
-
-        preds = rearrange(
-            preds,
-            "b t d -> (b t) d",
-        )
-
-        preds = self.pred_proj(preds)
-
-        preds = rearrange(
-            preds,
-            "(b t) d -> b t d",
-            b=batch_size,
-        )
-
-        return preds
+    return module(x.flatten(0, 1)).unflatten(0, x.shape[:2])

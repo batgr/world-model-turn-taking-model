@@ -51,9 +51,6 @@ AXIS_TITLES = {
 SPLIT, GROUPED_CV = "train_to_validation", "grouped_cv"
 
 
-GRID_STEP_S = 0.1
-
-
 LOCAL_WINDOW_CELLS = 100  # 10 s of 100 ms cells, ending at the anchor's cell
 
 

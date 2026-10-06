@@ -89,7 +89,6 @@ REPRESENTATIONS = (FEATURES, LATENT)
 CURRENT = "current_state"
 TEMPORAL = "temporal_state"
 FUTURE_STATE = "future_state"
-GROUPS = (CURRENT, TEMPORAL, FUTURE_STATE)
 
 
 @dataclass(frozen=True)

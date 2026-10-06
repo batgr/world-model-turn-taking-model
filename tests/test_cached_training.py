@@ -149,11 +149,11 @@ def test_project_features_is_exactly_the_projector():
     )
 
 
-def test_encode_is_the_encoder_then_the_same_projection():
+def test_encoding_is_the_encoder_then_the_same_projection():
     model = raw_model()
     waveforms = [torch.randn(1, 2_500), torch.randn(2, 2_500)]
 
-    raw = model.encode(waveforms, [1_000, 1_000])
+    raw = model.project_features(model.encode_features(waveforms, [1_000, 1_000]))
     cached = model.project_features(model.encoder(waveforms, [1_000, 1_000]))
 
     torch.testing.assert_close(raw, cached, rtol=0, atol=0)
@@ -209,7 +209,7 @@ def test_model_without_encoder_refuses_raw_observations(no_mimi):
     assert model.encoder is None
 
     with pytest.raises(ValueError, match="Raw observation encoding is unavailable"):
-        model.encode([torch.randn(1, 100)], [1_000])
+        model.encode_features([torch.randn(1, 100)], [1_000])
 
 
 def test_trajectories_have_exactly_one_observation_source():

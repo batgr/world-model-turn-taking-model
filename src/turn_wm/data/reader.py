@@ -17,6 +17,9 @@ from turn_wm.data.media import (
     validate_modalities,
 )
 
+# A decoded jump of at least TRUE_AUDIO_GAP_S between consecutive audio frames
+# is missing audio, filled with silence; shorter ones are timestamp jitter.
+
 TRUE_AUDIO_GAP_S = 0.100
 AUDIO_GAP_NUMERICAL_TOLERANCE_S = 1e-6
 
@@ -70,10 +73,11 @@ class MediaWindow:
 class MediaReader:
     """Decode timestamp-aligned audio/video windows using PyAV.
 
-    Times are on the media file's own timeline; callers convert canonical
-    grid times beforehand. Only the selected modalities are decoded; the
-    others are also skipped by the demuxer, so embedded audio can be read
-    without touching the video packets of its container, and vice versa.
+    Times are on the media file's own timeline (relative to each stream's
+    start); callers convert canonical grid times beforehand. Only the
+    selected modalities are decoded; the others are also skipped by the
+    demuxer, so embedded audio can be read without touching the video
+    packets of its container, and vice versa.
     """
 
     def read_window(
@@ -92,314 +96,174 @@ class MediaReader:
 
         selected = validate_modalities(modalities)
 
-        self._validate_window(
-            start_time_s=start_time_s,
-            end_time_s=end_time_s,
-        )
-
-        video = None
-        audio = None
-
-        if "video" in selected and media.video_path is not None:
-            video = self._read_video(
-                media.video_path,
-                start_time_s=start_time_s,
-                end_time_s=end_time_s,
-            )
-
-        audio_source = media.audio_source
-
-        if "audio" in selected and audio_source is not None:
-            audio = self._read_audio(
-                audio_source,
-                start_time_s=start_time_s,
-                end_time_s=end_time_s,
-            )
-
-        return MediaWindow(
-            start_time_s=start_time_s,
-            end_time_s=end_time_s,
-            audio=audio,
-            video=video,
-        )
-
-    @staticmethod
-    def _validate_window(
-        *,
-        start_time_s: float,
-        end_time_s: float,
-    ) -> None:
         if start_time_s < 0:
             raise ValueError("start_time_s must be non-negative")
 
         if end_time_s <= start_time_s:
             raise ValueError("end_time_s must be greater than start_time_s")
 
-    def _read_video(
-        self,
-        path: Path,
-        *,
-        start_time_s: float,
-        end_time_s: float,
-    ) -> DecodedVideo | None:
-        with av.open(str(path)) as container:
-            if not container.streams.video:
-                return None
+        video = audio = None
 
-            stream = container.streams.video[0]
-            stream.thread_type = "AUTO"
-            self._discard_other_streams(container, stream)
+        if "video" in selected and media.video_path is not None:
+            video = _read_video(media.video_path, start_time_s, end_time_s)
 
-            origin_s = self._stream_origin_s(stream)
+        if "audio" in selected and media.audio_source is not None:
+            audio = _read_audio(media.audio_source, start_time_s, end_time_s)
 
-            self._seek(
-                container,
-                stream,
-                start_time_s=start_time_s,
-            )
-
-            frames: list[torch.Tensor] = []
-            timestamps: list[float] = []
-
-            for frame in container.decode(stream):
-                frame_time_s = self._frame_time_s(
-                    frame,
-                    origin_s=origin_s,
-                )
-
-                if frame_time_s is None:
-                    continue
-
-                if frame_time_s < start_time_s:
-                    continue
-
-                if frame_time_s >= end_time_s:
-                    break
-
-                array = frame.to_ndarray(format="rgb24")
-
-                tensor = torch.from_numpy(array).permute(2, 0, 1).contiguous()
-
-                frames.append(tensor)
-                timestamps.append(frame_time_s)
-
-        if not frames:
-            return None
-
-        return DecodedVideo(
-            frames=torch.stack(frames),
-            timestamps_s=torch.tensor(
-                timestamps,
-                dtype=torch.float64,
-            ),
+        return MediaWindow(
+            start_time_s=start_time_s, end_time_s=end_time_s, audio=audio, video=video
         )
 
-    def _read_audio(
-        self,
-        path: Path,
-        *,
-        start_time_s: float,
-        end_time_s: float,
-    ) -> DecodedAudio | None:
-        with av.open(str(path)) as container:
-            if not container.streams.audio:
-                return None
 
-            stream = container.streams.audio[0]
-            self._discard_other_streams(container, stream)
-            origin_s = self._stream_origin_s(stream)
+def _read_video(path: Path, start_s: float, end_s: float) -> DecodedVideo | None:
+    with av.open(str(path)) as container:
+        if not container.streams.video:
+            return None
 
-            self._seek(
-                container,
-                stream,
-                start_time_s=start_time_s,
-            )
+        stream = container.streams.video[0]
+        stream.thread_type = "AUTO"
+        origin_s = _open_stream(container, stream, start_s)
+        frames: list[torch.Tensor] = []
+        timestamps: list[float] = []
 
-            chunks: list[torch.Tensor] = []
-            sample_rate: int | None = None
-            audio_gaps: list[AudioGap] = []
-            previous_frame_end_s: float | None = None
+        for frame in container.decode(stream):
+            time_s = _frame_time_s(frame, origin_s)
 
-            for frame in container.decode(stream):
-                frame_time_s = self._frame_time_s(
-                    frame,
-                    origin_s=origin_s,
-                )
+            if time_s is None or time_s < start_s:
+                continue
 
-                if frame_time_s is None:
-                    continue
+            if time_s >= end_s:
+                break
 
-                rate = frame.sample_rate
+            array = frame.to_ndarray(format="rgb24")
+            frames.append(torch.from_numpy(array).permute(2, 0, 1).contiguous())
+            timestamps.append(time_s)
 
-                if rate is None:
-                    raise ValueError(f"Audio frame in {path} has no sample rate")
+    if not frames:
+        return None
 
-                if sample_rate is None:
-                    sample_rate = rate
-                elif sample_rate != rate:
-                    raise ValueError(f"Audio sample rate changed inside {path}")
+    return DecodedVideo(
+        frames=torch.stack(frames),
+        timestamps_s=torch.tensor(timestamps, dtype=torch.float64),
+    )
 
-                frame_end_s = frame_time_s + frame.samples / rate
 
-                if frame_end_s <= start_time_s:
-                    # Keep the immediately preceding frame end so a window
-                    # beginning inside a true gap starts with silence.
-                    previous_frame_end_s = frame_end_s
-                    continue
+def _read_audio(path: Path, start_s: float, end_s: float) -> DecodedAudio | None:
+    with av.open(str(path)) as container:
+        if not container.streams.audio:
+            return None
 
-                if previous_frame_end_s is not None:
-                    local_gap_s = frame_time_s - previous_frame_end_s
+        stream = container.streams.audio[0]
+        origin_s = _open_stream(container, stream, start_s)
+        chunks: list[torch.Tensor] = []
+        sample_rate: int | None = None
+        audio_gaps: list[AudioGap] = []
+        previous_end_s: float | None = None
 
-                    if (
-                        local_gap_s + AUDIO_GAP_NUMERICAL_TOLERANCE_S
-                        >= TRUE_AUDIO_GAP_S
-                    ):
-                        gap = AudioGap(
-                            start_time_s=previous_frame_end_s,
-                            end_time_s=frame_time_s,
-                        )
-                        audio_gaps.append(gap)
+        for frame in container.decode(stream):
+            time_s = _frame_time_s(frame, origin_s)
 
-                        clipped_start = max(gap.start_time_s, start_time_s)
-                        clipped_end = min(gap.end_time_s, end_time_s)
+            if time_s is None:
+                continue
 
-                        if clipped_end > clipped_start:
-                            silence_samples = round(
-                                (clipped_end - clipped_start) * rate
-                            )
+            rate = frame.sample_rate
 
-                            if silence_samples:
-                                chunks.append(
-                                    torch.zeros(
-                                        len(frame.layout.channels),
-                                        silence_samples,
-                                    )
-                                )
+            if rate is None:
+                raise ValueError(f"Audio frame in {path} has no sample rate")
 
-                if frame_time_s >= end_time_s:
-                    break
+            if sample_rate is None:
+                sample_rate = rate
+            elif sample_rate != rate:
+                raise ValueError(f"Audio sample rate changed inside {path}")
 
-                array = self._audio_to_float32(frame)
+            frame_end_s = time_s + frame.samples / rate
 
-                first_sample = max(
-                    0,
-                    math.ceil((start_time_s - frame_time_s) * rate),
-                )
+            if frame_end_s <= start_s:
+                # Keep the immediately preceding frame end so a window
+                # beginning inside a true gap starts with silence.
+                previous_end_s = frame_end_s
+                continue
 
-                last_sample = min(
-                    frame.samples,
-                    math.ceil((end_time_s - frame_time_s) * rate),
-                )
-
-                if last_sample <= first_sample:
-                    previous_frame_end_s = frame_end_s
-                    continue
-
-                chunks.append(
-                    torch.from_numpy(
-                        array[
-                            :,
-                            first_sample:last_sample,
-                        ]
+            if (
+                previous_end_s is not None
+                and time_s - previous_end_s + AUDIO_GAP_NUMERICAL_TOLERANCE_S
+                >= TRUE_AUDIO_GAP_S
+            ):
+                gap = AudioGap(start_time_s=previous_end_s, end_time_s=time_s)
+                audio_gaps.append(gap)
+                silence = round(
+                    max(
+                        0.0, min(gap.end_time_s, end_s) - max(gap.start_time_s, start_s)
                     )
+                    * rate
                 )
-                previous_frame_end_s = frame_end_s
 
-        if not chunks or sample_rate is None:
-            return None
+                if silence:
+                    chunks.append(torch.zeros(len(frame.layout.channels), silence))
 
-        return DecodedAudio(
-            waveform=torch.cat(chunks, dim=1),
-            sample_rate=sample_rate,
-            audio_gaps=tuple(audio_gaps),
-        )
+            if time_s >= end_s:
+                break
 
-    @staticmethod
-    def _audio_to_float32(
-        frame: av.AudioFrame,
-    ) -> np.ndarray:
-        array = frame.to_ndarray()
+            first = max(0, math.ceil((start_s - time_s) * rate))
+            last = min(frame.samples, math.ceil((end_s - time_s) * rate))
+            previous_end_s = frame_end_s
 
-        channels = len(frame.layout.channels)
-        samples = frame.samples
+            if last > first:
+                chunks.append(torch.from_numpy(_audio_to_float32(frame)[:, first:last]))
 
-        if array.shape == (channels, samples):
-            pass
+    if not chunks or sample_rate is None:
+        return None
 
-        elif array.size == channels * samples:
-            array = array.reshape(samples, channels).transpose()
+    return DecodedAudio(
+        waveform=torch.cat(chunks, dim=1),
+        sample_rate=sample_rate,
+        audio_gaps=tuple(audio_gaps),
+    )
 
-        else:
+
+def _audio_to_float32(frame: av.AudioFrame) -> np.ndarray:
+    """`(channels, samples)` float32, integer samples scaled to [-1, 1]."""
+
+    array = frame.to_ndarray()
+    channels, samples = len(frame.layout.channels), frame.samples
+
+    if array.shape != (channels, samples):
+        if array.size != channels * samples:
             raise ValueError(f"Unexpected decoded audio shape: {array.shape}")
 
-        if np.issubdtype(array.dtype, np.integer):
-            info = np.iinfo(array.dtype.name)
+        array = array.reshape(samples, channels).transpose()
 
-            scale = float(
-                max(
-                    abs(info.min),
-                    abs(info.max),
-                )
-            )
+    if np.issubdtype(array.dtype, np.integer):
+        info = np.iinfo(array.dtype.name)
+        array = array.astype(np.float32) / float(max(abs(info.min), abs(info.max)))
+    else:
+        array = array.astype(np.float32, copy=False)
 
-            array = array.astype(np.float32) / scale
+    return np.ascontiguousarray(array)
 
-        else:
-            array = array.astype(
-                np.float32,
-                copy=False,
-            )
 
-        return np.ascontiguousarray(array)
+def _open_stream(container: Any, stream: Any, start_s: float) -> float:
+    """Skip every other stream, seek to `start_s`; return the stream's origin (s)."""
 
-    @staticmethod
-    def _discard_other_streams(
-        container: Any,
-        keep: Any,
-    ) -> None:
-        """Make the demuxer skip every packet not belonging to `keep`."""
+    for other in container.streams:
+        if other.index != stream.index:
+            other.discard = vars(av)["stream"].Discard.all
 
-        for stream in container.streams:
-            if stream.index != keep.index:
-                stream.discard = vars(av)["stream"].Discard.all
+    start = stream.start_time if stream.start_time is not None else 0
+    container.seek(
+        start + int(start_s / float(stream.time_base)),
+        stream=stream,
+        backward=True,
+        any_frame=False,
+    )
 
-    @staticmethod
-    def _stream_origin_s(stream: Any) -> float:
-        if stream.start_time is None:
-            return 0.0
+    return float(start * stream.time_base)
 
-        return float(stream.start_time * stream.time_base)
 
-    @staticmethod
-    def _frame_time_s(
-        frame: av.AudioFrame | av.VideoFrame,
-        *,
-        origin_s: float,
-    ) -> float | None:
-        if frame.pts is None:
-            return None
+def _frame_time_s(
+    frame: av.AudioFrame | av.VideoFrame, origin_s: float
+) -> float | None:
+    if frame.pts is None or frame.time_base is None:
+        return None
 
-        time_base = frame.time_base
-
-        if time_base is None:
-            return None
-
-        return float(frame.pts * time_base) - origin_s
-
-    @staticmethod
-    def _seek(
-        container: Any,
-        stream: Any,
-        *,
-        start_time_s: float,
-    ) -> None:
-        stream_start = stream.start_time if stream.start_time is not None else 0
-
-        offset = stream_start + int(start_time_s / float(stream.time_base))
-
-        container.seek(
-            offset,
-            stream=stream,
-            backward=True,
-            any_frame=False,
-        )
+    return float(frame.pts * frame.time_base) - origin_s

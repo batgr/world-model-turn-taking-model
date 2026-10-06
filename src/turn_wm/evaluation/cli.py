@@ -8,6 +8,7 @@ from pathlib import Path
 
 from huggingface_hub.errors import GatedRepoError, RepositoryNotFoundError
 
+from turn_wm.data.cli import positive_int
 from turn_wm.evaluation.latent_analysis.action_ablation import (
     DEFAULT_ABLATION_SAMPLES,
     extract_action_ablation_run,
@@ -98,7 +99,7 @@ def _add_run_options(
         )
     command.add_argument(
         "--max-samples",
-        type=_positive_int,
+        type=positive_int,
         default=max_samples,
         help=(
             "Samples to keep from the seeded order (default: all)."
@@ -111,7 +112,7 @@ def _add_run_options(
     )
     command.add_argument(
         "--batch-size",
-        type=_positive_int,
+        type=positive_int,
         help="Batch size; does not change the samples (default: the run's).",
     )
     command.add_argument(
@@ -161,7 +162,7 @@ def _add_report_options(
         )
     command.add_argument(
         "--bootstrap",
-        type=_positive_int,
+        type=positive_int,
         default=DEFAULT_BOOTSTRAP,
         help="Bootstrap resamples per interval (default: %(default)s).",
     )
@@ -278,19 +279,19 @@ def _add_analyze_latents(commands: argparse._SubParsersAction) -> None:
     )
     analyze.add_argument(
         "--silhouette-samples",
-        type=_positive_int,
+        type=positive_int,
         default=DEFAULT_SILHOUETTE_SAMPLES,
         help="Rows per silhouette, seeded sample (default: %(default)s).",
     )
     analyze.add_argument(
         "--max-plot-samples",
-        type=_positive_int,
+        type=positive_int,
         default=DEFAULT_MAX_PLOT_SAMPLES,
         help="Rows drawn in the PCA figures (default: %(default)s).",
     )
     analyze.add_argument(
         "--balanced-cap",
-        type=_positive_int,
+        type=positive_int,
         default=DEFAULT_BALANCED_CAP,
         help="Rows per class of the balanced silhouette (default: %(default)s).",
     )
@@ -652,17 +653,3 @@ def _probe_concepts(
         show_concepts(output)
 
     return 0
-
-
-def _positive_int(value: str) -> int:
-    try:
-        number = int(value)
-    except ValueError:
-        raise argparse.ArgumentTypeError(
-            f"expected an integer, got {value!r}"
-        ) from None
-
-    if number <= 0:
-        raise argparse.ArgumentTypeError(f"must be positive, got {number}")
-
-    return number
