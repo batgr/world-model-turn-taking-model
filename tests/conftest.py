@@ -3,12 +3,12 @@ from pathlib import Path
 import pytest
 import torch
 
-from turn_wm.data.mimi_cache import MimiFeatureRecord, write_features, write_manifest
+from turn_wm.data.feature_cache import FeatureRecord, write_features, write_manifest
 
 
 @pytest.fixture
-def make_mimi_cache(tmp_path):
-    """Write a synthetic Mimi cache; feature[k, 0] is the row's decision_index.
+def make_feature_cache(tmp_path):
+    """Write a synthetic feature cache; feature[k, 0] is the row's decision_index.
 
     `recordings` maps (dataset, recording_id) to (start_index, steps).
     """
@@ -21,7 +21,7 @@ def make_mimi_cache(tmp_path):
         source_dataset_revision: str | None = "rev-123",
         root: Path | None = None,
     ) -> Path:
-        root = root or tmp_path / "mimi-cache"
+        root = root or tmp_path / "feature-cache"
         records = []
 
         for (dataset, recording_id), (start_index, steps) in recordings.items():
@@ -31,7 +31,7 @@ def make_mimi_cache(tmp_path):
                 root, dataset=dataset, recording_id=recording_id, features=features
             )
             records.append(
-                MimiFeatureRecord(
+                FeatureRecord(
                     dataset=dataset,
                     recording_id=recording_id,
                     path=str(path.relative_to(root)),

@@ -10,8 +10,8 @@ from synthetic_media import make_audio, make_video, make_video_with_audio
 from turn_wm.data import dataset as dataset_module
 from turn_wm.data.build import build_dataset
 from turn_wm.data.dataset import WindowConfig
+from turn_wm.data.feature_cache import FeatureStore
 from turn_wm.data.loader import DataLoaderConfig, build_dataloader
-from turn_wm.data.mimi_cache import MimiFeatureStore
 from turn_wm.data.reader import MediaWindow
 from turn_wm.data.source import LoadedData
 
@@ -66,7 +66,7 @@ def test_single_corpus_uses_same_api():
 
 
 def test_cache_mode_filters_only_anchors_missing_from_the_store(
-    make_mimi_cache,
+    make_feature_cache,
     caplog,
 ):
     base = make_corpus("a", state="SILENT", splits={"train": 1})
@@ -84,7 +84,7 @@ def test_cache_mode_filters_only_anchors_missing_from_the_store(
         ),
         action_grid=concatenate_datasets([base.action_grid, second_grid]),
     )
-    store = MimiFeatureStore(make_mimi_cache({("a", "r1"): (0, 40)}))
+    store = FeatureStore(make_feature_cache({("a", "r1"): (0, 40)}))
     caplog.set_level(logging.INFO, logger="turn_wm.data.build")
 
     dataset = build_dataset(
@@ -93,7 +93,7 @@ def test_cache_mode_filters_only_anchors_missing_from_the_store(
         window=WINDOW,
         training=False,
         modalities=("audio",),
-        mimi_store=store,
+        feature_store=store,
     )
 
     assert len(dataset) == 1

@@ -33,7 +33,7 @@ GRID_STEP_S = 0.1
 def mimi_encoder():
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
-    return FrozenMimiEncoder(target_rate=1 / GRID_STEP_S).to(device)
+    return FrozenMimiEncoder().to(device)
 
 
 def assert_mimi_pipeline(
@@ -43,13 +43,12 @@ def assert_mimi_pipeline(
 ) -> None:
     assert media_window.audio is not None
 
-    features = encoder(
-        media_window.audio.waveform,
-        sample_rate=media_window.audio.sample_rate,
-        target_length=target_steps,
-    )
+    features = encoder([media_window.audio.waveform], [media_window.audio.sample_rate])
 
-    assert features.shape == (1, target_steps, encoder.output_dim)
+    # Mimi's own 12.5 Hz frames over the window (the published grid is 10 Hz).
+    frames = target_steps * GRID_STEP_S * encoder.frame_rate
+    assert features.shape[0] == 1 and features.shape[2] == encoder.output_dim
+    assert abs(features.shape[1] - frames) <= 1
     assert torch.isfinite(features).all()
 
 

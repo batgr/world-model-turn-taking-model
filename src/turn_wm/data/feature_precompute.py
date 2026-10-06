@@ -1,18 +1,15 @@
 """
-Precompute Mimi features for whole recordings, aligned to the action grid.
+Precompute a frozen encoder's features for whole recordings, on the action grid.
 
 For every recording of the action grid:
 
-    recording audio (canonical span, exact duration)
-          ↓ resampled once to Mimi's rate
-    Mimi continuous features @ 12.5 Hz, streamed with persistent caches
-          ↓ causal_align()
-    one feature row per grid step @ 10 Hz
+    recording audio (canonical span, exact duration, its own sample rate)
+          ↓ the encoder (Mimi: resampled once to 24 kHz, then streamed with
+          ↓ persistent caches)
+    one feature row per grid step: frame k is step start_index + k
 
-The whole recording is resampled at once, then streamed through Mimi chunk by
-chunk; resampling chunk by chunk would add artifacts at every boundary.
-Feature row `k` covers the grid step `start_index + k`; no projector or other
-learned transform is applied.
+The encoder runs at the grid's rate, so no feature is resampled or realigned;
+no projector or other learned transform is applied.
 
 Every recording's grid and media are checked before the first one is encoded,
 so an inconsistent input fails in seconds rather than hours into a run.
@@ -30,28 +27,21 @@ import pyarrow as pa
 import torch
 import torch.nn.functional as F
 
-from turn_wm.data.media import MediaIndex, MediaPaths
-from turn_wm.data.mimi_cache import (
-    MimiAudioGap,
-    MimiCacheExclusion,
-    MimiFeatureRecord,
+from turn_wm.data.feature_cache import (
+    CachedAudioGap,
+    CacheExclusion,
+    FeatureRecord,
     write_features,
     write_manifest,
 )
+from turn_wm.data.media import MediaIndex, MediaPaths
 from turn_wm.data.reader import MediaReader
 from turn_wm.data.source import LoadedCorpus, LoadedData
-from turn_wm.models.encoders.mimi import (
-    FrozenMimiEncoder,
-    causal_align,
-    stack_waveforms,
-)
-
-# The cache contract is the 10 Hz action grid.
-GRID_RATE_HZ = 10.0
+from turn_wm.models.encoders.base import Encoder
 
 # Audio missing before a recording's first grid step that may be filled with
-# silence: one grid step (a manifest offset slightly before the media start).
-MAX_AUDIO_PREFIX_GAP_S = 1 / GRID_RATE_HZ
+# silence: 100 ms (a manifest offset slightly before the media start).
+MAX_AUDIO_PREFIX_GAP_S = 0.1
 
 # Audio missing after the last grid step that may be filled with silence.
 # Published grids run to the next whole second past the media (EgoCom: up to
@@ -65,19 +55,19 @@ MAX_AUDIO_TAIL_GAP_S = 1.0
 # frames after true local gaps (>= 100 ms) are classified separately. No clock
 # correction is inferred; the affected recordings are omitted explicitly.
 EGO4D_V1_EXCLUSIONS = (
-    MimiCacheExclusion(
+    CacheExclusion(
         dataset="ego4d",
         recording_id="85506322-449a-45c0-b77a-48a8077b4bbd",
         reason="audio_annotation_clock_drift",
         max_drift_s=0.44265625,
     ),
-    MimiCacheExclusion(
+    CacheExclusion(
         dataset="ego4d",
         recording_id="b3ef3563-ecc0-4a15-9a7b-4feb4558d953",
         reason="audio_annotation_clock_drift",
         max_drift_s=0.476,
     ),
-    MimiCacheExclusion(
+    CacheExclusion(
         dataset="ego4d",
         recording_id="ba5b1882-c9d7-48e7-85fe-2c7b10494fac",
         reason="audio_annotation_clock_drift",
@@ -90,10 +80,11 @@ type Progress = Callable[[int, int, "RecordingSpan"], None]
 
 @dataclass(frozen=True)
 class PreparedRecordingAudio:
-    """Exact-duration Mimi input and its canonical true-gap metadata."""
+    """Exact-duration encoder input and its canonical true-gap metadata."""
 
-    waveform: torch.Tensor
-    audio_gaps: tuple[MimiAudioGap, ...]
+    waveform: torch.Tensor  # (channels, samples) at sample_rate
+    sample_rate: int
+    audio_gaps: tuple[CachedAudioGap, ...]
 
 
 @dataclass(frozen=True)
@@ -105,16 +96,17 @@ class RecordingSpan:
     start_index: int
     start_time_s: float
     steps: int
+    grid_rate_hz: float
 
     @property
     def end_time_s(self) -> float:
-        return self.start_time_s + self.steps / GRID_RATE_HZ
+        return self.start_time_s + self.steps / self.grid_rate_hz
 
 
 def _recording_spans(
     corpus: LoadedCorpus,
     *,
-    target_rate: float,
+    grid_rate: float,
 ) -> list[RecordingSpan]:
     """One span per recording; refuses grids with gaps or irregular timing."""
 
@@ -155,7 +147,7 @@ def _recording_spans(
         start_time = float(row["decision_time_s_min"])
         last_time = float(row["decision_time_s_max"])
 
-        expected_last = start_time + (steps - 1) / target_rate
+        expected_last = start_time + (steps - 1) / grid_rate
 
         if not math.isclose(last_time, expected_last, abs_tol=1e-5):
             raise ValueError(
@@ -170,6 +162,7 @@ def _recording_spans(
                 start_index=start_index,
                 start_time_s=start_time,
                 steps=steps,
+                grid_rate_hz=grid_rate,
             )
         )
 
@@ -181,13 +174,12 @@ def _load_recording_audio(
     reader: MediaReader,
     media: MediaPaths,
     span: RecordingSpan,
-    encoder: FrozenMimiEncoder,
-    target_rate: float,
+    grid_rate: float,
 ) -> PreparedRecordingAudio:
-    """Exact-duration Mimi input and true gaps on the canonical timeline."""
+    """Exact-duration encoder input and true gaps on the canonical timeline."""
 
     canonical_start = span.start_time_s
-    canonical_end = canonical_start + span.steps / target_rate
+    canonical_end = canonical_start + span.steps / grid_rate
 
     media_start = media.to_media_time(canonical_start)
     media_end = media.to_media_time(canonical_end)
@@ -221,7 +213,7 @@ def _load_recording_audio(
     sample_rate = window.audio.sample_rate
 
     audio_gaps = tuple(
-        MimiAudioGap(
+        CachedAudioGap(
             start_time_s=max(
                 canonical_start,
                 gap.start_time_s - media.media_offset_s,
@@ -239,16 +231,10 @@ def _load_recording_audio(
     if prefix_seconds > 0:
         waveform = F.pad(waveform, (round(prefix_seconds * sample_rate), 0))
 
-    resampled = stack_waveforms(
-        [waveform],
-        [sample_rate],
-        target_rate=encoder.sample_rate,
-    )
-
     # Exact canonical duration: a small shortfall at the end is silence.
-    expected_samples = round(span.steps / target_rate * encoder.sample_rate)
-    current_samples = resampled.shape[-1]
-    missing_s = (expected_samples - current_samples) / encoder.sample_rate
+    expected_samples = round(span.steps / grid_rate * sample_rate)
+    current_samples = waveform.shape[-1]
+    missing_s = (expected_samples - current_samples) / sample_rate
 
     if missing_s > MAX_AUDIO_TAIL_GAP_S:
         raise ValueError(
@@ -258,53 +244,49 @@ def _load_recording_audio(
         )
 
     if current_samples < expected_samples:
-        resampled = F.pad(resampled, (0, expected_samples - current_samples))
+        waveform = F.pad(waveform, (0, expected_samples - current_samples))
     elif current_samples > expected_samples:
-        resampled = resampled[..., :expected_samples]
+        waveform = waveform[..., :expected_samples]
 
     return PreparedRecordingAudio(
-        waveform=resampled,
+        waveform=waveform,
+        sample_rate=sample_rate,
         audio_gaps=audio_gaps,
     )
 
 
 def _encode_recording(
     *,
-    encoder: FrozenMimiEncoder,
-    audio: torch.Tensor,
+    encoder: Encoder,
+    audio: PreparedRecordingAudio,
     steps: int,
-    target_rate: float,
     chunk_seconds: float,
 ) -> torch.Tensor:
-    """`(steps, output_dim)` features: streamed Mimi, then causal alignment."""
+    """`(steps, output_dim)` features: frame k of the encoder is grid step k."""
 
-    native = encoder.stream_native_features(audio, chunk_seconds=chunk_seconds)
-
-    aligned = causal_align(
-        native,
-        source_rate=encoder.source_rate,
-        target_rate=target_rate,
-        target_length=steps,
+    features = encoder.encode_recording(
+        audio.waveform, audio.sample_rate, chunk_seconds=chunk_seconds
     )
 
-    if aligned.shape != (1, steps, encoder.output_dim):
-        raise ValueError(f"Unexpected aligned Mimi shape: {tuple(aligned.shape)}")
+    # A partial last frame (audio not a whole number of frames) is dropped.
+    if features.ndim != 2 or features.shape[0] < steps:
+        raise ValueError(
+            f"Expected at least {steps} frames, got shape {tuple(features.shape)}"
+        )
 
-    return aligned[0]
+    return features[:steps]
 
 
-def precompute_mimi_cache(
+def precompute_features(
     loaded: LoadedData,
     *,
+    encoder: Encoder,
     media_roots: dict[str, Path],
     output_root: Path,
-    model_name: str = "kyutai/mimi",
-    model_revision: str | None = None,
-    target_rate: float = GRID_RATE_HZ,
     chunk_seconds: float = 20.0,
     device: str = "cpu",
     progress: Progress | None = None,
-    excluded_recordings: tuple[MimiCacheExclusion, ...] | None = None,
+    excluded_recordings: tuple[CacheExclusion, ...] | None = None,
 ) -> Path:
     """Write one feature file per recording and the manifest; return its path.
 
@@ -312,11 +294,21 @@ def precompute_mimi_cache(
     called before each recording is encoded. By default, the evidence-backed
     Ego4D V1 exclusions are applied when Ego4D is present; callers may pass an
     explicit tuple for another release or a synthetic test.
+
+    The encoder must read audio and run at the loaded data's decision grid
+    rate: its frame `k` is the recording's grid step `start_index + k`.
     """
 
-    if target_rate != GRID_RATE_HZ:
+    grid_rate = loaded.grid_rate_hz
+
+    if encoder.modality != "audio":
+        raise ValueError(f"{encoder.name} reads {encoder.modality}, not audio")
+
+    if not math.isclose(encoder.frame_rate, grid_rate):
         raise ValueError(
-            f"The Mimi cache is aligned to the {GRID_RATE_HZ:g} Hz action grid"
+            f"{encoder.name} gives {encoder.frame_rate:g} Hz frames; the loaded "
+            f"data's decision grid is {grid_rate:g} Hz: an encoder runs on a "
+            "grid at its own frame rate"
         )
 
     if chunk_seconds <= 0:
@@ -337,7 +329,7 @@ def precompute_mimi_cache(
         if corpus.media_manifest is None:
             raise ValueError(f"{corpus.name!r} has no media manifest")
 
-        corpus_spans.append((corpus, _recording_spans(corpus, target_rate=target_rate)))
+        corpus_spans.append((corpus, _recording_spans(corpus, grid_rate=grid_rate)))
 
     canonical_keys = {
         (span.dataset, span.recording_id) for _, spans in corpus_spans for span in spans
@@ -352,18 +344,18 @@ def precompute_mimi_cache(
         if excluded_recordings is None
         else excluded_recordings
     )
-    exclusions_by_key: dict[tuple[str, str], MimiCacheExclusion] = {}
+    exclusions_by_key: dict[tuple[str, str], CacheExclusion] = {}
 
     for exclusion in configured_exclusions:
         key = (exclusion.dataset, exclusion.recording_id)
         if key in exclusions_by_key:
-            raise ValueError(f"Duplicate Mimi cache exclusion for {key!r}")
+            raise ValueError(f"Duplicate feature cache exclusion for {key!r}")
         exclusions_by_key[key] = exclusion
 
     unknown_exclusions = sorted(set(exclusions_by_key) - canonical_keys)
     if unknown_exclusions:
         raise ValueError(
-            f"Mimi cache exclusions are not in the canonical action grid: "
+            f"feature cache exclusions are not in the canonical action grid: "
             f"{unknown_exclusions!r}"
         )
 
@@ -388,17 +380,11 @@ def precompute_mimi_cache(
 
             jobs.append((span, media))
 
-    encoder = FrozenMimiEncoder(
-        model_name=model_name,
-        revision=model_revision,
-        target_rate=target_rate,
-    )
-
     encoder.to(device)
     encoder.eval()
 
     reader = MediaReader()
-    records: list[MimiFeatureRecord] = []
+    records: list[FeatureRecord] = []
 
     for index, (span, media) in enumerate(jobs, start=1):
         if progress is not None:
@@ -408,15 +394,13 @@ def precompute_mimi_cache(
             reader=reader,
             media=media,
             span=span,
-            encoder=encoder,
-            target_rate=target_rate,
+            grid_rate=grid_rate,
         )
 
         features = _encode_recording(
             encoder=encoder,
-            audio=prepared.waveform,
+            audio=prepared,
             steps=span.steps,
-            target_rate=target_rate,
             chunk_seconds=chunk_seconds,
         )
 
@@ -428,7 +412,7 @@ def precompute_mimi_cache(
         )
 
         records.append(
-            MimiFeatureRecord(
+            FeatureRecord(
                 dataset=span.dataset,
                 recording_id=span.recording_id,
                 path=str(path.relative_to(output_root)),
@@ -442,11 +426,11 @@ def precompute_mimi_cache(
     return write_manifest(
         output_root,
         recordings=records,
-        model_name=model_name,
-        model_revision=model_revision,
+        model_name=encoder.name,
+        model_revision=encoder.revision,
         model_resolved_revision=encoder.resolved_revision,
         source_dataset_revision=loaded.revision,
-        feature_rate_hz=target_rate,
+        feature_rate_hz=grid_rate,
         feature_dim=encoder.output_dim,
         excluded_recordings=tuple(
             exclusions_by_key[key] for key in sorted(exclusions_by_key)

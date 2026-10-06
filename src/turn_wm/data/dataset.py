@@ -16,6 +16,7 @@ import torch
 from datasets import Dataset as HFDataset
 from torch.utils.data import Dataset
 
+from turn_wm.data.feature_cache import CachedFeatures
 from turn_wm.data.media import (
     MEDIA_MODALITIES,
     MediaIndex,
@@ -23,7 +24,6 @@ from turn_wm.data.media import (
     MediaPaths,
     validate_modalities,
 )
-from turn_wm.data.mimi_cache import MimiFeatures
 from turn_wm.data.reader import MediaReader, MediaWindow
 
 STATE_TO_ID = {
@@ -76,7 +76,7 @@ class TurnTakingDataset(Dataset):
     With a `media_index`, samples also carry `context_media`/`future_media`
     windows in which only the selected `modalities` are decoded.
 
-    With a `mimi_store`, audio comes from precomputed Mimi features instead:
+    With a `feature_store`, audio comes from precomputed encoder features instead:
     samples carry `context_features`/`future_features`, one row per grid
     step of the window, and audio is never decoded. Other modalities still
     come from the media.
@@ -93,18 +93,20 @@ class TurnTakingDataset(Dataset):
         media_index: MediaIndex | None = None,
         media_reader: MediaReader | None = None,
         modalities: Iterable[MediaModality] = MEDIA_MODALITIES,
-        mimi_store: MimiFeatures | None = None,
+        feature_store: CachedFeatures | None = None,
     ) -> None:
         self.modalities = validate_modalities(modalities)
 
-        if mimi_store is not None and "audio" not in self.modalities:
-            raise ValueError("mimi_store provides audio; modalities must include audio")
+        if feature_store is not None and "audio" not in self.modalities:
+            raise ValueError(
+                "feature_store provides audio; modalities must include audio"
+            )
 
         self.canonical_anchor_count = len(anchors)
         self.cache_filtered_anchor_count = 0
 
-        if mimi_store is not None:
-            available = mimi_store.recording_keys
+        if feature_store is not None:
+            available = feature_store.recording_keys
             anchors = anchors.filter(
                 lambda datasets, recording_ids: [
                     (dataset, recording_id) in available
@@ -116,7 +118,7 @@ class TurnTakingDataset(Dataset):
                 ],
                 input_columns=["dataset", "recording_id"],
                 batched=True,
-                desc="Filtering anchors to recordings available in the Mimi cache",
+                desc="Filtering anchors to recordings available in the feature cache",
             )
             self.cache_filtered_anchor_count = self.canonical_anchor_count - len(
                 anchors
@@ -126,7 +128,7 @@ class TurnTakingDataset(Dataset):
         self.media_modalities: tuple[MediaModality, ...] = tuple(
             modality
             for modality in self.modalities
-            if not (modality == "audio" and mimi_store is not None)
+            if not (modality == "audio" and feature_store is not None)
         )
 
         if trainable_only:
@@ -158,7 +160,7 @@ class TurnTakingDataset(Dataset):
         self.window = window
         self.training = training
 
-        self.mimi_store = mimi_store
+        self.feature_store = feature_store
         self.media_index = media_index if self.media_modalities else None
 
         self.media_reader = (
@@ -245,7 +247,7 @@ class TurnTakingDataset(Dataset):
             "sample_class": anchor["sample_class"],
         }
 
-        if self.mimi_store is not None:
+        if self.feature_store is not None:
             self._attach_features(
                 sample=sample,
                 rows=rows,
@@ -280,9 +282,9 @@ class TurnTakingDataset(Dataset):
         dataset: str,
         recording_id: str,
     ) -> None:
-        """Cached Mimi rows for exactly the grid rows of the window."""
+        """Cached feature rows for exactly the grid rows of the window."""
 
-        assert self.mimi_store is not None
+        assert self.feature_store is not None
 
         indices = [int(value) for value in rows["decision_index"]]
         first, last = indices[0], indices[-1]
@@ -293,7 +295,7 @@ class TurnTakingDataset(Dataset):
                 f"around decision_index {anchor_idx}"
             )
 
-        features = self.mimi_store.get_by_index(
+        features = self.feature_store.get_by_index(
             dataset=dataset,
             recording_id=recording_id,
             start_index=first,

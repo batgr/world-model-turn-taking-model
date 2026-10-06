@@ -1,0 +1,10 @@
+# @package _global_
+# Frozen Mimi (Kyutai): 512-d continuous latents at 12.5 Hz from 24 kHz audio,
+# one frame per step of a 12.5 Hz decision grid (data.grid_rate_hz=12.5).
+feature_dim: 512
+model:
+  encoder:
+    _target_: turn_wm.models.encoders.mimi.FrozenMimiEncoder
+    model_name: kyutai/mimi
+    # Pin to a commit SHA for any released feature cache; null loads main.
+    revision: null

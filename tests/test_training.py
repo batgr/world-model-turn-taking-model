@@ -29,7 +29,7 @@ SAMPLES_PER_STEP = SAMPLE_RATE // 10
 
 
 class StepIndexEncoder(nn.Module):
-    """Frozen stand-in for Mimi: the feature of grid step t is t everywhere."""
+    """Frozen stand-in encoder at 10 Hz: the feature of grid step t is t everywhere."""
 
     def __init__(self, dim: int = 512) -> None:
         super().__init__()
@@ -37,13 +37,15 @@ class StepIndexEncoder(nn.Module):
         self.frozen = nn.Parameter(torch.zeros(1), requires_grad=False)
         self.calls: list[dict] = []
 
-    def forward(self, waveform, sample_rate, target_length):
+    def forward(self, inputs, rates):
         self.calls.append(
-            {"lengths": [w.shape[-1] for w in waveform], "sample_rate": sample_rate}
+            {"lengths": [w.shape[-1] for w in inputs], "sample_rate": list(rates)}
         )
-        steps = torch.arange(target_length, dtype=torch.float32)
+        # One frame per 100 ms grid step of the longest input.
+        frames = max(w.shape[-1] * 10 // int(r) for w, r in zip(inputs, rates))
+        steps = torch.arange(frames, dtype=torch.float32)
 
-        return steps.view(1, -1, 1).expand(len(waveform), -1, self.dim).clone()
+        return steps.view(1, -1, 1).expand(len(inputs), -1, self.dim).clone()
 
 
 def small_config(**overrides):

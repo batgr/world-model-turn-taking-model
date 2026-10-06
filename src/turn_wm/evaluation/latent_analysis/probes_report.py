@@ -3,7 +3,7 @@ Files, figures and report of the linear probes (`probes.analyze_probes`).
 
 `write_probes` runs the probes and writes `summary.json`, the scores table,
 the comparison figures and `report.md`: which variables are decodable from
-the Mimi features and from the WM latent, the projector's effect (latent -
+the encoder features and from the WM latent, the projector's effect (latent -
 features) and cross-domain transfer.
 """
 
@@ -354,7 +354,7 @@ def versus_reference(score: Mapping[str, Any], name: str, reference: float) -> s
 def score_table_lines(scores: Sequence[Mapping[str, Any]]) -> list[str]:
     lines = [
         (
-            "| task | setting | reference | N train / eval (rec.) | Mimi features | "
+            "| task | setting | reference | N train / eval (rec.) | encoder features | "
             "WM latent | delta (latent − features) |"
         ),
         "|---|---|---|---|---|---|---|",
@@ -728,7 +728,7 @@ def probe_report(summary: Mapping[str, Any]) -> str:
                 f"**train-split** snapshot ({train['samples']:,} anchors) and evaluated "
                 f"on a **validation-split** snapshot ({validation['samples']:,} anchors); "
                 "no recording occurs in both, and the test split is never read. "
-                "Representations: Mimi features (the encoder baseline) and the WM latent "
+                "Representations: encoder features (the encoder baseline) and the WM latent "
                 "(V1 projector output)."
             ),
             "",
@@ -803,7 +803,7 @@ def probe_report(summary: Mapping[str, Any]) -> str:
             "",
             *_cross_domain(summary),
             "",
-            "## Mimi vs WM representation",
+            "## Encoder vs WM representation",
             "",
             (
                 "Delta = latent score − features score, with a paired recording "

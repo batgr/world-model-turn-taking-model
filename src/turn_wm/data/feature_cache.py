@@ -17,7 +17,7 @@ SUPPORTED_CACHE_SCHEMA_VERSIONS = frozenset({1, CACHE_SCHEMA_VERSION})
 
 
 @dataclass(frozen=True)
-class MimiAudioGap:
+class CachedAudioGap:
     """A true local media gap on the cache's canonical timeline."""
 
     start_time_s: float
@@ -36,7 +36,7 @@ class MimiAudioGap:
 
 
 @dataclass(frozen=True)
-class MimiCacheExclusion:
+class CacheExclusion:
     """A canonical recording intentionally omitted from a cache release."""
 
     dataset: str
@@ -50,14 +50,14 @@ class MimiCacheExclusion:
 
 
 @dataclass(frozen=True)
-class MimiFeatureRecord:
+class FeatureRecord:
     dataset: str
     recording_id: str
     path: str
     steps: int
     start_time_s: float
     start_index: int
-    audio_gaps: tuple[MimiAudioGap, ...] = ()
+    audio_gaps: tuple[CachedAudioGap, ...] = ()
 
 
 def _recording_filename(
@@ -78,7 +78,7 @@ def write_features(
     recording_id: str,
     features: torch.Tensor,
 ) -> Path:
-    """Write one recording's aligned Mimi features."""
+    """Write one recording's aligned encoder features."""
 
     if features.ndim != 2:
         raise ValueError("features must have shape (time, feature_dim)")
@@ -106,7 +106,7 @@ def write_features(
     return path
 
 
-def _audio_gap_from_manifest(row: dict[str, Any]) -> MimiAudioGap:
+def _audio_gap_from_manifest(row: dict[str, Any]) -> CachedAudioGap:
     start_time_s = float(row["start_time_s"])
     duration_s = float(row["duration_s"])
     end_time_s = float(row.get("end_time_s", start_time_s + duration_s))
@@ -120,14 +120,14 @@ def _audio_gap_from_manifest(row: dict[str, Any]) -> MimiAudioGap:
             "Audio-gap duration_s does not match end_time_s - start_time_s"
         )
 
-    return MimiAudioGap(
+    return CachedAudioGap(
         start_time_s=start_time_s,
         end_time_s=end_time_s,
     )
 
 
-class MimiFeatureStore:
-    """Read precomputed Mimi features aligned to the action grid."""
+class FeatureStore:
+    """Read precomputed encoder features aligned to the action grid."""
 
     def __init__(self, root: Path) -> None:
         self.root = Path(root)
@@ -135,7 +135,7 @@ class MimiFeatureStore:
         manifest_path = self.root / "manifest.json"
 
         if not manifest_path.is_file():
-            raise FileNotFoundError(f"Mimi feature manifest not found: {manifest_path}")
+            raise FileNotFoundError(f"feature manifest not found: {manifest_path}")
 
         with manifest_path.open(encoding="utf-8") as file:
             manifest = json.load(file)
@@ -143,7 +143,9 @@ class MimiFeatureStore:
         schema_version = int(manifest["schema_version"])
 
         if schema_version not in SUPPORTED_CACHE_SCHEMA_VERSIONS:
-            raise ValueError(f"Unsupported Mimi cache schema version: {schema_version}")
+            raise ValueError(
+                f"Unsupported feature cache schema version: {schema_version}"
+            )
 
         self.metadata = manifest
 
@@ -151,7 +153,7 @@ class MimiFeatureStore:
             (
                 row["dataset"],
                 row["recording_id"],
-            ): MimiFeatureRecord(
+            ): FeatureRecord(
                 dataset=row["dataset"],
                 recording_id=row["recording_id"],
                 path=row["path"],
@@ -166,7 +168,7 @@ class MimiFeatureStore:
         }
 
         self._exclusions = tuple(
-            MimiCacheExclusion(
+            CacheExclusion(
                 dataset=row["dataset"],
                 recording_id=row["recording_id"],
                 reason=row["reason"],
@@ -212,11 +214,11 @@ class MimiFeatureStore:
         return frozenset(self._records)
 
     @property
-    def exclusions(self) -> tuple[MimiCacheExclusion, ...]:
+    def exclusions(self) -> tuple[CacheExclusion, ...]:
         return self._exclusions
 
     @property
-    def records(self) -> tuple[MimiFeatureRecord, ...]:
+    def records(self) -> tuple[FeatureRecord, ...]:
         return tuple(
             sorted(
                 self._records.values(),
@@ -224,13 +226,13 @@ class MimiFeatureStore:
             )
         )
 
-    def record(self, *, dataset: str, recording_id: str) -> MimiFeatureRecord:
+    def record(self, *, dataset: str, recording_id: str) -> FeatureRecord:
         key = (dataset, recording_id)
 
         try:
             return self._records[key]
         except KeyError as error:
-            raise KeyError(f"No Mimi features for {key!r}") from error
+            raise KeyError(f"No cached features for {key!r}") from error
 
     def get_by_index(
         self,
@@ -285,7 +287,7 @@ class MimiFeatureStore:
         path = self.root / record.path
 
         if not path.is_file():
-            raise FileNotFoundError(f"Mimi feature file not found: {path}")
+            raise FileNotFoundError(f"feature file not found: {path}")
 
         with safe_open(
             str(path),
@@ -300,14 +302,14 @@ class MimiFeatureStore:
 def write_manifest(
     root: Path,
     *,
-    recordings: list[MimiFeatureRecord],
+    recordings: list[FeatureRecord],
     model_name: str,
     model_revision: str | None,
     source_dataset_revision: str | None,
     model_resolved_revision: str | None = None,
     feature_rate_hz: float,
     feature_dim: int,
-    excluded_recordings: tuple[MimiCacheExclusion, ...] = (),
+    excluded_recordings: tuple[CacheExclusion, ...] = (),
 ) -> Path:
     root.mkdir(parents=True, exist_ok=True)
 
@@ -390,25 +392,25 @@ def write_manifest(
     return path
 
 
-class MimiFeatureCaches:
-    """Several Mimi caches read as one, e.g. the per-corpus caches of a release.
+class FeatureCaches:
+    """Several feature caches read as one, e.g. the per-corpus caches of a release.
 
-    Offers the reading interface of `MimiFeatureStore`; each recording is
+    Offers the reading interface of `FeatureStore`; each recording is
     served by the cache that holds it.
     """
 
-    def __init__(self, root: Path, stores: Sequence[MimiFeatureStore]) -> None:
+    def __init__(self, root: Path, stores: Sequence[FeatureStore]) -> None:
         if not stores:
-            raise ValueError(f"No Mimi cache under {root}")
+            raise ValueError(f"No feature cache under {root}")
 
         self.root = Path(root)
         self.stores = tuple(stores)
-        self._by_key: dict[tuple[str, str], MimiFeatureStore] = {}
+        self._by_key: dict[tuple[str, str], FeatureStore] = {}
 
         for store in self.stores:
             for key in store.recording_keys:
                 if key in self._by_key:
-                    raise ValueError(f"Recording {key!r} is in several Mimi caches")
+                    raise ValueError(f"Recording {key!r} is in several feature caches")
 
                 self._by_key[key] = store
 
@@ -417,10 +419,10 @@ class MimiFeatureCaches:
         return frozenset(self._by_key)
 
     @property
-    def exclusions(self) -> tuple[MimiCacheExclusion, ...]:
+    def exclusions(self) -> tuple[CacheExclusion, ...]:
         return tuple(e for store in self.stores for e in store.exclusions)
 
-    def record(self, *, dataset: str, recording_id: str) -> MimiFeatureRecord:
+    def record(self, *, dataset: str, recording_id: str) -> FeatureRecord:
         return self._store(dataset, recording_id).record(
             dataset=dataset, recording_id=recording_id
         )
@@ -440,16 +442,16 @@ class MimiFeatureCaches:
             end_index=end_index,
         )
 
-    def _store(self, dataset: str, recording_id: str) -> MimiFeatureStore:
+    def _store(self, dataset: str, recording_id: str) -> FeatureStore:
         try:
             return self._by_key[(dataset, recording_id)]
         except KeyError as error:
             raise KeyError(
-                f"No Mimi features for {(dataset, recording_id)!r}"
+                f"No cached features for {(dataset, recording_id)!r}"
             ) from error
 
 
-def store_datasets(store: MimiFeatureStore) -> frozenset[str]:
+def store_datasets(store: FeatureStore) -> frozenset[str]:
     """Corpora a cache covers: those of its recordings and exclusions."""
 
     return frozenset(
@@ -458,7 +460,7 @@ def store_datasets(store: MimiFeatureStore) -> frozenset[str]:
     )
 
 
-def open_mimi_cache(root: Path) -> MimiFeatureCaches:
+def open_feature_cache(root: Path) -> FeatureCaches:
     """Open one cache (`manifest.json`) or a release (`release_manifest.json`).
 
     A release root holds one cache per corpus, listed in its release manifest.
@@ -467,21 +469,19 @@ def open_mimi_cache(root: Path) -> MimiFeatureCaches:
     root = Path(root)
 
     if (root / "manifest.json").is_file():
-        return MimiFeatureCaches(root, [MimiFeatureStore(root)])
+        return FeatureCaches(root, [FeatureStore(root)])
 
     release = root / "release_manifest.json"
 
     if release.is_file():
         corpora = sorted(json.loads(release.read_text(encoding="utf-8"))["corpora"])
 
-        return MimiFeatureCaches(
-            root, [MimiFeatureStore(root / name) for name in corpora]
-        )
+        return FeatureCaches(root, [FeatureStore(root / name) for name in corpora])
 
     raise FileNotFoundError(
-        f"No Mimi cache at {root}: expected manifest.json (one cache) or "
+        f"No feature cache at {root}: expected manifest.json (one cache) or "
         "release_manifest.json (a release of per-corpus caches)"
     )
 
 
-type MimiFeatures = MimiFeatureStore | MimiFeatureCaches
+type CachedFeatures = FeatureStore | FeatureCaches

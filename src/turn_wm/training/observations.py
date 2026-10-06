@@ -1,5 +1,5 @@
 """
-Where a run's samples get their observations: the Mimi feature cache or media.
+Where a run's samples get their observations: an encoder's feature cache or media.
 
 `prepare_observations` opens and checks the cache against the loaded data
 (same grid, every anchor covered) and resolves the local media roots of
@@ -19,16 +19,15 @@ from typing import cast
 import pyarrow as pa
 from omegaconf import DictConfig
 
-from turn_wm.data.media import MediaModality
-from turn_wm.data.mimi_cache import (
-    MimiFeatureCaches,
-    MimiFeatureStore,
-    open_mimi_cache,
+from turn_wm.data.feature_cache import (
+    FeatureCaches,
+    FeatureStore,
+    open_feature_cache,
     store_datasets,
 )
-from turn_wm.data.mimi_precompute import GRID_RATE_HZ
+from turn_wm.data.media import MediaModality
 from turn_wm.data.source import LoadedCorpus, LoadedData
-from turn_wm.models.build import MIMI_CACHE, observation_source
+from turn_wm.models.build import FEATURE_CACHE, observation_source
 
 
 @dataclass(frozen=True)
@@ -42,7 +41,7 @@ class RunObservations:
     """
 
     modalities: tuple[MediaModality, ...]
-    mimi_store: MimiFeatureCaches | None = None
+    feature_store: FeatureCaches | None = None
     media_roots: dict[str, Path] | None = None
 
 
@@ -54,23 +53,26 @@ def prepare_observations(
 ) -> RunObservations:
     """Open and check what `cfg` observes `loaded` through.
 
-    With `observation_source: mimi_cache`, the cache under
-    `data.mimi_cache.root` is opened and checked against the loaded data.
+    With `observation_source: feature_cache`, the cache under
+    `data.feature_cache.root` is opened and checked against the loaded data.
     Media roots, when anything is still decoded from media, are
     `media_roots` or else the `<DATASET>_MEDIA_ROOT` environment variables.
     """
 
+    require_grid_rate(cfg, loaded)
     modalities = cast(tuple[MediaModality, ...], tuple(cfg.data.modalities))
-    mimi_store = None
+    feature_store = None
 
-    if observation_source(cfg) == MIMI_CACHE:
-        require_mimi_cache_root(cfg)
+    if observation_source(cfg) == FEATURE_CACHE:
+        require_feature_cache_root(cfg)
         # One corpus cache, or a release root holding one cache per corpus.
-        mimi_store = open_mimi_cache(Path(cfg.data.mimi_cache.root).expanduser())
-        validate_mimi_cache(mimi_store, loaded, cfg)
+        feature_store = open_feature_cache(
+            Path(cfg.data.feature_cache.root).expanduser()
+        )
+        validate_feature_cache(feature_store, loaded, cfg)
 
     # Cached features replace audio only; other modalities still need media.
-    needs_media = mimi_store is None or any(m != "audio" for m in modalities)
+    needs_media = feature_store is None or any(m != "audio" for m in modalities)
 
     roots = None
 
@@ -83,13 +85,13 @@ def prepare_observations(
 
     return RunObservations(
         modalities=modalities,
-        mimi_store=mimi_store,
+        feature_store=feature_store,
         media_roots=roots,
     )
 
 
-def mimi_cache_identity(caches: MimiFeatureCaches) -> dict[str, object]:
-    """What identifies a Mimi cache, per corpus set, not its whole manifest."""
+def feature_cache_identity(caches: FeatureCaches) -> dict[str, object]:
+    """What identifies a feature cache, per corpus set, not its whole manifest."""
 
     return {
         ",".join(sorted(store_datasets(store))): {
@@ -105,16 +107,34 @@ def mimi_cache_identity(caches: MimiFeatureCaches) -> dict[str, object]:
     }
 
 
-def require_mimi_cache_root(cfg: DictConfig) -> None:
-    if observation_source(cfg) == MIMI_CACHE and cfg.data.mimi_cache.root is None:
+def require_grid_rate(cfg: DictConfig, loaded: LoadedData) -> None:
+    """`data.grid_rate_hz` must be the loaded data's decision grid rate.
+
+    Every step count of the configuration (context, horizons, curriculum) is
+    in steps of that grid, so a run never silently changes its time scale.
+    """
+
+    configured = float(cfg.data.grid_rate_hz)
+    actual = loaded.grid_rate_hz
+
+    if not math.isclose(configured, actual):
         raise ValueError(
-            "data.mimi_cache.root is required with data.observation_source="
-            "mimi_cache (create the cache with `turn-wm precompute-mimi`)"
+            f"data.grid_rate_hz is {configured:g} Hz but the loaded data's decision "
+            f"grid is {actual:g} Hz; set data.grid_rate_hz={actual:g} and express "
+            "every *_steps setting in steps of that grid"
         )
 
 
-def validate_mimi_cache(
-    caches: MimiFeatureCaches,
+def require_feature_cache_root(cfg: DictConfig) -> None:
+    if observation_source(cfg) == FEATURE_CACHE and cfg.data.feature_cache.root is None:
+        raise ValueError(
+            "data.feature_cache.root is required with data.observation_source="
+            "feature_cache (create the cache with `turn-wm precompute-features`)"
+        )
+
+
+def validate_feature_cache(
+    caches: FeatureCaches,
     loaded: LoadedData,
     cfg: DictConfig,
 ) -> None:
@@ -129,17 +149,18 @@ def validate_mimi_cache(
     """
 
     input_dim = int(cfg.model.projector.input_dim)
+    grid_rate = loaded.grid_rate_hz
 
     for store in caches.stores:
-        if store.feature_rate_hz != GRID_RATE_HZ:
+        if not math.isclose(store.feature_rate_hz, grid_rate):
             raise ValueError(
-                f"Mimi cache {store.root} has {store.feature_rate_hz:g} Hz features; "
-                f"the action grid is {GRID_RATE_HZ:g} Hz"
+                f"Feature cache {store.root} has {store.feature_rate_hz:g} Hz "
+                f"features; the action grid is {grid_rate:g} Hz"
             )
 
         if store.feature_dim != input_dim:
             raise ValueError(
-                f"Mimi cache {store.root} has {store.feature_dim}-d features; "
+                f"Feature cache {store.root} has {store.feature_dim}-d features; "
                 f"model.projector.input_dim is {input_dim}"
             )
 
@@ -150,7 +171,7 @@ def validate_mimi_cache(
 
         if not stores:
             raise ValueError(
-                f"Mimi cache {caches.root} has no features for corpus {corpus.name!r}"
+                f"Feature cache {caches.root} has no features for corpus {corpus.name!r}"
             )
 
         for store in stores:
@@ -164,7 +185,7 @@ def validate_mimi_cache(
 
 
 def _require_grid_spans(
-    store: MimiFeatureStore,
+    store: FeatureStore,
     corpus: LoadedCorpus,
     *,
     loaded_revision: str | None,
@@ -214,7 +235,7 @@ def _require_grid_spans(
 
     if mismatched or uncovered:
         raise ValueError(
-            f"Mimi cache {store.root} (dataset revision "
+            f"Feature cache {store.root} (dataset revision "
             f"{store.source_dataset_revision}) does not match corpus {corpus.name!r} "
             f"as loaded (revision {loaded_revision}): {len(mismatched)} recordings "
             f"differ from the grid (e.g. {mismatched[:3]}), {len(uncovered)} are "

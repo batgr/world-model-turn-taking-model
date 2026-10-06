@@ -1,7 +1,7 @@
 # World model for conversational turn-taking
 
 A JEPA-style latent world model for planning-based multi-party turn-taking in
-social robots. Frozen Mimi features encode speech into latent observations, and
+social robots. A frozen audio encoder (Mimi by default) encodes speech into latent observations, and
 an action-conditioned causal predictor learns how the conversational state
 evolves over time. Its rollouts are designed to serve as the predictive model
 for a downstream planner deciding when the robot should speak, wait, or yield
@@ -45,7 +45,8 @@ uv run turn-wm inspect-data --dataset dataset --batch-size 1 --media-root /path/
 
 Implementation map:
 
-- `src/turn_wm/models/encoders/mimi.py` — frozen Mimi encoder
+- `src/turn_wm/models/encoders/base.py` — the frozen-encoder contract (one frame per grid step)
+- `src/turn_wm/models/encoders/mimi.py`, `logmel.py` — frozen Mimi, log-mel
 - `src/turn_wm/models/lewm/mlp.py` — latent projector and prediction head
 - `src/turn_wm/models/lewm/embedder.py` — action embedding
 - `src/turn_wm/models/lewm/predictor.py` — action-conditioned predictor
@@ -65,8 +66,10 @@ model and one training recipe:
 ```text
 configs/
   config.yaml       embed_dim; defaults: model, train
-  model/lewm.yaml   JEPA and its nested sub-modules (_target_), encoder included
-  train/lewm.yaml   seed, data, prediction, loss, optimizer, loader, trainer
+  model/lewm.yaml   JEPA and its nested sub-modules (_target_)
+  model/encoder/    the frozen encoder (mimi, logmel) and the feature_dim it gives
+  train/lewm.yaml   seed, data (grid_rate_hz, observation source), prediction,
+                    loss, optimizer, loader, trainer
 ```
 
 The training recipe is merged at the root of the composed config, so its keys
@@ -90,13 +93,13 @@ horizons up to 10 steps and checkpoint selection on `val/rollout_10_mse`.
 
 ## Training
 
-Use precomputed Mimi features for normal training runs:
+Use precomputed encoder features for normal training runs:
 
 ```bash
 uv run turn-wm train \
   data.dataset=full \
-  data.observation_source=mimi_cache \
-  data.mimi_cache.root=/path/to/mimi-features
+  data.observation_source=feature_cache \
+  data.feature_cache.root=/path/to/features
 ```
 
 Override the Hydra configuration directly from the CLI:
@@ -104,7 +107,7 @@ Override the Hydra configuration directly from the CLI:
 ```bash
 uv run turn-wm train \
   data.dataset=egocom \
-  data.mimi_cache.root=/path/to/cache \
+  data.feature_cache.root=/path/to/cache \
   data.context_steps=20 \
   prediction.rollout_context_size=10 \
   loader.batch_size=16 \
@@ -171,13 +174,15 @@ It logs to `logging.wandb.project` (default `turn-wm`) under the run id, or
 Trainer runs without a logger: metrics are not recorded anywhere and only
 drive checkpointing.
 
-## Precompute Mimi features
+## Precompute encoder features
 
-Mimi is frozen, so its features can be precomputed once and reused across
-training runs:
+The encoder is frozen, so its features can be precomputed once and reused
+across training runs. `--encoder` names a config of `configs/model/encoder`
+(default `mimi`); the encoder must run at the dataset's decision grid rate,
+one frame per step:
 
 ```bash
-uv run turn-wm precompute-mimi \
+uv run turn-wm precompute-features \
   --dataset dataset \
   --media-root /path/to/media \
   --output /path/to/mimi-cache \
@@ -187,7 +192,7 @@ uv run turn-wm precompute-mimi \
 For multiple corpora, repeat `--media-root` with the `DATASET=PATH` form:
 
 ```bash
-uv run turn-wm precompute-mimi \
+uv run turn-wm precompute-features \
   --dataset full \
   --media-root dataset_a=/path/to/dataset_a \
   --media-root dataset_b=/path/to/dataset_b \
@@ -195,12 +200,19 @@ uv run turn-wm precompute-mimi \
   --device cuda
 ```
 
-The output directory must be new or empty. Use `--revision` to pin the Mimi
-checkpoint revision.
+The output directory must be new or empty. Trailing Hydra overrides configure
+the encoder, e.g. `model.encoder.revision=<commit SHA>` to pin Mimi's weights.
+Another encoder, and training on its cache:
+
+```bash
+uv run turn-wm precompute-features --encoder logmel \
+  --dataset dataset --media-root /path/to/media --output /path/to/logmel-cache
+uv run turn-wm train model/encoder=logmel data.feature_cache.root=/path/to/logmel-cache
+```
 
 The cache contains one feature file per recording plus a `manifest.json`
 describing the cache and source revisions. See [docs/training.md](docs/training.md)
-for feature alignment, cache format, synchronization handling, and validation
+for the encoder contract, cache format, synchronization handling, and validation
 details.
 
 ## Tests

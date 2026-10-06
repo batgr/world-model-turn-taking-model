@@ -190,9 +190,9 @@ def concept_figure(results: Mapping[str, Any]) -> Figure:
 LIMITATIONS = """\
 ## Limitations
 
-- The latent is a per-frame projection of the Mimi features: a concept can
+- The latent is a per-frame projection of the encoder features: a concept can
   only be as accessible as the features allow; context (e.g. the 10 s party
-  size) reaches both only through Mimi's own streaming state.
+  size) reaches both only through the encoder's own state.
 - wearer_native and wearer_host concern few recurring people: a probe can
   succeed by recognizing their voices rather than the trait itself.
 - Grouped-CV concepts use train-split recordings for evaluation too (out of
@@ -217,7 +217,7 @@ def concept_report(summary: Mapping[str, Any]) -> str:
         "",
         (
             "Which information, beyond the current conversational state, do the "
-            "Mimi features and the WM latent keep **linearly accessible**? Four "
+            "encoder features and the WM latent keep **linearly accessible**? Four "
             "axes: vocal activity, multi-party structure, social signals, and "
             "information unrelated to the conversation. A successful probe does "
             "not show that the world model uses the information."
@@ -260,7 +260,7 @@ def concept_report(summary: Mapping[str, Any]) -> str:
 
             reference = s["reference"]
             lines.append(
-                f"- **{s['task']}**: Mimi features {_verdict(s, FEATURES, reference)}; "
+                f"- **{s['task']}**: encoder features {_verdict(s, FEATURES, reference)}; "
                 f"WM latent {_verdict(s, LATENT, reference)}; the projector "
                 f"{projector_effect(s)} linear accessibility (Δ {format_score(s, 'delta')})."
             )

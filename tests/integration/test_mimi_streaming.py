@@ -10,8 +10,8 @@ import pytest
 import torch
 from huggingface_hub import try_to_load_from_cache
 
-from turn_wm.data.mimi_precompute import _encode_recording
-from turn_wm.models.encoders.mimi import FrozenMimiEncoder, causal_align
+from turn_wm.data.feature_precompute import PreparedRecordingAudio, _encode_recording
+from turn_wm.models.encoders.mimi import FrozenMimiEncoder
 
 pytestmark = pytest.mark.integration
 
@@ -39,7 +39,7 @@ def encoder():
 
 
 def speech_like(encoder: FrozenMimiEncoder, seconds: float) -> torch.Tensor:
-    """Deterministic modulated tone plus seeded noise, `(1, 1, samples)`."""
+    """Deterministic modulated tone plus seeded noise, `(1, samples)` at 24 kHz."""
 
     generator = torch.Generator().manual_seed(0)
     time = torch.arange(round(seconds * encoder.sample_rate)) / encoder.sample_rate
@@ -48,67 +48,50 @@ def speech_like(encoder: FrozenMimiEncoder, seconds: float) -> torch.Tensor:
     )
     noise = torch.randn(time.shape, generator=generator)
 
-    return (0.3 * tone + 0.05 * noise).view(1, 1, -1)
+    return (0.3 * tone + 0.05 * noise).view(1, -1)
 
 
 @pytest.fixture(scope="module")
 def full_native(encoder):
     with torch.no_grad():
-        return encoder._encode_mimi(speech_like(encoder, SECONDS))
+        return encoder.encode_native(speech_like(encoder, SECONDS)[None])[0]
 
 
 @pytest.mark.parametrize("chunk_seconds", [2.0, 5.0, 10.0])
 def test_streamed_native_features_match_one_shot(encoder, full_native, chunk_seconds):
-    streamed = encoder.stream_native_features(
-        speech_like(encoder, SECONDS), chunk_seconds=chunk_seconds
+    streamed = encoder.encode_recording(
+        speech_like(encoder, SECONDS), encoder.sample_rate, chunk_seconds=chunk_seconds
     )
 
-    assert streamed.shape == full_native.shape == (1, 450, 512)
+    assert streamed.shape == full_native.shape == (450, 512)
     torch.testing.assert_close(streamed, full_native, rtol=0, atol=ATOL)
 
 
-@pytest.mark.parametrize("chunk_seconds", [2.0, 5.0, 10.0])
-def test_streamed_features_match_after_grid_alignment(
-    encoder, full_native, chunk_seconds
-):
-    streamed = encoder.stream_native_features(
-        speech_like(encoder, SECONDS), chunk_seconds=chunk_seconds
-    )
-
-    def to_grid(features):
-        return causal_align(
-            features,
-            source_rate=encoder.source_rate,
-            target_rate=10.0,
-            target_length=SECONDS * 10,
-        )
-
-    torch.testing.assert_close(
-        to_grid(streamed), to_grid(full_native), rtol=0, atol=ATOL
-    )
-
-
 def test_only_the_unused_final_partial_frame_differs(encoder):
-    # 36.05 s ends mid-frame: that last frame is padded differently, and
-    # causal_align never reads it for a grid of 360 steps.
+    # 36.05 s ends mid-frame: that last frame is padded differently, and a
+    # 450-step grid never reads it.
     audio = speech_like(encoder, SECONDS + 0.05)
 
     with torch.no_grad():
-        full = encoder._encode_mimi(audio)
+        full = encoder.encode_native(audio[None])[0]
 
-    streamed = encoder.stream_native_features(audio, chunk_seconds=10.0)
+    streamed = encoder.encode_recording(audio, encoder.sample_rate, chunk_seconds=10.0)
 
-    assert streamed.shape == full.shape == (1, 451, 512)
-    torch.testing.assert_close(streamed[:, :-1], full[:, :-1], rtol=0, atol=ATOL)
+    assert streamed.shape == full.shape == (451, 512)
+    torch.testing.assert_close(streamed[:-1], full[:-1], rtol=0, atol=ATOL)
 
 
-@pytest.mark.parametrize("steps", [360, 361, 363])
+@pytest.mark.parametrize("steps", [450, 451, 453])
 def test_recording_features_have_one_row_per_grid_step(encoder, steps):
+    # On a 12.5 Hz grid: `steps` steps of 80 ms are `steps` Mimi frames.
     features = _encode_recording(
         encoder=encoder,
-        audio=speech_like(encoder, steps / 10),
+        audio=PreparedRecordingAudio(
+            waveform=speech_like(encoder, steps / 12.5),
+            sample_rate=encoder.sample_rate,
+            audio_gaps=(),
+        ),
         steps=steps,
-        target_rate=10.0,
         chunk_seconds=20.0,
     )
 

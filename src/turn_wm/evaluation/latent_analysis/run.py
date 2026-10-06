@@ -32,6 +32,7 @@ import lightning as L
 import torch
 from omegaconf import DictConfig, OmegaConf
 
+from turn_wm.config import upgrade_run_config
 from turn_wm.data.loader import DataLoaderConfig, build_dataloader
 from turn_wm.data.source import DATASETS, LoadedData, load_data
 from turn_wm.evaluation.latent_analysis.artifacts import sha256
@@ -43,7 +44,7 @@ from turn_wm.training.datamodule import build_run_dataset
 from turn_wm.training.lewm import LeWMModule
 from turn_wm.training.observations import (
     RunObservations,
-    mimi_cache_identity,
+    feature_cache_identity,
     prepare_observations,
 )
 from turn_wm.training.run_dir import git_metadata, hash_config
@@ -81,14 +82,14 @@ def extract_run(
     batch_size: int | None = None,
     num_workers: int = 0,
     device: str = "cpu",
-    mimi_cache_root: Path | None = None,
+    feature_cache_root: Path | None = None,
     media_roots: dict[str, Path] | None = None,
 ) -> Path:
     """Write the anchor representations of `split` for one run; return the dir.
 
     `checkpoint` is a file name under `<run_dir>/checkpoints` or a path.
     `seed` (default: the run's) fixes the sample order; `batch_size` and
-    `num_workers` do not change it. `mimi_cache_root` relocates the run's
+    `num_workers` do not change it. `feature_cache_root` relocates the run's
     cache, which must still be the same cache; `media_roots` defaults to the
     `<DATASET>_MEDIA_ROOT` environment variables, as in training.
     """
@@ -101,7 +102,7 @@ def extract_run(
         seed=seed,
         batch_size=batch_size,
         num_workers=num_workers,
-        mimi_cache_root=mimi_cache_root,
+        feature_cache_root=feature_cache_root,
         media_roots=media_roots,
     )
 
@@ -208,7 +209,7 @@ def open_run(
     seed: int | None = None,
     batch_size: int | None = None,
     num_workers: int = 0,
-    mimi_cache_root: Path | None = None,
+    feature_cache_root: Path | None = None,
     media_roots: dict[str, Path] | None = None,
 ) -> OpenedRun:
     """Rebuild a run's model and one split's data, in a seeded fixed order."""
@@ -218,9 +219,9 @@ def open_run(
     cfg = record.cfg
     log(f"run: {record.run_dir} ({record.metadata.get('run_id')})")
 
-    if mimi_cache_root is not None:
+    if feature_cache_root is not None:
         cfg = copy.deepcopy(cfg)
-        OmegaConf.update(cfg, "data.mimi_cache.root", str(mimi_cache_root))
+        OmegaConf.update(cfg, "data.feature_cache.root", str(feature_cache_root))
 
     seed = int(cfg.seed) if seed is None else seed
     L.seed_everything(seed, workers=True)
@@ -293,7 +294,7 @@ def load_run(run_dir: Path) -> RunRecord:
             f"{metadata_path}; it was edited after the run"
         )
 
-    return RunRecord(run_dir=run_dir, cfg=cfg, metadata=metadata)
+    return RunRecord(run_dir=run_dir, cfg=upgrade_run_config(cfg), metadata=metadata)
 
 
 def load_run_data(record: RunRecord) -> LoadedData:
@@ -332,14 +333,21 @@ def prepare_run_observations(
 
     observations = prepare_observations(cfg, loaded, media_roots=media_roots)
 
-    if observations.mimi_store is not None:
-        recorded = (record.metadata.get("mimi_cache") or {}).get("caches")
+    if observations.feature_store is not None:
+        # Runs saved before encoders were pluggable recorded it as mimi_cache.
+        recorded = (
+            record.metadata.get("feature_cache")
+            or record.metadata.get("mimi_cache")
+            or {}
+        ).get("caches")
         # Compared as JSON, the form the run recorded it in.
-        found = json.loads(json.dumps(mimi_cache_identity(observations.mimi_store)))
+        found = json.loads(
+            json.dumps(feature_cache_identity(observations.feature_store))
+        )
 
         if recorded is None or found != recorded:
             raise ValueError(
-                f"Mimi cache {observations.mimi_store.root} is not the cache the "
+                f"Feature cache {observations.feature_store.root} is not the cache the "
                 f"run trained on: found {found}, recorded {recorded}"
             )
 
@@ -374,12 +382,12 @@ def load_checkpoint(record: RunRecord, checkpoint: str | Path) -> LoadedCheckpoi
 
 
 def _feature_caches(observations: RunObservations) -> dict[str, Any] | None:
-    if observations.mimi_store is None:
+    if observations.feature_store is None:
         return None
 
     return {
-        "mimi": {
-            "root": str(observations.mimi_store.root),
-            "caches": mimi_cache_identity(observations.mimi_store),
+        "cache": {
+            "root": str(observations.feature_store.root),
+            "caches": feature_cache_identity(observations.feature_store),
         }
     }

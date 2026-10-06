@@ -41,7 +41,7 @@ def build_run_dataset(
         training=training,
         media_roots=observations.media_roots,
         modalities=observations.modalities,
-        mimi_store=observations.mimi_store,
+        feature_store=observations.feature_store,
     )
 
 

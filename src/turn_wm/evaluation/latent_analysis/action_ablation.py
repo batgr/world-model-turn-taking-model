@@ -452,7 +452,7 @@ def extract_action_ablation_run(
     batch_size: int | None = None,
     num_workers: int = 0,
     device: str = "cpu",
-    mimi_cache_root: Path | None = None,
+    feature_cache_root: Path | None = None,
     media_roots: Mapping[str, Path] | None = None,
 ) -> Path:
     """Write the validation action-ablation snapshot of one run; return it.
@@ -470,7 +470,7 @@ def extract_action_ablation_run(
         seed=seed,
         batch_size=batch_size,
         num_workers=num_workers,
-        mimi_cache_root=mimi_cache_root,
+        feature_cache_root=feature_cache_root,
         media_roots=dict(media_roots) if media_roots is not None else None,
     )
     output_dir = output_dir or opened.default_output_dir("-action-ablation")

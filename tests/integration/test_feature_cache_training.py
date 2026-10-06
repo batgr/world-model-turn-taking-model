@@ -1,8 +1,8 @@
 """
-Real Mimi cache: published dataset + a local cache from `turn-wm
-precompute-mimi` -> aligned features -> LeWM losses. No raw media, no Mimi.
+Real feature cache: published dataset + a local cache from `turn-wm
+precompute-features` -> aligned features -> LeWM losses. No raw media, no Mimi.
 
-    MIMI_CACHE_ROOT=/path/to/mimi-cache uv run pytest -m integration
+    FEATURE_CACHE_ROOT=/path/to/mimi-cache uv run pytest -m integration
 
 The cache's datasets decide what is loaded (EgoCom from the public release,
 otherwise the private full release). Skipped when the variable is unset.
@@ -19,26 +19,26 @@ from omegaconf import OmegaConf
 from turn_wm.config import load_config
 from turn_wm.data.build import build_dataset
 from turn_wm.data.collate import collate_turn_taking
-from turn_wm.data.mimi_cache import MimiFeatureStore
+from turn_wm.data.feature_cache import FeatureStore
 from turn_wm.data.source import EGOCOM, FULL, load_data
 from turn_wm.models.encoders import mimi as mimi_module
 from turn_wm.training.config import training_window
 from turn_wm.training.lewm import LeWMModule
 from turn_wm.training.objective import lejepa_forward
-from turn_wm.training.observations import validate_mimi_cache
+from turn_wm.training.observations import validate_feature_cache
 from turn_wm.training.trajectories import trajectories
 
 pytestmark = pytest.mark.integration
 
 
 @pytest.fixture(scope="module")
-def store() -> MimiFeatureStore:
-    root = os.environ.get("MIMI_CACHE_ROOT")
+def store() -> FeatureStore:
+    root = os.environ.get("FEATURE_CACHE_ROOT")
 
     if not root:
-        pytest.skip("MIMI_CACHE_ROOT is not set; no local Mimi cache")
+        pytest.skip("FEATURE_CACHE_ROOT is not set; no local feature cache")
 
-    return MimiFeatureStore(Path(root))
+    return FeatureStore(Path(root))
 
 
 def test_real_cache_trains_without_mimi_or_media(store, monkeypatch):
@@ -53,13 +53,13 @@ def test_real_cache_trains_without_mimi_or_media(store, monkeypatch):
 
     cfg = load_config(
         [
-            "data.observation_source=mimi_cache",
-            f"data.mimi_cache.root={store.root}",
+            "data.observation_source=feature_cache",
+            f"data.feature_cache.root={store.root}",
             "trainer.accelerator=cpu",
         ]
     )
     OmegaConf.set_struct(cfg, False)
-    validate_mimi_cache(store, loaded, cfg)
+    validate_feature_cache(store, loaded, cfg)
 
     # Only anchors of cached recordings, so a partial cache works too.
     cached = {recording for _, recording in store._records}
@@ -84,7 +84,7 @@ def test_real_cache_trains_without_mimi_or_media(store, monkeypatch):
         window=training_window(cfg),
         training=True,
         modalities=("audio",),
-        mimi_store=store,
+        feature_store=store,
     )
     samples = [dataset[0], dataset[len(dataset) // 2]]
 

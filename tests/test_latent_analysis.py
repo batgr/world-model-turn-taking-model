@@ -15,8 +15,8 @@ from safetensors.torch import load_file
 from torch import nn
 
 from turn_wm.config import load_config
+from turn_wm.data.feature_cache import open_feature_cache
 from turn_wm.data.loader import DataLoaderConfig, build_dataloader
-from turn_wm.data.mimi_cache import open_mimi_cache
 from turn_wm.data.source import LoadedCorpus, LoadedData
 from turn_wm.evaluation.latent_analysis import run as run_module
 from turn_wm.evaluation.latent_analysis.extract import (
@@ -94,14 +94,13 @@ def test_representations_are_taken_at_the_anchor_step():
 
 def test_raw_observations_go_through_the_encoder():
     class Encoder(nn.Module):
-        def forward(self, waveform, sample_rate, target_length):
-            # Step k of sample b is (b, k, 0).
+        def forward(self, inputs, rates):
+            # One frame per 10 samples; frame k of sample b is (b, k, 0).
+            frames = inputs[0].shape[-1] // 10
             return torch.stack(
                 [
-                    torch.stack(
-                        [torch.tensor([b, k, 0.0]) for k in range(target_length)]
-                    )
-                    for b in range(len(waveform))
+                    torch.stack([torch.tensor([b, k, 0.0]) for k in range(frames)])
+                    for b in range(len(inputs))
                 ]
             )
 
@@ -273,8 +272,8 @@ def _config(cache_root, *overrides):
     return load_config(
         [
             "data.dataset=egocom",
-            "data.observation_source=mimi_cache",
-            f"data.mimi_cache.root={cache_root}",
+            "data.observation_source=feature_cache",
+            f"data.feature_cache.root={cache_root}",
             "trainer.accelerator=cpu",
             "trainer.precision=32-true",
             *overrides,
@@ -283,9 +282,9 @@ def _config(cache_root, *overrides):
 
 
 @pytest.fixture
-def cache_root(make_mimi_cache):
+def cache_root(make_feature_cache):
     # feature[k, 0] is the step's decision_index.
-    return make_mimi_cache({("egocom", "r1"): (0, GRID_STEPS)})
+    return make_feature_cache({("egocom", "r1"): (0, GRID_STEPS)})
 
 
 @pytest.fixture
@@ -319,7 +318,7 @@ def _make_run(tmp_path, cfg) -> tuple:
         cfg=cfg,
         git={"commit": "abc", "dirty": False},
         dataset_revision=REVISION,
-        mimi_store=observations.mimi_store,
+        feature_store=observations.feature_store,
     )
 
     train = build_run_dataset(cfg, loaded, observations, split="train", training=True)
@@ -391,10 +390,10 @@ def test_run_extracts_the_trained_model_on_validation(
     assert provenance["run"]["config_hash"] == hash_config(cfg)
     assert provenance["data"]["dataset_revision"] == REVISION
     assert provenance["data"]["split"] == "validation"
-    assert provenance["data"]["observation_source"] == "mimi_cache"
+    assert provenance["data"]["observation_source"] == "feature_cache"
     assert provenance["data"]["context_steps"] == cfg.data.context_steps
     assert provenance["data"]["anchor_step"] == cfg.data.context_steps - 1
-    assert provenance["data"]["feature_caches"]["mimi"]["caches"]
+    assert provenance["data"]["feature_caches"]["cache"]["caches"]
     assert provenance["sampling"]["seed"] == cfg.seed
     assert provenance["checkpoint"]["filename"] == "last.ckpt"
     assert provenance["checkpoint"]["global_step"] == 1
@@ -470,9 +469,9 @@ def test_another_dataset_revision_is_refused(tmp_path, cache_root, monkeypatch):
         extract_run(run_dir)
 
 
-def test_another_cache_is_refused(tmp_path, cache_root, loads, make_mimi_cache):
+def test_another_cache_is_refused(tmp_path, cache_root, loads, make_feature_cache):
     run_dir, _ = _make_run(tmp_path, _config(cache_root))
-    other = make_mimi_cache(
+    other = make_feature_cache(
         {("egocom", "r1"): (0, GRID_STEPS)},
         source_dataset_revision=REVISION,
         root=tmp_path / "other-cache",
@@ -484,7 +483,7 @@ def test_another_cache_is_refused(tmp_path, cache_root, loads, make_mimi_cache):
     manifest_path.write_text(json.dumps(manifest))
 
     with pytest.raises(ValueError, match="not the cache the run trained on"):
-        extract_run(run_dir, mimi_cache_root=other)
+        extract_run(run_dir, feature_cache_root=other)
 
 
 def test_a_moved_cache_is_accepted(tmp_path, cache_root, loads):
@@ -492,11 +491,11 @@ def test_a_moved_cache_is_accepted(tmp_path, cache_root, loads):
     moved = tmp_path / "moved-cache"
     cache_root.rename(moved)
 
-    output = extract_run(run_dir, mimi_cache_root=moved, max_samples=2)
+    output = extract_run(run_dir, feature_cache_root=moved, max_samples=2)
 
     _, _, manifest = _read(output)
-    caches = manifest["provenance"]["data"]["feature_caches"]["mimi"]
-    assert caches["root"] == str(open_mimi_cache(moved).root)
+    caches = manifest["provenance"]["data"]["feature_caches"]["cache"]
+    assert caches["root"] == str(open_feature_cache(moved).root)
 
 
 def test_a_missing_checkpoint_fails_before_loading_data(tmp_path, cache_root, loads):
@@ -511,3 +510,25 @@ def test_a_missing_checkpoint_fails_before_loading_data(tmp_path, cache_root, lo
 def test_not_a_run_directory(tmp_path):
     with pytest.raises(FileNotFoundError, match="Not a training run directory"):
         extract_run(tmp_path)
+
+
+def test_a_run_saved_with_a_mimi_cache_config_still_opens(tmp_path):
+    """Runs trained before encoders were pluggable keep their saved files."""
+
+    cfg = load_config()
+    legacy = OmegaConf.to_container(cfg, resolve=True)
+    assert isinstance(legacy, dict)
+    del legacy["feature_dim"], legacy["data"]["grid_rate_hz"]
+    legacy["data"]["observation_source"] = "mimi_cache"
+    legacy["data"]["mimi_cache"] = legacy["data"].pop("feature_cache")
+    legacy_cfg = OmegaConf.create(legacy)
+    (tmp_path / "config.yaml").write_text(OmegaConf.to_yaml(legacy_cfg))
+    (tmp_path / "metadata.json").write_text(
+        json.dumps({"config_hash": hash_config(legacy_cfg)})
+    )
+
+    record = run_module.load_run(tmp_path)
+
+    assert record.cfg.data.observation_source == "feature_cache"
+    assert record.cfg.data.grid_rate_hz == 10.0
+    assert record.cfg.feature_dim == 512

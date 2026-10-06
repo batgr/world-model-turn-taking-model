@@ -10,6 +10,7 @@ from turn_wm.data import cli as data_cli
 from turn_wm.data import dataset as dataset_module
 from turn_wm.data.reader import DecodedAudio, DecodedVideo, MediaWindow
 from turn_wm.data.source import LoadedCorpus, LoadedData
+from turn_wm.models.encoders.logmel import LogMelEncoder
 from turn_wm.training import cli as training_cli
 from turn_wm.training import train as train_module
 
@@ -582,7 +583,7 @@ def test_train_reports_a_real_validation_error(monkeypatch):
 
 @pytest.fixture
 def fake_precompute(monkeypatch, tmp_path):
-    """Replace the Mimi cache generation; records its arguments."""
+    """Replace the feature cache generation; records its arguments."""
 
     received = {}
 
@@ -605,12 +606,12 @@ def fake_precompute(monkeypatch, tmp_path):
         )
         return manifest
 
-    monkeypatch.setattr(data_cli, "precompute_mimi_cache", precompute)
+    monkeypatch.setattr(data_cli, "precompute_features", precompute)
 
     return received
 
 
-def test_precompute_mimi_propagates_every_option(
+def test_precompute_features_propagates_every_option(
     fake_load, fake_precompute, tmp_path, capsys
 ):
     calls, state = fake_load
@@ -618,7 +619,7 @@ def test_precompute_mimi_propagates_every_option(
     output = tmp_path / "cache"
 
     argv = [
-        "precompute-mimi",
+        "precompute-features",
         "--dataset",
         "egocom",
         "--media-root",
@@ -629,10 +630,9 @@ def test_precompute_mimi_propagates_every_option(
         "mps",
         "--chunk-seconds",
         "10",
-        "--model",
-        "kyutai/mimi",
-        "--revision",
-        "abc123",
+        "--encoder",
+        "logmel",
+        "feature_dim=40",
     ]
 
     assert cli.main(argv) == 0
@@ -643,32 +643,44 @@ def test_precompute_mimi_propagates_every_option(
     assert fake_precompute["output_root"] == output
     assert fake_precompute["device"] == "mps"
     assert fake_precompute["chunk_seconds"] == 10.0
-    assert fake_precompute["model_name"] == "kyutai/mimi"
-    assert fake_precompute["model_revision"] == "abc123"
+    # The encoder config and its overrides, at the data's grid rate.
+    encoder = fake_precompute["encoder"]
+    assert isinstance(encoder, LogMelEncoder)
+    assert (encoder.output_dim, encoder.frame_rate) == (40, 10.0)
 
     captured = capsys.readouterr()
     out = captured.out
     # Progress and stage logs on stderr; stdout keeps only the results.
     assert "synthetic / r1" not in out
-    assert "precompute-mimi: dataset egocom" in captured.err
-    assert "precompute-mimi: device mps" in captured.err
-    assert f"precompute-mimi: output {output}" in captured.err
-    assert "precompute-mimi: 1 recordings" in captured.err
+    assert "precompute-features: dataset egocom" in captured.err
+    assert "precompute-features: device mps" in captured.err
+    assert f"precompute-features: output {output}" in captured.err
+    assert "precompute-features: 1 recordings" in captured.err
     assert "1/1" in captured.err and "recording" in captured.err
-    assert "precompute-mimi: done in" in captured.err
-    assert f"Mimi cache written to {output}" in out
+    assert "precompute-features: done in" in captured.err
+    assert f"Feature cache written to {output}" in out
     assert f"manifest: {output / 'manifest.json'}" in out
     assert "recordings: 1" in out
     assert "feature rate: 10 Hz" in out
     assert "feature dim: 512" in out
 
 
-def test_precompute_mimi_defaults(fake_load, fake_precompute, tmp_path):
+def test_precompute_features_defaults(
+    fake_load, fake_precompute, tmp_path, monkeypatch
+):
+    built = []
+
+    def build_encoder(cfg):
+        # Mimi itself would download its weights.
+        built.append(cfg)
+        return LogMelEncoder(frame_rate=cfg.data.grid_rate_hz)
+
+    monkeypatch.setattr("turn_wm.models.build.build_encoder", build_encoder)
     _, state = fake_load
     state["data"] = make_data(media_manifest=make_manifest(), train=make_anchors())
 
     argv = [
-        "precompute-mimi",
+        "precompute-features",
         "--media-root",
         str(tmp_path),
         "--output",
@@ -679,11 +691,12 @@ def test_precompute_mimi_defaults(fake_load, fake_precompute, tmp_path):
 
     assert fake_precompute["device"] == "cpu"
     assert fake_precompute["chunk_seconds"] == 20.0
-    assert fake_precompute["model_name"] == "kyutai/mimi"
-    assert fake_precompute["model_revision"] is None
+    [cfg] = built
+    assert cfg.model.encoder._target_.endswith("FrozenMimiEncoder")
+    assert cfg.model.encoder.get("revision") is None
 
 
-def test_precompute_mimi_accepts_one_root_per_corpus(
+def test_precompute_features_accepts_one_root_per_corpus(
     fake_load, fake_precompute, tmp_path
 ):
     _, state = fake_load
@@ -698,7 +711,9 @@ def test_precompute_mimi_accepts_one_root_per_corpus(
     ego4d.mkdir()
 
     argv = [
-        "precompute-mimi",
+        "precompute-features",
+        "--encoder",
+        "logmel",
         "--dataset",
         "full",
         "--media-root",
@@ -713,29 +728,31 @@ def test_precompute_mimi_accepts_one_root_per_corpus(
     assert fake_precompute["media_roots"] == {"egocom": egocom, "ego4d": ego4d}
 
 
-def test_precompute_mimi_requires_a_media_root(fake_precompute, tmp_path, capsys):
+def test_precompute_features_requires_a_media_root(fake_precompute, tmp_path, capsys):
     with pytest.raises(SystemExit) as error:
-        cli.main(["precompute-mimi", "--output", str(tmp_path / "cache")])
+        cli.main(["precompute-features", "--output", str(tmp_path / "cache")])
 
     assert error.value.code == 2
     assert "--media-root" in capsys.readouterr().err
     assert fake_precompute == {}
 
 
-def test_precompute_mimi_requires_an_output(fake_precompute, tmp_path, capsys):
+def test_precompute_features_requires_an_output(fake_precompute, tmp_path, capsys):
     with pytest.raises(SystemExit) as error:
-        cli.main(["precompute-mimi", "--media-root", str(tmp_path)])
+        cli.main(["precompute-features", "--media-root", str(tmp_path)])
 
     assert error.value.code == 2
     assert "--output" in capsys.readouterr().err
 
 
 @pytest.mark.parametrize("value", ["0", "-1", "nan", "abc"])
-def test_precompute_mimi_rejects_invalid_chunk_seconds(
+def test_precompute_features_rejects_invalid_chunk_seconds(
     fake_precompute, tmp_path, capsys, value
 ):
     argv = [
-        "precompute-mimi",
+        "precompute-features",
+        "--encoder",
+        "logmel",
         "--media-root",
         str(tmp_path),
         "--output",
@@ -752,7 +769,7 @@ def test_precompute_mimi_rejects_invalid_chunk_seconds(
     assert fake_precompute == {}
 
 
-def test_precompute_mimi_needs_named_roots_for_several_corpora(
+def test_precompute_features_needs_named_roots_for_several_corpora(
     fake_load, fake_precompute, tmp_path
 ):
     _, state = fake_load
@@ -764,7 +781,9 @@ def test_precompute_mimi_needs_named_roots_for_several_corpora(
     )
 
     argv = [
-        "precompute-mimi",
+        "precompute-features",
+        "--encoder",
+        "logmel",
         "--dataset",
         "full",
         "--media-root",
@@ -789,7 +808,7 @@ def test_precompute_mimi_needs_named_roots_for_several_corpora(
         OSError("kyutai/mimi is not a valid git identifier (branch name, tag)"),
     ],
 )
-def test_precompute_mimi_errors_are_clear_cli_errors(
+def test_precompute_features_errors_are_clear_cli_errors(
     fake_load, monkeypatch, tmp_path, error
 ):
     _, state = fake_load
@@ -798,10 +817,12 @@ def test_precompute_mimi_errors_are_clear_cli_errors(
     def fail(loaded, **kwargs):
         raise error
 
-    monkeypatch.setattr(data_cli, "precompute_mimi_cache", fail)
+    monkeypatch.setattr(data_cli, "precompute_features", fail)
 
     argv = [
-        "precompute-mimi",
+        "precompute-features",
+        "--encoder",
+        "logmel",
         "--media-root",
         str(tmp_path),
         "--output",
@@ -814,7 +835,7 @@ def test_precompute_mimi_errors_are_clear_cli_errors(
     assert exit_info.value.code == f"turn-wm: error: {error}"
 
 
-def test_precompute_mimi_real_output_check_is_a_cli_error(
+def test_precompute_features_real_output_check_is_a_cli_error(
     fake_load, monkeypatch, tmp_path
 ):
     # Not mocked: the real precompute refuses a non-empty output before
@@ -826,7 +847,9 @@ def test_precompute_mimi_real_output_check_is_a_cli_error(
     (output / "manifest.json").write_text("{}")
 
     argv = [
-        "precompute-mimi",
+        "precompute-features",
+        "--encoder",
+        "logmel",
         "--media-root",
         str(tmp_path),
         "--output",

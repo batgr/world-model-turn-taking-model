@@ -1,0 +1,9 @@
+# @package _global_
+# 80 log-mel energies of each grid step's 16 kHz audio: no learned weights,
+# nothing to download; a reference for the learned encoders. Runs at any grid.
+feature_dim: 80
+model:
+  encoder:
+    _target_: turn_wm.models.encoders.logmel.LogMelEncoder
+    n_mels: ${feature_dim}
+    frame_rate: ${data.grid_rate_hz}

@@ -1,61 +1,51 @@
-"""Mimi cache precomputation with a fake encoder and reader (no weights, no media)."""
+"""Feature cache precomputation with a fake encoder and reader (no weights, no media)."""
 
 import math
 from dataclasses import replace
 from pathlib import Path
-from typing import ClassVar
 
 import pytest
 import torch
 from corpora import make_corpus, make_grid, make_manifest
 
-from turn_wm.data import mimi_precompute
-from turn_wm.data.media import MediaPaths
-from turn_wm.data.mimi_cache import MimiCacheExclusion, MimiFeatureStore
-from turn_wm.data.mimi_precompute import (
+from turn_wm.data import feature_precompute
+from turn_wm.data.feature_cache import CacheExclusion, FeatureStore
+from turn_wm.data.feature_precompute import (
     EGO4D_V1_EXCLUSIONS,
     RecordingSpan,
     _load_recording_audio,
     _recording_spans,
-    precompute_mimi_cache,
+    precompute_features,
 )
+from turn_wm.data.media import MediaPaths
 from turn_wm.data.reader import AudioGap, DecodedAudio, MediaWindow
 from turn_wm.data.source import LoadedData
+from turn_wm.models.encoders.base import Encoder
 
 MEDIA_RATE = 16_000
 DIM = 4
 
 
-class FrameIndexEncoder:
-    """Stand-in for FrozenMimiEncoder: native frame i has every feature = i."""
+class FrameIndexEncoder(Encoder):
+    """One frame per started 1 / frame_rate s of audio; frame i has every feature = i."""
 
-    sample_rate = 2_400
-    source_rate = 12.5
+    name = "frame-index"
+    modality = "audio"
     output_dim = DIM
+    revision = "encoder-sha"
     resolved_revision = "resolved-sha"
-    instances: ClassVar[list["FrameIndexEncoder"]] = []
 
-    def __init__(self, *, model_name, revision, target_rate):
-        self.kwargs = {
-            "model_name": model_name,
-            "revision": revision,
-            "target_rate": target_rate,
-        }
-        self.streamed: list[int] = []
-        FrameIndexEncoder.instances.append(self)
+    def __init__(self, frame_rate: float = 10.0) -> None:
+        super().__init__()
+        self.frame_rate = frame_rate
+        self.streamed: list[tuple[int, float]] = []
 
-    def to(self, device):
-        return self
-
-    def eval(self):
-        return self
-
-    def stream_native_features(self, audio, *, chunk_seconds):
-        self.streamed.append(audio.shape[-1])
-        frames = math.ceil(audio.shape[-1] / (self.sample_rate / self.source_rate))
+    def encode_recording(self, input, rate, *, chunk_seconds):
+        self.streamed.append((input.shape[-1], rate))
+        frames = math.ceil(input.shape[-1] * self.frame_rate / rate)
         steps = torch.arange(frames, dtype=torch.float32)
 
-        return steps.view(1, -1, 1).expand(1, frames, DIM).clone()
+        return steps.view(-1, 1).expand(frames, DIM).clone()
 
 
 class FakeReader:
@@ -109,6 +99,7 @@ def span(steps: int = 40, start_time_s: float = 0.0) -> RecordingSpan:
         start_index=0,
         start_time_s=start_time_s,
         steps=steps,
+        grid_rate_hz=10.0,
     )
 
 
@@ -119,13 +110,14 @@ def load(reader, **kwargs):
 def test_recording_span_covers_the_grid():
     corpus = make_corpus("a", state="SILENT", splits={"train": 1})
 
-    assert _recording_spans(corpus, target_rate=10.0) == [
+    assert _recording_spans(corpus, grid_rate=10.0) == [
         RecordingSpan(
             dataset="a",
             recording_id="r1",
             start_index=0,
             start_time_s=0.0,
             steps=40,
+            grid_rate_hz=10.0,
         )
     ]
     assert span().end_time_s == pytest.approx(4.0)
@@ -136,7 +128,7 @@ def test_recording_with_a_gap_is_rejected():
     grid = corpus.action_grid.filter(lambda row: row["decision_index"] != 7)
 
     with pytest.raises(ValueError, match="Non-contiguous action grid for 'r1'"):
-        _recording_spans(replace(corpus, action_grid=grid), target_rate=10.0)
+        _recording_spans(replace(corpus, action_grid=grid), grid_rate=10.0)
 
 
 def test_recording_with_irregular_timing_is_rejected():
@@ -146,7 +138,7 @@ def test_recording_with_irregular_timing_is_rejected():
     )
 
     with pytest.raises(ValueError, match="timing mismatch for 'r1'"):
-        _recording_spans(replace(corpus, action_grid=grid), target_rate=10.0)
+        _recording_spans(replace(corpus, action_grid=grid), grid_rate=10.0)
 
 
 def prepare(reader, **kwargs):
@@ -154,8 +146,7 @@ def prepare(reader, **kwargs):
         reader=reader,
         media=kwargs.pop("media", media()),
         span=kwargs.pop("span", span()),
-        encoder=FrameIndexEncoder(model_name="m", revision=None, target_rate=10.0),
-        target_rate=10.0,
+        grid_rate=10.0,
     )
 
 
@@ -188,24 +179,24 @@ def test_audio_gaps_are_mapped_to_the_canonical_cache_timeline():
 def test_audio_has_the_exact_canonical_duration(duration_scale):
     audio = load(FakeReader(duration_scale))
 
-    # 40 steps = 4 s at the encoder's 2.4 kHz.
-    assert audio.shape == (1, 1, 9_600)
+    # 40 steps = 4 s at the media's own 16 kHz.
+    assert audio.shape == (1, 64_000)
 
 
 def test_slightly_short_audio_is_padded_with_silence_at_the_end():
     # 0.08 s short of 4 s: under one grid step.
     audio = load(FakeReader(0.98))
 
-    assert audio[0, 0, 8_000:9_000].mean() == pytest.approx(1.0, abs=0.05)
-    assert torch.all(audio[0, 0, 9_450:] == 0)
+    assert audio[0, 53_000:60_000].mean() == 1.0
+    assert torch.all(audio[0, 62_720:] == 0)
 
 
 def test_audio_up_to_a_second_short_is_padded_with_silence():
     # Grids run to the next whole second past the media: up to 1 s of tail.
     audio = load(FakeReader(0.76))
 
-    assert audio.shape == (1, 1, 9_600)
-    assert torch.all(audio[0, 0, 7_400:] == 0)
+    assert audio.shape == (1, 64_000)
+    assert torch.all(audio[0, 48_640:] == 0)
 
 
 def test_much_shorter_audio_is_rejected():
@@ -220,9 +211,9 @@ def test_audio_slightly_before_the_media_start_is_silence():
 
     # The reader never gets a negative time; 0.05 s of silence comes first.
     assert reader.calls[0]["interval"] == (0.0, pytest.approx(3.95))
-    assert torch.all(audio[0, 0, :100] == 0)
-    assert audio[0, 0, 200:1_000].mean() == pytest.approx(1.0, abs=0.05)
-    assert audio.shape == (1, 1, 9_600)
+    assert torch.all(audio[0, :800] == 0)
+    assert audio[0, 800:5_000].mean() == 1.0
+    assert audio.shape == (1, 64_000)
 
 
 def test_span_far_before_the_media_start_is_rejected():
@@ -232,12 +223,15 @@ def test_span_far_before_the_media_start_is_rejected():
 
 @pytest.fixture
 def fake_models(monkeypatch):
-    FrameIndexEncoder.instances.clear()
     reader = FakeReader()
-    monkeypatch.setattr(mimi_precompute, "FrozenMimiEncoder", FrameIndexEncoder)
-    monkeypatch.setattr(mimi_precompute, "MediaReader", lambda: reader)
+    monkeypatch.setattr(feature_precompute, "MediaReader", lambda: reader)
 
     return reader
+
+
+@pytest.fixture
+def encoder():
+    return FrameIndexEncoder()
 
 
 @pytest.fixture
@@ -254,7 +248,7 @@ def media_roots(tmp_path):
 
 
 def test_precompute_writes_aligned_features_and_manifest(
-    fake_models, media_roots, tmp_path
+    fake_models, encoder, media_roots, tmp_path
 ):
     loaded = LoadedData(
         corpora=(
@@ -275,11 +269,11 @@ def test_precompute_writes_aligned_features_and_manifest(
     )
     output = tmp_path / "cache"
 
-    manifest = precompute_mimi_cache(
+    manifest = precompute_features(
         loaded,
+        encoder=encoder,
         media_roots=media_roots,
         output_root=output,
-        model_revision="mimi-sha",
     )
 
     assert manifest == output / "manifest.json"
@@ -288,18 +282,11 @@ def test_precompute_writes_aligned_features_and_manifest(
         (300.0, 304.0),
     ]
 
-    [encoder] = FrameIndexEncoder.instances
-    assert encoder.kwargs == {
-        "model_name": "kyutai/mimi",
-        "revision": "mimi-sha",
-        "target_rate": 10.0,
-    }
-
-    store = MimiFeatureStore(output)
+    store = FeatureStore(output)
 
     assert store.metadata["model"] == {
-        "name": "kyutai/mimi",
-        "revision": "mimi-sha",
+        "name": "frame-index",
+        "revision": "encoder-sha",
         "resolved_revision": "resolved-sha",
     }
     assert store.metadata["source_dataset_revision"] == "dataset-rev"
@@ -309,8 +296,8 @@ def test_precompute_writes_aligned_features_and_manifest(
     for dataset in ("a", "b"):
         features = store.get(dataset=dataset, recording_id="r1", start=0, end=40)
 
-        # Row k is the latest native frame available by the end of step k.
-        expected = [math.floor(1.25 * (k + 1) + 1e-8) - 1 for k in range(40)]
+        # Row k is frame k: the encoder runs at the grid's rate.
+        expected = list(range(40))
         assert features.shape == (40, DIM)
         assert features[:, 0].tolist() == expected
 
@@ -332,9 +319,9 @@ def test_evidence_backed_ego4d_v1_exclusions_are_explicit():
 
 
 def test_precompute_omits_explicit_exclusion_and_records_it(
-    fake_models, media_roots, tmp_path
+    fake_models, encoder, media_roots, tmp_path
 ):
-    exclusion = MimiCacheExclusion(
+    exclusion = CacheExclusion(
         dataset="a",
         recording_id="r1",
         reason="audio_annotation_clock_drift",
@@ -342,23 +329,24 @@ def test_precompute_omits_explicit_exclusion_and_records_it(
     )
     output = tmp_path / "cache"
 
-    precompute_mimi_cache(
+    precompute_features(
         one_corpus(),
+        encoder=encoder,
         media_roots=media_roots,
         output_root=output,
         excluded_recordings=(exclusion,),
     )
 
-    store = MimiFeatureStore(output)
+    store = FeatureStore(output)
     assert store.records == ()
     assert store.exclusions == (exclusion,)
     assert fake_models.calls == []
 
 
 def test_precompute_rejects_exclusion_outside_canonical_grid(
-    fake_models, media_roots, tmp_path
+    fake_models, encoder, media_roots, tmp_path
 ):
-    exclusion = MimiCacheExclusion(
+    exclusion = CacheExclusion(
         dataset="a",
         recording_id="missing",
         reason="audio_annotation_clock_drift",
@@ -366,36 +354,42 @@ def test_precompute_rejects_exclusion_outside_canonical_grid(
     )
 
     with pytest.raises(ValueError, match="not in the canonical action grid"):
-        precompute_mimi_cache(
+        precompute_features(
             one_corpus(),
+            encoder=encoder,
             media_roots=media_roots,
             output_root=tmp_path / "cache",
             excluded_recordings=(exclusion,),
         )
 
-    assert FrameIndexEncoder.instances == []
+    assert encoder.streamed == []
 
 
-def test_cache_rate_is_the_action_grid_rate(fake_models, media_roots, tmp_path):
-    with pytest.raises(ValueError, match="10 Hz action grid"):
-        precompute_mimi_cache(
+def test_the_encoder_must_run_at_the_grid_rate(fake_models, media_roots, tmp_path):
+    with pytest.raises(ValueError, match="decision grid is 10 Hz"):
+        precompute_features(
             LoadedData(
                 corpora=(make_corpus("a", state="SILENT", splits={"train": 1}),)
             ),
+            encoder=FrameIndexEncoder(frame_rate=12.5),
             media_roots=media_roots,
             output_root=tmp_path,
-            target_rate=12.5,
         )
 
 
-def test_corpus_without_media_manifest_is_rejected(fake_models, media_roots, tmp_path):
+def test_corpus_without_media_manifest_is_rejected(
+    fake_models, encoder, media_roots, tmp_path
+):
     loaded = LoadedData(
         corpora=(make_corpus("a", state="SILENT", splits={"train": 1}),)
     )
 
     with pytest.raises(ValueError, match="'a' has no media manifest"):
-        precompute_mimi_cache(
-            loaded, media_roots=media_roots, output_root=tmp_path / "cache"
+        precompute_features(
+            loaded,
+            encoder=encoder,
+            media_roots=media_roots,
+            output_root=tmp_path / "cache",
         )
 
 
@@ -412,11 +406,14 @@ def one_corpus(**manifest):
     )
 
 
-def test_progress_is_reported_per_recording(fake_models, media_roots, tmp_path):
+def test_progress_is_reported_per_recording(
+    fake_models, encoder, media_roots, tmp_path
+):
     seen = []
 
-    precompute_mimi_cache(
+    precompute_features(
         one_corpus(),
+        encoder=encoder,
         media_roots=media_roots,
         output_root=tmp_path / "cache",
         progress=lambda index, total, span: seen.append(
@@ -427,69 +424,113 @@ def test_progress_is_reported_per_recording(fake_models, media_roots, tmp_path):
     assert seen == [(1, 1, "r1")]
 
 
-def test_non_empty_output_is_rejected(fake_models, media_roots, tmp_path):
+def test_non_empty_output_is_rejected(fake_models, encoder, media_roots, tmp_path):
     output = tmp_path / "cache"
     output.mkdir()
     (output / "manifest.json").write_text("{}")
 
     with pytest.raises(ValueError, match="not an empty directory"):
-        precompute_mimi_cache(one_corpus(), media_roots=media_roots, output_root=output)
+        precompute_features(
+            one_corpus(), encoder=encoder, media_roots=media_roots, output_root=output
+        )
 
-    assert FrameIndexEncoder.instances == []
+    assert encoder.streamed == []
 
 
-def test_missing_media_fails_before_any_encoding(fake_models, media_roots, tmp_path):
+def test_missing_media_fails_before_any_encoding(
+    fake_models, encoder, media_roots, tmp_path
+):
     (media_roots["a"] / "videos/r1.mp4").unlink()
 
     with pytest.raises(FileNotFoundError, match="r1.mp4"):
-        precompute_mimi_cache(
-            one_corpus(), media_roots=media_roots, output_root=tmp_path / "cache"
+        precompute_features(
+            one_corpus(),
+            encoder=encoder,
+            media_roots=media_roots,
+            output_root=tmp_path / "cache",
         )
 
-    # Checked before the (slow) encoder is even built.
-    assert FrameIndexEncoder.instances == []
+    # Checked before anything is encoded.
+    assert encoder.streamed == []
     assert fake_models.calls == []
 
 
 def test_non_contiguous_grid_fails_before_any_encoding(
-    fake_models, media_roots, tmp_path
+    fake_models, encoder, media_roots, tmp_path
 ):
     loaded = one_corpus()
     [corpus] = loaded.corpora
     grid = corpus.action_grid.filter(lambda row: row["decision_index"] != 3)
 
     with pytest.raises(ValueError, match="Non-contiguous"):
-        precompute_mimi_cache(
+        precompute_features(
             LoadedData(corpora=(replace(corpus, action_grid=grid),)),
+            encoder=encoder,
             media_roots=media_roots,
             output_root=tmp_path / "cache",
         )
 
-    assert FrameIndexEncoder.instances == []
+    assert encoder.streamed == []
 
 
-def test_recording_without_audio_is_rejected(fake_models, media_roots, tmp_path):
+def test_recording_without_audio_is_rejected(
+    fake_models, encoder, media_roots, tmp_path
+):
     with pytest.raises(ValueError, match="No audio source"):
-        precompute_mimi_cache(
+        precompute_features(
             one_corpus(video_has_audio=False),
+            encoder=encoder,
             media_roots=media_roots,
             output_root=tmp_path / "cache",
         )
 
 
-def test_features_follow_the_first_decision_index(fake_models, media_roots, tmp_path):
+def test_features_follow_the_first_decision_index(
+    fake_models, encoder, media_roots, tmp_path
+):
     # The grid need not start at decision_index 0 or time 0.
     loaded = one_corpus()
     [corpus] = loaded.corpora
     grid = corpus.action_grid.filter(lambda row: row["decision_index"] >= 5)
 
-    precompute_mimi_cache(
+    precompute_features(
         LoadedData(corpora=(replace(corpus, action_grid=grid),)),
+        encoder=encoder,
         media_roots=media_roots,
         output_root=tmp_path / "cache",
     )
 
-    [record] = MimiFeatureStore(tmp_path / "cache")._records.values()
+    [record] = FeatureStore(tmp_path / "cache")._records.values()
 
     assert (record.start_index, record.start_time_s, record.steps) == (5, 0.5, 35)
     assert fake_models.calls[0]["interval"] == (0.5, 4.0)
+
+
+def test_any_encoder_precomputes_features_on_a_grid_at_its_own_rate(
+    fake_models, media_roots, tmp_path
+):
+    """Log-mel at 12.5 Hz on a 12.5 Hz grid: one row per 80 ms step."""
+
+    from turn_wm.models.encoders.logmel import LogMelEncoder
+
+    [corpus] = one_corpus().corpora
+    grid = corpus.action_grid.map(
+        lambda row: {"decision_time_s": row["decision_index"] / 12.5}
+    )
+    loaded = LoadedData(corpora=(replace(corpus, action_grid=grid),))
+    output = tmp_path / "cache"
+
+    precompute_features(
+        loaded,
+        encoder=LogMelEncoder(frame_rate=12.5),
+        media_roots=media_roots,
+        output_root=output,
+    )
+
+    # 40 steps of 80 ms: the audio read is 3.2 s.
+    assert fake_models.calls[0]["interval"] == (0.0, pytest.approx(3.2))
+    store = FeatureStore(output)
+    assert store.model_name == "logmel-80"
+    assert store.feature_rate_hz == 12.5
+    features = store.get(dataset="a", recording_id="r1", start=0, end=40)
+    assert features.shape == (40, 80)

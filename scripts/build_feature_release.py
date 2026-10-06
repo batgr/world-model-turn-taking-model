@@ -1,6 +1,6 @@
 """Write README.md and release_manifest.json for a local Mimi feature release.
 
-uv run python scripts/build_mimi_release.py /path/to/mimi/v1
+uv run python scripts/build_feature_release.py /path/to/mimi/v1
 """
 
 from __future__ import annotations
@@ -8,7 +8,7 @@ from __future__ import annotations
 import argparse
 from pathlib import Path
 
-from turn_wm.data.mimi_release import write_release
+from turn_wm.data.feature_release import write_release
 
 
 def main() -> None:

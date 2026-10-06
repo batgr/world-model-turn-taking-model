@@ -2,11 +2,14 @@
 
 Observations reach the latent space through one path: encoder features
 `(B, T, D)` go through `project_features` (the trainable projector). Raw
-observations are encoded first (`encode`); precomputed features, e.g. cached
-Mimi features, skip the encoder, which is then `None` and never built.
+observations are encoded first (`encode`) by any `Encoder`;
+precomputed features (a feature cache) skip the encoder, which is then `None`
+and never built.
 """
 
 from __future__ import annotations
+
+from collections.abc import Sequence
 
 import torch
 from einops import rearrange
@@ -32,22 +35,16 @@ class JEPA(nn.Module):
         self.pred_proj = pred_proj or nn.Identity()
 
     def encode(
-        self,
-        observation,
-        **encoder_kwargs,
-    ):
+        self, inputs: Sequence[torch.Tensor], rates: Sequence[float]
+    ) -> torch.Tensor:
         """Encode raw observations, then project them to the latent space."""
 
-        return self.project_features(
-            self.encode_features(observation, **encoder_kwargs)
-        )
+        return self.project_features(self.encode_features(inputs, rates))
 
     def encode_features(
-        self,
-        observation,
-        **encoder_kwargs,
+        self, inputs: Sequence[torch.Tensor], rates: Sequence[float]
     ) -> torch.Tensor:
-        """Encoder features `(B, T, D)` of raw observations, before projection."""
+        """Encoder features `(B, frames, D)` of raw observations, before projection."""
 
         if self.encoder is None:
             raise ValueError(
@@ -55,12 +52,7 @@ class JEPA(nn.Module):
                 "without an encoder (precomputed features); use project_features"
             )
 
-        features = self.encoder(
-            observation,
-            **encoder_kwargs,
-        )
-
-        return features
+        return self.encoder(inputs, rates)
 
     def project_features(self, features: torch.Tensor) -> torch.Tensor:
         """Project encoder features `(B, T, D)` to latents `(B, T, embed_dim)`."""

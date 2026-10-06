@@ -16,12 +16,12 @@ from pathlib import Path
 
 from omegaconf import DictConfig, OmegaConf
 
-from turn_wm.data.mimi_cache import (
-    MimiFeatureCaches,
+from turn_wm.data.feature_cache import (
+    FeatureCaches,
 )
 from turn_wm.models.build import observation_source
 from turn_wm.training.observations import (
-    mimi_cache_identity,
+    feature_cache_identity,
 )
 
 
@@ -124,7 +124,7 @@ def write_metadata(
     cfg: DictConfig,
     git: dict[str, object],
     dataset_revision: str | None,
-    mimi_store: MimiFeatureCaches | None = None,
+    feature_store: FeatureCaches | None = None,
 ) -> None:
     metadata: dict[str, object] = {
         "run_id": run_id,
@@ -136,11 +136,11 @@ def write_metadata(
         "observation_source": observation_source(cfg),
     }
 
-    if mimi_store is not None:
+    if feature_store is not None:
         # What identifies the cache, not its whole manifest.
-        metadata["mimi_cache"] = {
-            "root": str(mimi_store.root),
-            "caches": mimi_cache_identity(mimi_store),
+        metadata["feature_cache"] = {
+            "root": str(feature_store.root),
+            "caches": feature_cache_identity(feature_store),
         }
 
     path = run_dir / "metadata.json"

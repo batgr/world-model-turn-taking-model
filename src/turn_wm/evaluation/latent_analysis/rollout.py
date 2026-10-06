@@ -30,7 +30,6 @@ from typing import Any
 import torch
 from omegaconf import DictConfig
 
-from turn_wm.data.mimi_precompute import GRID_RATE_HZ
 from turn_wm.evaluation.latent_analysis.extract import (
     RepresentationSnapshot,
     extract_snapshot,
@@ -120,8 +119,8 @@ def rollout_provenance(cfg: DictConfig) -> dict[str, Any]:
     return {
         "implementation": "turn_wm.training.objective.lejepa_forward",
         "horizons_steps": horizons,
-        "grid_step_s": 1 / GRID_RATE_HZ,
-        "horizons_s": [h / GRID_RATE_HZ for h in horizons],
+        "grid_step_s": 1 / float(cfg.data.grid_rate_hz),
+        "horizons_s": [h / float(cfg.data.grid_rate_hz) for h in horizons],
         "anchor_step": context_steps - 1,
         "rollout_context_size": window,
         "stop_gradient": bool(cfg.prediction.rollout_stop_gradient),
@@ -155,7 +154,7 @@ def extract_rollout_run(
     batch_size: int | None = None,
     num_workers: int = 0,
     device: str = "cpu",
-    mimi_cache_root: Path | None = None,
+    feature_cache_root: Path | None = None,
     media_roots: dict[str, Path] | None = None,
 ) -> Path:
     """Write the validation-rollout snapshot of one run; return the dir.
@@ -172,7 +171,7 @@ def extract_rollout_run(
         seed=seed,
         batch_size=batch_size,
         num_workers=num_workers,
-        mimi_cache_root=mimi_cache_root,
+        feature_cache_root=feature_cache_root,
         media_roots=media_roots,
     )
     output_dir = output_dir or opened.default_output_dir("-rollout")

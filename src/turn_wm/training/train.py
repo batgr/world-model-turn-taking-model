@@ -28,7 +28,7 @@ from turn_wm.training.datamodule import TurnTakingDataModule
 from turn_wm.training.lewm import LeWMModule
 from turn_wm.training.observations import (
     prepare_observations,
-    require_mimi_cache_root,
+    require_feature_cache_root,
 )
 from turn_wm.training.run_dir import (
     create_run_dir,
@@ -57,7 +57,7 @@ def run(
         )
 
     # Before any download: a cached run without a cache cannot start.
-    require_mimi_cache_root(cfg)
+    require_feature_cache_root(cfg)
 
     # One experiment seed governs data order, workers and model initialization.
     L.seed_everything(cfg.seed, workers=True)
@@ -79,7 +79,7 @@ def run(
         cfg=cfg,
         git=git_metadata(),
         dataset_revision=loaded.revision,
-        mimi_store=observations.mimi_store,
+        feature_store=observations.feature_store,
     )
 
     module = LeWMModule(cfg)

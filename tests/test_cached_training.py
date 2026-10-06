@@ -13,8 +13,8 @@ from torch import nn
 
 from turn_wm.config import load_config
 from turn_wm.data.dataset import TurnTakingDataset
+from turn_wm.data.feature_cache import FeatureStore
 from turn_wm.data.loader import DataLoaderConfig, build_dataloader
-from turn_wm.data.mimi_cache import MimiFeatureStore
 from turn_wm.models.build import build_model
 from turn_wm.models.encoders import mimi as mimi_module
 from turn_wm.models.lewm.sigreg import SIGReg
@@ -28,13 +28,14 @@ GRID_LENGTH = 80
 
 
 class FakeEncoder(nn.Module):
-    """Deterministic stand-in for Mimi: waveform -> (B, T, 512)."""
+    """Deterministic 10 Hz stand-in encoder: waveform -> (B, T, 512)."""
 
-    def forward(self, waveform, sample_rate, target_length):
+    def forward(self, inputs, rates):
         rows = []
 
-        for window in waveform:
-            chunks = window.mean(dim=0).chunk(target_length)
+        for window, rate in zip(inputs, rates, strict=True):
+            frames = window.shape[-1] * 10 // int(rate)
+            chunks = window.mean(dim=0).chunk(frames)
             rows.append(torch.stack([chunk.mean() for chunk in chunks]))
 
         steps = torch.stack(rows)  # (B, T)
@@ -56,13 +57,13 @@ def no_mimi(monkeypatch):
 def cached_config(root=None, **overrides):
     cfg = load_config(
         [
-            "data.observation_source=mimi_cache",
+            "data.observation_source=feature_cache",
             "trainer.accelerator=cpu",
             "trainer.precision=32-true",
         ]
     )
     OmegaConf.set_struct(cfg, False)
-    cfg.data.mimi_cache.root = None if root is None else str(root)
+    cfg.data.feature_cache.root = None if root is None else str(root)
 
     for key, value in overrides.items():
         OmegaConf.update(cfg, key, value)
@@ -107,8 +108,8 @@ def make_anchors(count: int) -> Dataset:
 
 
 @pytest.fixture
-def cache_root(make_mimi_cache):
-    return make_mimi_cache({("egocom", "r1"): (FIRST_INDEX, GRID_LENGTH)})
+def cache_root(make_feature_cache):
+    return make_feature_cache({("egocom", "r1"): (FIRST_INDEX, GRID_LENGTH)})
 
 
 def cached_loader(cfg, root, *, count=4, batch_size=2, training=True):
@@ -118,7 +119,7 @@ def cached_loader(cfg, root, *, count=4, batch_size=2, training=True):
         window=training_window(cfg),
         training=training,
         modalities=("audio",),
-        mimi_store=MimiFeatureStore(root),
+        feature_store=FeatureStore(root),
     )
 
     return build_dataloader(
@@ -152,10 +153,8 @@ def test_encode_is_the_encoder_then_the_same_projection():
     model = raw_model()
     waveforms = [torch.randn(1, 2_500), torch.randn(2, 2_500)]
 
-    raw = model.encode(waveforms, sample_rate=[1_000, 1_000], target_length=25)
-    cached = model.project_features(
-        model.encoder(waveforms, sample_rate=[1_000, 1_000], target_length=25)
-    )
+    raw = model.encode(waveforms, [1_000, 1_000])
+    cached = model.project_features(model.encoder(waveforms, [1_000, 1_000]))
 
     torch.testing.assert_close(raw, cached, rtol=0, atol=0)
 
@@ -180,9 +179,7 @@ def test_raw_and_cached_trajectories_give_identical_losses():
         actions=actions,
         context_steps=context,
         future_steps=future,
-        features=model.encoder(
-            waveforms, sample_rate=[1_000, 1_000], target_length=steps
-        ),
+        features=model.encoder(waveforms, [1_000, 1_000]),
     )
 
     torch.manual_seed(0)
@@ -212,7 +209,7 @@ def test_model_without_encoder_refuses_raw_observations(no_mimi):
     assert model.encoder is None
 
     with pytest.raises(ValueError, match="Raw observation encoding is unavailable"):
-        model.encode([torch.randn(1, 100)], sample_rate=[1_000], target_length=1)
+        model.encode([torch.randn(1, 100)], [1_000])
 
 
 def test_trajectories_have_exactly_one_observation_source():

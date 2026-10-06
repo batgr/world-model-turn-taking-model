@@ -3,15 +3,15 @@ import re
 import pytest
 from hydra.utils import get_object
 from omegaconf import DictConfig, OmegaConf
-from torch import nn
 
-from turn_wm.config import CONFIG_DIR, load_config
-from turn_wm.models.build import build_model
+from turn_wm.config import CONFIG_DIR, load_config, upgrade_run_config
+from turn_wm.models.build import build_encoder, build_model
+from turn_wm.models.encoders.logmel import LogMelEncoder
 from turn_wm.models.lewm.jepa import JEPA
 from turn_wm.models.lewm.sigreg import SIGReg
 
-# Keeps build tests offline: the real encoder downloads pretrained weights.
-OFFLINE_ENCODER = "model.encoder._target_=torch.nn.Identity"
+# Keeps build tests offline: Mimi downloads pretrained weights, log-mel has none.
+OFFLINE_ENCODER = "model/encoder=logmel"
 RAW_AUDIO = "data.observation_source=raw_audio"
 
 
@@ -31,6 +31,7 @@ def test_default_config_selects_every_group():
     assert isinstance(cfg, DictConfig)
     assert set(cfg) == {
         "embed_dim",
+        "feature_dim",
         "model",
         "seed",
         "data",
@@ -46,7 +47,24 @@ def test_default_config_selects_every_group():
         "logging",
     }
     assert cfg.model.encoder.model_name == "kyutai/mimi"
-    assert cfg.model.encoder.target_rate == 10.0
+    assert cfg.data.grid_rate_hz == 10.0
+    assert cfg.feature_dim == cfg.model.projector.input_dim == 512
+
+
+def test_the_encoder_is_a_config_group_that_sizes_the_projector():
+    cfg = load_config(["model/encoder=logmel", "data.grid_rate_hz=12.5"])
+
+    assert cfg.model.encoder._target_.endswith("LogMelEncoder")
+    assert cfg.feature_dim == cfg.model.projector.input_dim == 80
+    # Log-mel runs at the data's decision grid rate.
+    assert cfg.model.encoder.frame_rate == 12.5
+
+
+def test_an_encoder_must_give_feature_dim_features():
+    cfg = load_config([OFFLINE_ENCODER, "model.encoder.n_mels=40"])
+
+    with pytest.raises(ValueError, match="40-d features; feature_dim is 80"):
+        build_encoder(cfg)
 
 
 def test_shared_sizes_are_interpolated_into_the_model():
@@ -74,10 +92,10 @@ def test_every_target_resolves_to_a_callable():
 
 
 def test_overrides_apply():
-    cfg = load_config(["model.predictor.depth=2", "model.encoder.target_rate=5.0"])
+    cfg = load_config(["model.predictor.depth=2", "model.encoder.revision=abc"])
 
     assert cfg.model.predictor.depth == 2
-    assert cfg.model.encoder.target_rate == 5.0
+    assert cfg.model.encoder.revision == "abc"
 
 
 def test_unknown_override_fails():
@@ -93,7 +111,7 @@ def test_build_model_from_config():
     model = build_model(load_config([OFFLINE_ENCODER, RAW_AUDIO]))
 
     assert isinstance(model, JEPA)
-    assert isinstance(model.encoder, nn.Identity)
+    assert isinstance(model.encoder, LogMelEncoder)
     assert model.predictor is not None
     assert model.action_encoder.embed[-1].out_features == 192
 
@@ -140,7 +158,7 @@ def test_training_docs_match_the_recipe():
 def test_v2_defaults_to_egocom_and_causal_batchnorm():
     from turn_wm.models.lewm.mlp import CausalBatchNorm1d
 
-    cfg = load_config(["train=lewm_v2", "data.observation_source=mimi_cache"])
+    cfg = load_config(["train=lewm_v2", "data.observation_source=feature_cache"])
     model = build_model(cfg)
 
     assert cfg.data.dataset == "egocom"
@@ -148,3 +166,29 @@ def test_v2_defaults_to_egocom_and_causal_batchnorm():
     assert isinstance(model.pred_proj.net[1], CausalBatchNorm1d)
     assert model.predictor.position_encoding == "rope"
     assert model.predictor.pos_embedding is None
+
+
+def test_a_run_saved_before_pluggable_encoders_is_read_in_the_current_layout():
+    legacy = OmegaConf.create(
+        {
+            "data": {
+                "observation_source": "mimi_cache",
+                "mimi_cache": {"root": "/cache"},
+                "context_steps": 30,
+            },
+            "model": {
+                "encoder": {"_target_": "x.FrozenMimiEncoder", "target_rate": 10.0},
+                "projector": {"input_dim": 512},
+            },
+        }
+    )
+
+    cfg = upgrade_run_config(legacy)
+
+    assert cfg.data.observation_source == "feature_cache"
+    assert cfg.data.feature_cache.root == "/cache"
+    assert "mimi_cache" not in cfg.data
+    assert cfg.data.grid_rate_hz == 10.0  # every such run used the 10 Hz grid
+    assert cfg.feature_dim == 512
+    assert cfg.data.context_steps == 30
+    assert legacy.data.observation_source == "mimi_cache"  # the saved one is kept

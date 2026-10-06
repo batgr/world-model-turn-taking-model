@@ -295,7 +295,7 @@ def _rollout_snapshot(tmp_path, *, split="validation"):
     rollout = rollout_provenance(
         OmegaConf.create(
             {
-                "data": {"context_steps": 15},
+                "data": {"context_steps": 15, "grid_rate_hz": 10.0},
                 "prediction": {
                     "rollout_horizons": [1, 5, 10],
                     "rollout_context_size": 10,

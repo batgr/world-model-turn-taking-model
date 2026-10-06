@@ -8,8 +8,8 @@ from datasets import Dataset
 
 from turn_wm.data.collate import collate_turn_taking
 from turn_wm.data.dataset import ACTION_TO_ID, TurnTakingDataset, WindowConfig
+from turn_wm.data.feature_cache import FeatureStore
 from turn_wm.data.media import MediaIndex, MediaPaths
-from turn_wm.data.mimi_cache import MimiFeatureStore
 from turn_wm.data.reader import MediaReader, MediaWindow
 
 # A consistent cycle of (focal state, action-grid event, model action), so
@@ -69,9 +69,9 @@ def make_anchors(*anchor_indices: int) -> Dataset:
 
 
 @pytest.fixture
-def store(make_mimi_cache) -> MimiFeatureStore:
-    return MimiFeatureStore(
-        make_mimi_cache({("egocom", "r1"): (FIRST_INDEX, GRID_LENGTH)})
+def store(make_feature_cache) -> FeatureStore:
+    return FeatureStore(
+        make_feature_cache({("egocom", "r1"): (FIRST_INDEX, GRID_LENGTH)})
     )
 
 
@@ -83,7 +83,7 @@ def dataset(store, *anchor_indices, context=4, future=3, **kwargs):
             min_context_steps=context, max_context_steps=context, future_steps=future
         ),
         training=False,
-        mimi_store=store,
+        feature_store=store,
         modalities=kwargs.pop("modalities", ("audio",)),
         **kwargs,
     )
@@ -181,16 +181,16 @@ def test_a_store_requires_the_audio_modality(store):
         dataset(store, modalities=("video",))
 
 
-def test_window_outside_the_cache_is_an_error(make_mimi_cache):
+def test_window_outside_the_cache_is_an_error(make_feature_cache):
     # The cache covers fewer rows than the grid.
-    short = MimiFeatureStore(make_mimi_cache({("egocom", "r1"): (FIRST_INDEX, 12)}))
+    short = FeatureStore(make_feature_cache({("egocom", "r1"): (FIRST_INDEX, 12)}))
 
     with pytest.raises(IndexError, match="outside recording 'r1'"):
         dataset(short)[0]
 
 
-def test_recording_missing_from_the_cache_is_filtered(make_mimi_cache):
-    other = MimiFeatureStore(make_mimi_cache({("egocom", "other"): (0, 50)}))
+def test_recording_missing_from_the_cache_is_filtered(make_feature_cache):
+    other = FeatureStore(make_feature_cache({("egocom", "other"): (0, 50)}))
 
     data = dataset(other)
 

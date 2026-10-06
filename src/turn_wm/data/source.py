@@ -11,12 +11,19 @@ corpus's own grid. No PyTorch or training semantics are introduced here.
 from __future__ import annotations
 
 import json
+import math
 from dataclasses import dataclass
 from pathlib import Path
+from typing import cast
 
 import httpx
+import numpy as np
+import pyarrow as pa
 from datasets import Dataset, DatasetDict, load_dataset
 from huggingface_hub import HfApi, hf_hub_download
+
+# Grid rows read to measure the decision grid rate (`LoadedCorpus.grid_rate_hz`).
+GRID_RATE_SAMPLE_ROWS = 1000
 
 MODEL_READY_REQUIRED_COLUMNS = {
     "sample_id",
@@ -179,6 +186,46 @@ class LoadedCorpus:
     metadata: dict[str, object]
     media_manifest: Dataset | None = None
 
+    @property
+    def grid_rate_hz(self) -> float:
+        """Decision steps per second, measured on the action grid itself.
+
+        `decision_time_s` is `decision_index` steps of the grid's period. The
+        metadata's `grid.frequency_hz`, when present, must agree.
+        """
+
+        table = cast(
+            pa.Table,
+            self.action_grid.select_columns(
+                ["decision_index", "decision_time_s"]
+            ).with_format("arrow")[:GRID_RATE_SAMPLE_ROWS],
+        )
+        index = np.asarray(table["decision_index"], dtype=np.float64)
+        time = np.asarray(table["decision_time_s"], dtype=np.float64)
+        positive = index > 0
+
+        if not positive.any():
+            raise ValueError(f"{self.name!r}: the action grid has no step after t=0")
+
+        rates = index[positive] / time[positive]
+        rate = float(np.median(rates))
+
+        if not np.allclose(rates, rate, rtol=1e-6):
+            raise ValueError(f"{self.name!r}: the action grid has no regular step")
+
+        grid = self.metadata.get("grid")
+        declared = grid.get("frequency_hz") if isinstance(grid, dict) else None
+
+        if declared is not None and not math.isclose(
+            float(declared), rate, rel_tol=1e-6
+        ):
+            raise ValueError(
+                f"{self.name!r}: metadata declares a {declared} Hz grid, the action "
+                f"grid runs at {rate:g} Hz"
+            )
+
+        return float(declared) if declared is not None else round(rate, 6)
+
 
 @dataclass(frozen=True)
 class LoadedData:
@@ -195,6 +242,17 @@ class LoadedData:
     @property
     def names(self) -> tuple[str, ...]:
         return tuple(corpus.name for corpus in self.corpora)
+
+    @property
+    def grid_rate_hz(self) -> float:
+        """The decision grid rate every loaded corpus shares."""
+
+        rates = {corpus.name: corpus.grid_rate_hz for corpus in self.corpora}
+
+        if len(set(rates.values())) != 1:
+            raise ValueError(f"Corpora have different decision grid rates: {rates}")
+
+        return next(iter(rates.values()))
 
     def corpus(self, name: str) -> LoadedCorpus:
         for corpus in self.corpora:

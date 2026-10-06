@@ -60,8 +60,8 @@ def test_training_rejects_batch_of_one():
 
 
 def test_default_model_uses_causal_bn_and_layernorm_variant_is_available():
-    v1 = load_config(["model=lewm_ln", "data.observation_source=mimi_cache"])
-    v2 = load_config(["data.observation_source=mimi_cache"])
+    v1 = load_config(["model=lewm_ln", "data.observation_source=feature_cache"])
+    v2 = load_config(["data.observation_source=feature_cache"])
 
     assert not getattr(build_model(v1).projector, "expects_sequence", False)
     model = build_model(v2)
@@ -84,7 +84,7 @@ def test_learned_position_variant_keeps_positional_pred_projector_stats():
     cfg = load_config(
         [
             "model=lewm_learned_pos",
-            "data.observation_source=mimi_cache",
+            "data.observation_source=feature_cache",
         ]
     )
     model = build_model(cfg)
@@ -99,7 +99,7 @@ def test_standard_bn_config_flattens_time_for_both_projectors():
     cfg = load_config(
         [
             "model=lewm_standard_bn",
-            "data.observation_source=mimi_cache",
+            "data.observation_source=feature_cache",
         ]
     )
     model = build_model(cfg)
@@ -126,7 +126,7 @@ def test_positional_cbn_config_uses_full_v2_trajectory_for_projector():
         [
             "model=lewm_positional_cbn",
             "train=lewm_v2",
-            "data.observation_source=mimi_cache",
+            "data.observation_source=feature_cache",
         ]
     )
     model = build_model(cfg)
@@ -159,7 +159,7 @@ def test_training_projectors_preserve_prefix_and_receive_gradients():
     torch.manual_seed(19)
     cfg = load_config(
         [
-            "data.observation_source=mimi_cache",
+            "data.observation_source=feature_cache",
             "data.context_steps=4",
             "data.future_steps=3",
             "prediction.rollout_context_size=4",

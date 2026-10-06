@@ -3,11 +3,11 @@ import json
 import pytest
 import torch
 
-from turn_wm.data.mimi_cache import (
-    MimiAudioGap,
-    MimiCacheExclusion,
-    MimiFeatureRecord,
-    MimiFeatureStore,
+from turn_wm.data.feature_cache import (
+    CachedAudioGap,
+    CacheExclusion,
+    FeatureRecord,
+    FeatureStore,
     write_features,
     write_manifest,
 )
@@ -26,7 +26,7 @@ def test_mimi_features_round_trip(tmp_path):
     write_manifest(
         tmp_path,
         recordings=[
-            MimiFeatureRecord(
+            FeatureRecord(
                 dataset="synthetic",
                 recording_id="r1",
                 path=str(path.relative_to(tmp_path)),
@@ -42,7 +42,7 @@ def test_mimi_features_round_trip(tmp_path):
         feature_dim=512,
     )
 
-    store = MimiFeatureStore(tmp_path)
+    store = FeatureStore(tmp_path)
 
     result = store.get(
         dataset="synthetic",
@@ -59,7 +59,7 @@ def test_mimi_features_round_trip(tmp_path):
     )
 
 
-def test_mimi_store_rejects_out_of_bounds_slice(tmp_path):
+def test_feature_store_rejects_out_of_bounds_slice(tmp_path):
     features = torch.randn(10, 512)
 
     path = write_features(
@@ -72,7 +72,7 @@ def test_mimi_store_rejects_out_of_bounds_slice(tmp_path):
     write_manifest(
         tmp_path,
         recordings=[
-            MimiFeatureRecord(
+            FeatureRecord(
                 dataset="synthetic",
                 recording_id="r1",
                 path=str(path.relative_to(tmp_path)),
@@ -88,7 +88,7 @@ def test_mimi_store_rejects_out_of_bounds_slice(tmp_path):
         feature_dim=512,
     )
 
-    store = MimiFeatureStore(tmp_path)
+    store = FeatureStore(tmp_path)
 
     with pytest.raises(IndexError):
         store.get(
@@ -101,7 +101,7 @@ def test_mimi_store_rejects_out_of_bounds_slice(tmp_path):
 
 def test_manifest_is_deterministic(tmp_path):
     records = [
-        MimiFeatureRecord(
+        FeatureRecord(
             dataset="b",
             recording_id="r2",
             path="b/r2.safetensors",
@@ -109,7 +109,7 @@ def test_manifest_is_deterministic(tmp_path):
             start_time_s=0.0,
             start_index=0,
         ),
-        MimiFeatureRecord(
+        FeatureRecord(
             dataset="a",
             recording_id="r1",
             path="a/r1.safetensors",
@@ -150,17 +150,17 @@ def test_manifest_round_trips_sorted_gaps_and_exclusions_without_a_timestamp(
     tmp_path,
 ):
     gaps = (
-        MimiAudioGap(start_time_s=2.0, end_time_s=2.25),
-        MimiAudioGap(start_time_s=1.0, end_time_s=1.101),
+        CachedAudioGap(start_time_s=2.0, end_time_s=2.25),
+        CachedAudioGap(start_time_s=1.0, end_time_s=1.101),
     )
     exclusions = (
-        MimiCacheExclusion(
+        CacheExclusion(
             dataset="ego4d",
             recording_id="z",
             reason="audio_annotation_clock_drift",
             max_drift_s=0.525,
         ),
-        MimiCacheExclusion(
+        CacheExclusion(
             dataset="ego4d",
             recording_id="a",
             reason="audio_annotation_clock_drift",
@@ -172,7 +172,7 @@ def test_manifest_round_trips_sorted_gaps_and_exclusions_without_a_timestamp(
         write_manifest(
             tmp_path,
             recordings=[
-                MimiFeatureRecord(
+                FeatureRecord(
                     dataset="ego4d",
                     recording_id="kept",
                     path="ego4d/kept.safetensors",
@@ -216,7 +216,7 @@ def test_manifest_round_trips_sorted_gaps_and_exclusions_without_a_timestamp(
         "z",
     ]
 
-    store = MimiFeatureStore(tmp_path)
+    store = FeatureStore(tmp_path)
     assert store.recording_keys == frozenset({("ego4d", "kept")})
     assert store.record(dataset="ego4d", recording_id="kept").audio_gaps == tuple(
         reversed(gaps)
@@ -231,7 +231,7 @@ def test_store_reads_back_the_record_fields(tmp_path):
         recording_id="r1",
         features=torch.zeros(5, 512),
     )
-    record = MimiFeatureRecord(
+    record = FeatureRecord(
         dataset="synthetic",
         recording_id="r1",
         path=str(path.relative_to(tmp_path)),
@@ -251,11 +251,11 @@ def test_store_reads_back_the_record_fields(tmp_path):
     )
 
     # start_index used to be read back as a one-element tuple.
-    assert MimiFeatureStore(tmp_path)._records[("synthetic", "r1")] == record
+    assert FeatureStore(tmp_path)._records[("synthetic", "r1")] == record
 
 
-def test_get_by_index_maps_decision_indices_to_rows(make_mimi_cache):
-    store = MimiFeatureStore(make_mimi_cache({("egocom", "r1"): (100, 50)}))
+def test_get_by_index_maps_decision_indices_to_rows(make_feature_cache):
+    store = FeatureStore(make_feature_cache({("egocom", "r1"): (100, 50)}))
 
     features = store.get_by_index(
         dataset="egocom", recording_id="r1", start_index=105, end_index=108
@@ -267,8 +267,8 @@ def test_get_by_index_maps_decision_indices_to_rows(make_mimi_cache):
     assert features.dtype == torch.float16
 
 
-def test_get_by_index_covers_the_whole_recording(make_mimi_cache):
-    store = MimiFeatureStore(make_mimi_cache({("egocom", "r1"): (100, 50)}))
+def test_get_by_index_covers_the_whole_recording(make_feature_cache):
+    store = FeatureStore(make_feature_cache({("egocom", "r1"): (100, 50)}))
 
     features = store.get_by_index(
         dataset="egocom", recording_id="r1", start_index=100, end_index=150
@@ -279,8 +279,10 @@ def test_get_by_index_covers_the_whole_recording(make_mimi_cache):
 
 
 @pytest.mark.parametrize(("start", "end"), [(99, 102), (148, 151), (120, 110)])
-def test_get_by_index_rejects_rows_outside_the_recording(make_mimi_cache, start, end):
-    store = MimiFeatureStore(make_mimi_cache({("egocom", "r1"): (100, 50)}))
+def test_get_by_index_rejects_rows_outside_the_recording(
+    make_feature_cache, start, end
+):
+    store = FeatureStore(make_feature_cache({("egocom", "r1"): (100, 50)}))
 
     with pytest.raises(IndexError, match=r"covers \[100, 150\)"):
         store.get_by_index(
@@ -288,8 +290,8 @@ def test_get_by_index_rejects_rows_outside_the_recording(make_mimi_cache, start,
         )
 
 
-def test_unknown_recording_is_a_clear_error(make_mimi_cache):
-    store = MimiFeatureStore(make_mimi_cache({("egocom", "r1"): (0, 5)}))
+def test_unknown_recording_is_a_clear_error(make_feature_cache):
+    store = FeatureStore(make_feature_cache({("egocom", "r1"): (0, 5)}))
 
     with pytest.raises(KeyError, match="'ego4d', 'r1'"):
         store.get_by_index(
@@ -297,8 +299,8 @@ def test_unknown_recording_is_a_clear_error(make_mimi_cache):
         )
 
 
-def test_only_the_requested_rows_are_read(make_mimi_cache, monkeypatch):
-    from turn_wm.data import mimi_cache as module
+def test_only_the_requested_rows_are_read(make_feature_cache, monkeypatch):
+    from turn_wm.data import feature_cache as module
 
     requested = []
     real_open = module.safe_open
@@ -325,7 +327,7 @@ def test_only_the_requested_rows_are_read(make_mimi_cache, monkeypatch):
             return Slice()
 
     monkeypatch.setattr(module, "safe_open", Recording)
-    store = MimiFeatureStore(make_mimi_cache({("egocom", "r1"): (100, 5_000)}))
+    store = FeatureStore(make_feature_cache({("egocom", "r1"): (100, 5_000)}))
 
     store.get_by_index(
         dataset="egocom", recording_id="r1", start_index=200, end_index=225
@@ -334,8 +336,8 @@ def test_only_the_requested_rows_are_read(make_mimi_cache, monkeypatch):
     assert requested == [slice(100, 125)]
 
 
-def test_store_exposes_the_manifest_identity(make_mimi_cache):
-    store = MimiFeatureStore(make_mimi_cache({("egocom", "r1"): (0, 5)}, dim=64))
+def test_store_exposes_the_manifest_identity(make_feature_cache):
+    store = FeatureStore(make_feature_cache({("egocom", "r1"): (0, 5)}, dim=64))
 
     assert store.feature_dim == 64
     assert store.feature_rate_hz == 10.0
@@ -347,8 +349,8 @@ def test_store_exposes_the_manifest_identity(make_mimi_cache):
     assert store.source_dataset_revision == "rev-123"
 
 
-def test_store_keeps_read_compatibility_with_schema_v1(make_mimi_cache):
-    root = make_mimi_cache({("egocom", "r1"): (0, 5)})
+def test_store_keeps_read_compatibility_with_schema_v1(make_feature_cache):
+    root = make_feature_cache({("egocom", "r1"): (0, 5)})
     path = root / "manifest.json"
     payload = json.loads(path.read_text())
     payload["schema_version"] = 1
@@ -358,7 +360,7 @@ def test_store_keeps_read_compatibility_with_schema_v1(make_mimi_cache):
         record.pop("audio_gaps")
 
     path.write_text(json.dumps(payload))
-    store = MimiFeatureStore(root)
+    store = FeatureStore(root)
 
     assert store.schema_version == 1
     assert store.recording_keys == frozenset({("egocom", "r1")})
@@ -366,20 +368,20 @@ def test_store_keeps_read_compatibility_with_schema_v1(make_mimi_cache):
     assert store.exclusions == ()
 
 
-def test_open_mimi_cache_reads_one_cache_or_a_release(make_mimi_cache, tmp_path):
-    from turn_wm.data.mimi_cache import open_mimi_cache
+def test_open_feature_cache_reads_one_cache_or_a_release(make_feature_cache, tmp_path):
+    from turn_wm.data.feature_cache import open_feature_cache
 
-    single = open_mimi_cache(make_mimi_cache({("egocom", "r1"): (0, 5)}))
+    single = open_feature_cache(make_feature_cache({("egocom", "r1"): (0, 5)}))
     assert single.recording_keys == {("egocom", "r1")}
 
     release = tmp_path / "release"
-    make_mimi_cache({("egocom", "r1"): (0, 5)}, root=release / "egocom")
-    make_mimi_cache({("ego4d", "r1"): (100, 5)}, root=release / "ego4d")
+    make_feature_cache({("egocom", "r1"): (0, 5)}, root=release / "egocom")
+    make_feature_cache({("ego4d", "r1"): (100, 5)}, root=release / "ego4d")
     (release / "release_manifest.json").write_text(
         json.dumps({"corpora": {"egocom": {}, "ego4d": {}}})
     )
 
-    caches = open_mimi_cache(release)
+    caches = open_feature_cache(release)
 
     assert caches.recording_keys == {("egocom", "r1"), ("ego4d", "r1")}
     rows = caches.get_by_index(
@@ -389,22 +391,22 @@ def test_open_mimi_cache_reads_one_cache_or_a_release(make_mimi_cache, tmp_path)
     assert caches.record(dataset="egocom", recording_id="r1").steps == 5
 
 
-def test_open_mimi_cache_refuses_a_directory_without_manifest(tmp_path):
-    from turn_wm.data.mimi_cache import open_mimi_cache
+def test_open_feature_cache_refuses_a_directory_without_manifest(tmp_path):
+    from turn_wm.data.feature_cache import open_feature_cache
 
     with pytest.raises(FileNotFoundError, match="release_manifest.json"):
-        open_mimi_cache(tmp_path)
+        open_feature_cache(tmp_path)
 
 
-def test_a_recording_in_two_caches_is_refused(make_mimi_cache, tmp_path):
-    from turn_wm.data.mimi_cache import MimiFeatureCaches
+def test_a_recording_in_two_caches_is_refused(make_feature_cache, tmp_path):
+    from turn_wm.data.feature_cache import FeatureCaches
 
-    first = MimiFeatureStore(
-        make_mimi_cache({("egocom", "r1"): (0, 5)}, root=tmp_path / "a")
+    first = FeatureStore(
+        make_feature_cache({("egocom", "r1"): (0, 5)}, root=tmp_path / "a")
     )
-    second = MimiFeatureStore(
-        make_mimi_cache({("egocom", "r1"): (0, 5)}, root=tmp_path / "b")
+    second = FeatureStore(
+        make_feature_cache({("egocom", "r1"): (0, 5)}, root=tmp_path / "b")
     )
 
-    with pytest.raises(ValueError, match="in several Mimi caches"):
-        MimiFeatureCaches(tmp_path, [first, second])
+    with pytest.raises(ValueError, match="in several feature caches"):
+        FeatureCaches(tmp_path, [first, second])

@@ -1,8 +1,8 @@
 """
-Build the deterministic release of the per-corpus Mimi feature caches.
+Build the deterministic release of the per-corpus feature caches.
 
 A release directory holds one cache per corpus, as written by
-`turn-wm precompute-mimi`, plus a README and `release_manifest.json`:
+`turn-wm precompute-features`, plus a README and `release_manifest.json`:
 
     <release>/
         README.md
@@ -10,7 +10,7 @@ A release directory holds one cache per corpus, as written by
         <corpus>/manifest.json
         <corpus>/<corpus>/*.safetensors
 
-The manifest identifies the release exactly (Mimi settings, per-corpus source
+The manifest identifies the release exactly (encoder settings, per-corpus source
 dataset revisions and totals, the SHA-256 of every released file). It holds
 no timestamp, absolute path, user or host name, so rebuilding it from the same
 caches reproduces it byte for byte. macOS metadata files (`._*`,
@@ -26,7 +26,7 @@ from collections.abc import Mapping
 from pathlib import Path, PurePosixPath
 from typing import Any
 
-from turn_wm.data.mimi_cache import MimiFeatureStore
+from turn_wm.data.feature_cache import FeatureStore
 from turn_wm.data.source import DATASETS
 
 RELEASE_SCHEMA_VERSION = 1
@@ -67,7 +67,7 @@ def release_files(
     expected: set[str] = set()
 
     for name in corpus_names:
-        store = MimiFeatureStore(root / name)
+        store = FeatureStore(root / name)
         expected.add(f"{name}/manifest.json")
         expected.update(
             str(PurePosixPath(name) / record.path) for record in store.records
@@ -90,7 +90,7 @@ def release_files(
     return sorted(expected)
 
 
-def _mimi_settings(stores: Mapping[str, MimiFeatureStore]) -> dict[str, Any]:
+def _encoder_settings(stores: Mapping[str, FeatureStore]) -> dict[str, Any]:
     settings = {
         name: {
             "model": store.model_name,
@@ -99,14 +99,13 @@ def _mimi_settings(stores: Mapping[str, MimiFeatureStore]) -> dict[str, Any]:
             "feature_rate_hz": store.feature_rate_hz,
             "feature_dim": store.feature_dim,
             "dtype": store.dtype,
-            "alignment": store.metadata["features"]["alignment"],
         }
         for name, store in stores.items()
     }
     distinct = {json.dumps(value, sort_keys=True) for value in settings.values()}
 
     if len(distinct) != 1:
-        raise ValueError(f"Corpus caches disagree on Mimi settings: {settings}")
+        raise ValueError(f"Corpus caches disagree on encoder settings: {settings}")
 
     [value] = {json.dumps(value, sort_keys=True) for value in settings.values()}
 
@@ -115,7 +114,7 @@ def _mimi_settings(stores: Mapping[str, MimiFeatureStore]) -> dict[str, Any]:
 
 def _corpus_summary(
     name: str,
-    store: MimiFeatureStore,
+    store: FeatureStore,
     *,
     root: Path,
     source_repo: str,
@@ -167,7 +166,7 @@ def build_release_manifest(
 
     root = Path(release_root)
     files = release_files(root, corpus_names=corpus_names)
-    stores = {name: MimiFeatureStore(root / name) for name in corpus_names}
+    stores = {name: FeatureStore(root / name) for name in corpus_names}
     repos = source_repos or {name: DATASETS[name].repo_id for name in corpus_names}
     exclusions = sorted(
         (exclusion for store in stores.values() for exclusion in store.exclusions),
@@ -180,7 +179,7 @@ def build_release_manifest(
 
     return {
         "release_schema_version": RELEASE_SCHEMA_VERSION,
-        "mimi": _mimi_settings(stores),
+        "encoder": _encoder_settings(stores),
         "corpora": {
             name: _corpus_summary(name, store, root=root, source_repo=repos[name])
             for name, store in sorted(stores.items())
@@ -221,7 +220,9 @@ def write_release_manifest(
 def release_readme(manifest: Mapping[str, Any]) -> str:
     """The release card, derived from the manifest's values."""
 
-    mimi = manifest["mimi"]
+    encoder = manifest["encoder"]
+    model, dim = encoder["model"], encoder["feature_dim"]
+    rate = encoder["feature_rate_hz"]
     rows = "".join(
         f"| {name} | `{corpus['source_dataset_repo']}` | "
         f"`{corpus['source_dataset_revision']}` | {corpus['recordings']} | "
@@ -247,36 +248,33 @@ def release_readme(manifest: Mapping[str, Any]) -> str:
 
     return f"""---
 license: other
-pretty_name: Turn-taking Mimi features
+pretty_name: Turn-taking {model} features
 tags:
 - audio
 - turn-taking
 - world-model
-- mimi
 ---
 
-# Turn-taking Mimi features
+# Turn-taking {model} features
 
-Precomputed continuous [Mimi](https://huggingface.co/{mimi["model"]}) features
-for turn-taking world-model experiments, aligned to the canonical
-{mimi["feature_rate_hz"]:g} Hz turn-taking action grid of the source datasets.
-They stand in for the frozen Mimi encoder during training: no audio is decoded
-and Mimi is never loaded.
+Precomputed features of the frozen `{model}` encoder for turn-taking
+world-model experiments, aligned to the canonical {rate:g} Hz turn-taking action
+grid of the source datasets. They stand in for the encoder during training: no
+audio is decoded and the encoder is never loaded.
 
 | | |
 |---|---|
-| Model | `{mimi["model"]}` at revision `{mimi["resolved_revision"]}` |
-| Representation | continuous pre-quantization latents (encoder, encoder transformer, downsample) |
-| Encoding | causal, streamed over each whole recording with Mimi's convolution and attention caches |
-| Rate | native 12.5 Hz, {mimi["alignment"]}ly aligned to the {mimi["feature_rate_hz"]:g} Hz grid (step `k` uses the latest Mimi frame available by the end of its slot) |
-| Dimension | {mimi["feature_dim"]} |
-| Storage | {mimi["dtype"]}, one safetensors tensor `features` of shape `[steps, {mimi["feature_dim"]}]` per recording |
+| Encoder | `{model}` at revision `{encoder["resolved_revision"]}` |
+| Encoding | causal, over each whole recording |
+| Rate | {rate:g} Hz, one frame per grid step |
+| Dimension | {dim} |
+| Storage | {encoder["dtype"]}, one safetensors tensor `features` of shape `[steps, {dim}]` per recording |
 
-The world model's trainable projector ({mimi["feature_dim"]} -> 192) is **not**
-included; it is trained on top of these features:
+The world model's trainable projector ({dim} -> latent) is **not** included;
+it is trained on top of these features:
 
 ```text
-cached Mimi [T, {mimi["feature_dim"]}] -> trainable projector -> world-model latent
+cached features [T, {dim}] -> trainable projector -> world-model latent
 ```
 
 These are **model-derived features, not canonical annotations**.
@@ -288,16 +286,16 @@ These are **model-derived features, not canonical annotations**.
 {rows}
 ```text
 README.md
-release_manifest.json     Mimi settings, per-corpus totals, SHA-256 of every file
+release_manifest.json     encoder settings, per-corpus totals, SHA-256 of every file
 {layout}```
 
 Each corpus `manifest.json` lists, per recording, its `dataset`,
 `recording_id`, `path` (relative to the manifest's directory), `steps`,
 `start_index` and `start_time_s`: row `k` of a recording's tensor is its
 action-grid step `decision_index = start_index + k`, covering
-`start_time_s + k / 10` to `start_time_s + (k + 1) / 10` on the canonical
-timeline. It also records the source dataset revision and the Mimi revision
-requested and actually loaded.
+`start_time_s + k / {rate:g}` to `start_time_s + (k + 1) / {rate:g}` on the
+canonical timeline. It also records the source dataset revision and the
+encoder revision requested and actually loaded.
 
 ## Audio timeline caveats
 

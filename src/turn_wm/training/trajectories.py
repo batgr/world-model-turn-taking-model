@@ -59,7 +59,7 @@ def trajectories(batch: dict[str, Any]) -> Trajectories:
 
     if not has_features and "context_media" not in batch:
         raise ValueError(
-            "Batch has no observations; build the dataset with a mimi_store or "
+            "Batch has no observations; build the dataset with a feature_store or "
             "media_roots"
         )
 
@@ -139,10 +139,17 @@ def encode_trajectories(
     if batch.features is not None:
         features = batch.features
     else:
-        features = model.encode_features(
-            batch.waveforms,
-            sample_rate=batch.sample_rates,
-            target_length=batch.total_steps,
-        )
+        # One encoder frame per grid step: frame k is step k. Frames past the
+        # last step come from end padding of shorter windows.
+        assert batch.waveforms is not None and batch.sample_rates is not None
+        features = model.encode_features(batch.waveforms, batch.sample_rates)
+
+        if features.size(1) < batch.total_steps:
+            raise ValueError(
+                f"The encoder gave {features.size(1)} frames for "
+                f"{batch.total_steps} grid steps of audio"
+            )
+
+        features = features[:, : batch.total_steps]
 
     return features, model.project_features(features)

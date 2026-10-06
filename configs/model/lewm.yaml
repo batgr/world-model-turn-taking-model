@@ -1,10 +1,10 @@
-_target_: turn_wm.models.lewm.jepa.JEPA
+# The frozen audio encoder is a config group: model/encoder=mimi (default) or
+# logmel; each sets `model.encoder` and the root `feature_dim` the projector takes.
+defaults:
+  - encoder: mimi
+  - _self_
 
-encoder:
-  _target_: turn_wm.models.encoders.mimi.FrozenMimiEncoder
-  model_name: kyutai/mimi
-  # Mimi's 12.5 Hz features are aligned to the 10 Hz action grid.
-  target_rate: 10.0
+_target_: turn_wm.models.lewm.jepa.JEPA
 
 predictor:
   _target_: turn_wm.models.lewm.predictor.ARPredictor
@@ -32,7 +32,7 @@ action_encoder:
 
 projector:
   _target_: turn_wm.models.lewm.mlp.MLP
-  input_dim: 512
+  input_dim: ${feature_dim}
   output_dim: ${embed_dim}
   hidden_dim: 2048
   # Normalize across examples at each time step without mixing future positions.

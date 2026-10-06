@@ -1,4 +1,4 @@
-"""Dataset inspection and Mimi precomputation commands."""
+"""Dataset inspection and encoder feature precomputation commands."""
 
 from __future__ import annotations
 
@@ -18,8 +18,10 @@ from huggingface_hub.errors import (
     RepositoryNotFoundError,
 )
 
+from turn_wm.config import CONFIG_DIR
 from turn_wm.data.build import build_dataset
 from turn_wm.data.dataset import WindowConfig
+from turn_wm.data.feature_precompute import RecordingSpan, precompute_features
 from turn_wm.data.loader import DataLoaderConfig, build_dataloader
 from turn_wm.data.media import (
     MEDIA_MODALITIES,
@@ -27,9 +29,9 @@ from turn_wm.data.media import (
     MediaModality,
     validate_modalities,
 )
-from turn_wm.data.mimi_precompute import RecordingSpan, precompute_mimi_cache
 from turn_wm.data.source import DATASETS, HuggingFaceSource, LoadedData, load_data
 from turn_wm.data.summary import format_summary
+from turn_wm.models.encoders.base import Encoder
 from turn_wm.progress import log, progress
 
 SPLITS = ("train", "validation", "test")
@@ -39,19 +41,25 @@ _ROOT_NAME = re.compile(r"^[A-Za-z0-9_-]+$")
 
 def add_data_commands(commands: argparse._SubParsersAction) -> None:
     _add_inspect_data(commands)
-    _add_precompute_mimi(commands)
+    _add_precompute_features(commands)
 
 
-def _add_precompute_mimi(commands: argparse._SubParsersAction) -> None:
+def _add_precompute_features(commands: argparse._SubParsersAction) -> None:
     precompute = commands.add_parser(
-        "precompute-mimi",
-        help="Precompute frozen Mimi features for every recording.",
+        "precompute-features",
+        help="Precompute a frozen encoder's features for every recording.",
         description=(
-            "Encode every recording of a published dataset with frozen Mimi "
-            "from local raw media, align the features to the 10 Hz action "
-            "grid and write one safetensors file per recording plus "
-            "manifest.json."
+            "Encode every recording of a published dataset with a frozen "
+            "encoder (configs/model/encoder) from local raw media, align the "
+            "features to the dataset's decision grid and write one "
+            "safetensors file per recording plus manifest.json."
         ),
+    )
+    precompute.add_argument(
+        "--encoder",
+        choices=ENCODERS,
+        default="mimi",
+        help="Encoder config in configs/model/encoder (default: %(default)s).",
     )
     precompute.add_argument(
         "--dataset",
@@ -79,81 +87,114 @@ def _add_precompute_mimi(commands: argparse._SubParsersAction) -> None:
     precompute.add_argument(
         "--device",
         default="cpu",
-        help="Torch device for Mimi, e.g. cpu, cuda, mps (default: cpu).",
+        help="Torch device for the encoder, e.g. cpu, cuda, mps (default: cpu).",
     )
     precompute.add_argument(
         "--chunk-seconds",
         type=_positive_float,
         default=20.0,
         help=(
-            "Audio streamed through Mimi per call, rounded down to whole Mimi "
-            "frames; features do not depend on it (default: %(default)s)."
+            "Audio per call for encoders that stream (Mimi: rounded down to "
+            "whole frames); features do not depend on it (default: %(default)s)."
         ),
     )
     precompute.add_argument(
-        "--model",
-        default="kyutai/mimi",
-        help="Mimi checkpoint on the Hub (default: %(default)s).",
+        "overrides",
+        nargs="*",
+        metavar="KEY=VALUE",
+        help=(
+            "Hydra overrides of the encoder config, e.g. "
+            "model.encoder.revision=<commit SHA> to pin Mimi's weights."
+        ),
     )
-    precompute.add_argument(
-        "--revision",
-        help="Mimi revision to pin, ideally a commit SHA (default: latest).",
-    )
-    precompute.set_defaults(handler=_precompute_mimi)
+    precompute.set_defaults(handler=_precompute_features)
 
 
-def _precompute_mimi(
+def _precompute_features(
     args: argparse.Namespace,
     parser: argparse.ArgumentParser,
 ) -> int:
     start = time.perf_counter()
-    log(f"precompute-mimi: dataset {args.dataset}")
+    log(f"precompute-features: dataset {args.dataset}")
     data = _load(DATASETS[args.dataset])
     media_roots = _media_roots(data, args.media_root)
-    log(f"precompute-mimi: device {args.device}, model {args.model}")
-    log(f"precompute-mimi: output {args.output}")
+    encoder = _encoder(args.encoder, args.overrides, data, parser)
+    log(
+        f"precompute-features: device {args.device}, encoder {encoder.name} "
+        f"({encoder.frame_rate:g} Hz frames)"
+    )
+    log(f"precompute-features: output {args.output}")
 
-    with progress(desc="precompute-mimi", unit="recording") as bar:
+    with progress(desc="precompute-features", unit="recording") as bar:
 
         def report(index: int, total: int, span: RecordingSpan) -> None:
             # Called before each recording: the ones before it are done.
             if bar.total is None:
-                log(f"precompute-mimi: {total} recordings")
+                log(f"precompute-features: {total} recordings")
                 bar.total = total
 
             bar.n = index - 1
             bar.set_postfix_str(f"{span.dataset} / {span.recording_id}")
 
         try:
-            manifest_path = precompute_mimi_cache(
+            manifest_path = precompute_features(
                 data,
+                encoder=encoder,
                 media_roots=media_roots,
                 output_root=args.output,
-                model_name=args.model,
-                model_revision=args.revision,
                 chunk_seconds=args.chunk_seconds,
                 device=args.device,
                 progress=report,
             )
         except (ValueError, OSError) as error:
             # Output not empty, missing media or root, inconsistent grid or
-            # audio, or a Mimi model/revision the Hub cannot provide.
+            # audio, or encoder weights the Hub cannot provide.
             raise SystemExit(f"turn-wm: error: {error}") from error
 
         bar.n = bar.total or 0
         bar.refresh()
 
-    log(f"precompute-mimi: done in {time.perf_counter() - start:.0f}s")
+    log(f"precompute-features: done in {time.perf_counter() - start:.0f}s")
     manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
     features = manifest["features"]
 
-    print(f"Mimi cache written to {manifest_path.parent}")
+    print(f"Feature cache written to {manifest_path.parent}")
     print(f"manifest: {manifest_path}")
     print(f"recordings: {len(manifest['recordings'])}")
     print(f"feature rate: {features['rate_hz']:g} Hz")
     print(f"feature dim: {features['dim']}")
 
     return 0
+
+
+ENCODERS = tuple(
+    sorted(path.stem for path in (CONFIG_DIR / "model" / "encoder").glob("*.yaml"))
+)
+"""The encoder configs `--encoder` offers."""
+
+
+def _encoder(
+    name: str,
+    overrides: list[str],
+    data: LoadedData,
+    parser: argparse.ArgumentParser,
+) -> Encoder:
+    """The `name` encoder, which must run at the decision grid rate of `data`."""
+
+    from turn_wm.config import load_config
+    from turn_wm.models.build import build_encoder
+
+    try:
+        cfg = load_config(
+            [
+                f"model/encoder={name}",
+                f"data.grid_rate_hz={data.grid_rate_hz}",
+                *overrides,
+            ]
+        )
+        return build_encoder(cfg)
+    except (ValueError, TypeError, OSError) as error:
+        parser.error(str(error))
 
 
 def _add_inspect_data(commands: argparse._SubParsersAction) -> None:

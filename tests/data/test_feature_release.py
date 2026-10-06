@@ -4,13 +4,13 @@ from dataclasses import replace
 
 import pytest
 
-from turn_wm.data.mimi_cache import (
-    MimiAudioGap,
-    MimiCacheExclusion,
-    MimiFeatureStore,
+from turn_wm.data.feature_cache import (
+    CachedAudioGap,
+    CacheExclusion,
+    FeatureStore,
     write_manifest,
 )
-from turn_wm.data.mimi_release import (
+from turn_wm.data.feature_release import (
     build_release_manifest,
     release_files,
     write_release,
@@ -24,24 +24,24 @@ def sha256(path) -> str:
 
 
 @pytest.fixture
-def release(make_mimi_cache, tmp_path):
+def release(make_feature_cache, tmp_path):
     """EgoCom-like cache and an Ego4D-like one with a gap and an exclusion."""
 
     root = tmp_path / "release"
-    make_mimi_cache({("egocom", "r1"): (0, 20)}, root=root / "egocom")
-    ego4d_root = make_mimi_cache(
+    make_feature_cache({("egocom", "r1"): (0, 20)}, root=root / "egocom")
+    ego4d_root = make_feature_cache(
         {("ego4d", "kept"): (10, 30)},
         root=root / "ego4d",
         source_dataset_revision="rev-full",
     )
-    store = MimiFeatureStore(ego4d_root)
+    store = FeatureStore(ego4d_root)
     [record] = store.records
     write_manifest(
         ego4d_root,
         recordings=[
             replace(
                 record,
-                audio_gaps=(MimiAudioGap(start_time_s=1.0, end_time_s=1.25),),
+                audio_gaps=(CachedAudioGap(start_time_s=1.0, end_time_s=1.25),),
             )
         ],
         model_name=store.model_name,
@@ -51,7 +51,7 @@ def release(make_mimi_cache, tmp_path):
         feature_rate_hz=store.feature_rate_hz,
         feature_dim=store.feature_dim,
         excluded_recordings=(
-            MimiCacheExclusion(
+            CacheExclusion(
                 dataset="ego4d",
                 recording_id="excluded",
                 reason="audio_annotation_clock_drift",
@@ -63,18 +63,17 @@ def release(make_mimi_cache, tmp_path):
     return root
 
 
-def test_manifest_identifies_mimi_corpora_and_every_file(release):
+def test_manifest_identifies_the_encoder_corpora_and_every_file(release):
     payload = build_release_manifest(release, source_repos=REPOS)
 
     assert payload["release_schema_version"] == 1
-    assert payload["mimi"] == {
+    assert payload["encoder"] == {
         "model": "kyutai/mimi",
         "requested_revision": "requested-sha",
         "resolved_revision": "resolved-sha",
         "feature_rate_hz": 10.0,
         "feature_dim": 512,
         "dtype": "float16",
-        "alignment": "causal",
     }
 
     egocom = payload["corpora"]["egocom"]
@@ -135,17 +134,17 @@ def test_unexpected_files_are_refused(release, stray):
 
 
 def test_missing_feature_file_is_refused(release):
-    [record] = MimiFeatureStore(release / "egocom").records
+    [record] = FeatureStore(release / "egocom").records
     (release / "egocom" / record.path).unlink()
 
     with pytest.raises(ValueError, match="missing"):
         build_release_manifest(release, source_repos=REPOS)
 
 
-def test_corpora_must_share_mimi_settings(release, make_mimi_cache):
-    make_mimi_cache({("ego4d", "kept"): (10, 30)}, root=release / "ego4d", dim=256)
+def test_corpora_must_share_encoder_settings(release, make_feature_cache):
+    make_feature_cache({("ego4d", "kept"): (10, 30)}, root=release / "ego4d", dim=256)
 
-    with pytest.raises(ValueError, match="disagree on Mimi settings"):
+    with pytest.raises(ValueError, match="disagree on encoder settings"):
         build_release_manifest(release, source_repos=REPOS)
 
 
@@ -155,11 +154,10 @@ def test_readme_documents_the_release(release):
 
     for expected in (
         "kyutai/mimi` at revision `resolved-sha`",
-        "continuous pre-quantization latents",
-        "native 12.5 Hz",
+        "10 Hz, one frame per grid step",
         "| 512 |",
         "float16",
-        "is **not**\nincluded",
+        "is **not** included",
         "model-derived features, not canonical annotations",
         "`org/egocom` | `rev-123`",
         "`org/full` | `rev-full`",

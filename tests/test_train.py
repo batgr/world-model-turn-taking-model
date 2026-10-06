@@ -14,7 +14,7 @@ from lightning.pytorch.callbacks import (
 from omegaconf import OmegaConf
 
 from turn_wm.config import load_config
-from turn_wm.data.mimi_cache import MimiFeatureCaches
+from turn_wm.data.feature_cache import FeatureCaches
 from turn_wm.data.source import DATASETS
 from turn_wm.training import datamodule as datamodule_module
 from turn_wm.training import train as train_module
@@ -57,6 +57,7 @@ class Recorder:
         return SimpleNamespace(
             names=("egocom", "ego4d"),
             revision="rev-123",
+            grid_rate_hz=10.0,
             corpora=(fake_corpus("egocom"), fake_corpus("ego4d")),
         )
 
@@ -484,7 +485,7 @@ def test_write_metadata_records_the_run(tmp_path):
         "git": git,
         "dataset": "full",
         "dataset_revision": "rev-123",
-        "observation_source": "mimi_cache",
+        "observation_source": "feature_cache",
     }
 
 
@@ -515,8 +516,8 @@ def test_run_writes_config_and_metadata_into_its_run_directory(
 def run_cached(cache_root, *overrides, media_roots=None):
     cfg = load_config(
         [
-            "data.observation_source=mimi_cache",
-            f"data.mimi_cache.root={cache_root}",
+            "data.observation_source=feature_cache",
+            f"data.feature_cache.root={cache_root}",
             *overrides,
         ]
     )
@@ -528,17 +529,17 @@ BOTH = {("egocom", "r1"): (0, GRID_STEPS), ("ego4d", "r1"): (0, GRID_STEPS)}
 
 
 @pytest.fixture
-def cache_root(make_mimi_cache):
-    return make_mimi_cache(BOTH)
+def cache_root(make_feature_cache):
+    return make_feature_cache(BOTH)
 
 
 @pytest.fixture
-def release_root(make_mimi_cache, tmp_path):
+def release_root(make_feature_cache, tmp_path):
     """A release: one cache per corpus, as uploaded to the Hub."""
 
     root = tmp_path / "release"
-    make_mimi_cache({("egocom", "r1"): (0, GRID_STEPS)}, root=root / "egocom")
-    make_mimi_cache({("ego4d", "r1"): (0, GRID_STEPS)}, root=root / "ego4d")
+    make_feature_cache({("egocom", "r1"): (0, GRID_STEPS)}, root=root / "egocom")
+    make_feature_cache({("ego4d", "r1"): (0, GRID_STEPS)}, root=root / "ego4d")
     (root / "release_manifest.json").write_text(
         json.dumps({"corpora": {"egocom": {}, "ego4d": {}}})
     )
@@ -554,8 +555,8 @@ def test_cached_run_needs_no_media_roots(recorder, cache_root, monkeypatch):
     for call in recorder.dataset_calls:
         assert call["media_roots"] is None
         assert call["modalities"] == ("audio",)
-        assert isinstance(call["mimi_store"], MimiFeatureCaches)
-        assert call["mimi_store"].root == cache_root
+        assert isinstance(call["feature_store"], FeatureCaches)
+        assert call["feature_store"].root == cache_root
 
     assert recorder.events[-1] == "fit"
 
@@ -563,7 +564,7 @@ def test_cached_run_needs_no_media_roots(recorder, cache_root, monkeypatch):
 def test_raw_run_passes_no_store(recorder, media_roots):
     run(media_roots)
 
-    assert all(call["mimi_store"] is None for call in recorder.dataset_calls)
+    assert all(call["feature_store"] is None for call in recorder.dataset_calls)
 
 
 def test_cached_run_still_needs_media_for_other_modalities(
@@ -576,9 +577,9 @@ def test_cached_run_still_needs_media_for_other_modalities(
 
 
 def test_cached_run_requires_a_cache_root(recorder, tmp_path):
-    cfg = load_config(["data.observation_source=mimi_cache"])
+    cfg = load_config(["data.observation_source=feature_cache"])
 
-    with pytest.raises(ValueError, match="data.mimi_cache.root is required"):
+    with pytest.raises(ValueError, match="data.feature_cache.root is required"):
         train_module.run(cfg)
 
     assert recorder.events == []
@@ -600,28 +601,29 @@ def test_missing_cache_is_a_clear_error(recorder, tmp_path):
 
 
 def test_a_release_root_serves_every_corpus(recorder, release_root):
-    # data.mimi_cache.root may be the release root downloaded from the Hub.
+    # data.feature_cache.root may be the release root downloaded from the Hub.
     run_cached(release_root)
 
     [store] = {
-        id(call["mimi_store"]): call["mimi_store"] for call in recorder.dataset_calls
+        id(call["feature_store"]): call["feature_store"]
+        for call in recorder.dataset_calls
     }.values()
     assert store.recording_keys == {("egocom", "r1"), ("ego4d", "r1")}
     assert len(store.stores) == 2
     assert recorder.events[-1] == "fit"
 
 
-def test_same_grid_from_another_revision_is_accepted(recorder, make_mimi_cache):
+def test_same_grid_from_another_revision_is_accepted(recorder, make_feature_cache):
     # E.g. the EgoCom cache built from the public repository, used by `full`.
-    root = make_mimi_cache(BOTH, source_dataset_revision="public-rev")
+    root = make_feature_cache(BOTH, source_dataset_revision="public-rev")
 
     run_cached(root)
 
     assert recorder.events[-1] == "fit"
 
 
-def test_cache_without_a_recorded_revision_is_accepted(recorder, make_mimi_cache):
-    run_cached(make_mimi_cache(BOTH, source_dataset_revision=None))
+def test_cache_without_a_recorded_revision_is_accepted(recorder, make_feature_cache):
+    run_cached(make_feature_cache(BOTH, source_dataset_revision=None))
 
     assert recorder.events[-1] == "fit"
 
@@ -644,9 +646,9 @@ def test_cache_without_a_recorded_revision_is_accepted(recorder, make_mimi_cache
     ],
 )
 def test_cache_of_another_grid_is_refused(
-    recorder, make_mimi_cache, tmp_path, recordings, message
+    recorder, make_feature_cache, tmp_path, recordings, message
 ):
-    root = make_mimi_cache(recordings, source_dataset_revision="old")
+    root = make_feature_cache(recordings, source_dataset_revision="old")
 
     with pytest.raises(ValueError, match=message):
         run_cached(root)
@@ -655,8 +657,8 @@ def test_cache_of_another_grid_is_refused(
     assert run_dirs(tmp_path) == []
 
 
-def test_cache_missing_a_loaded_corpus_is_refused(recorder, make_mimi_cache):
-    root = make_mimi_cache({("egocom", "r1"): (0, GRID_STEPS)})
+def test_cache_missing_a_loaded_corpus_is_refused(recorder, make_feature_cache):
+    root = make_feature_cache({("egocom", "r1"): (0, GRID_STEPS)})
 
     with pytest.raises(ValueError, match="no features for corpus 'ego4d'"):
         run_cached(root)
@@ -669,8 +671,8 @@ def test_cache_missing_a_loaded_corpus_is_refused(recorder, make_mimi_cache):
         ({"dim": 256}, "256-d features; model.projector.input_dim is 512"),
     ],
 )
-def test_incompatible_cache_is_refused(recorder, make_mimi_cache, cache, message):
-    root = make_mimi_cache({("egocom", "r1"): (0, 5)}, **cache)
+def test_incompatible_cache_is_refused(recorder, make_feature_cache, cache, message):
+    root = make_feature_cache({("egocom", "r1"): (0, 5)}, **cache)
 
     with pytest.raises(ValueError, match=message):
         run_cached(root)
@@ -682,8 +684,8 @@ def test_cached_run_records_the_cache_in_metadata(recorder, cache_root, tmp_path
     [run_dir] = run_dirs(tmp_path)
     metadata = json.loads((run_dir / "metadata.json").read_text())
 
-    assert metadata["observation_source"] == "mimi_cache"
-    assert metadata["mimi_cache"] == {
+    assert metadata["observation_source"] == "feature_cache"
+    assert metadata["feature_cache"] == {
         "root": str(cache_root),
         "caches": {
             "ego4d,egocom": {
@@ -706,7 +708,7 @@ def test_raw_run_records_its_observation_source(recorder, media_roots, tmp_path)
     metadata = json.loads((run_dir / "metadata.json").read_text())
 
     assert metadata["observation_source"] == "raw_audio"
-    assert "mimi_cache" not in metadata
+    assert "feature_cache" not in metadata
 
 
 def test_learning_rate_is_monitored_when_a_logger_is_active(

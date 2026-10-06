@@ -497,7 +497,7 @@ def test_signal_is_recovered_and_noise_stays_at_the_reference(tmp_path, snapshot
         "## Future conversational state",
         "## Within-domain representation",
         "## Cross-domain transfer",
-        "## Mimi vs WM representation",
+        "## Encoder vs WM representation",
         "## What this does NOT show",
         "## Metric hypotheses",
         "## Literature questions",
@@ -800,7 +800,8 @@ def test_selected_regularization_is_recorded_and_shared_by_settings(
     assert "smaller values mean stronger L2 regularization" in report
     assert "| ego speaking | egocom | WM latent | logistic | C=" in report
     assert (
-        "| silence duration | ego4d + egocom | Mimi features | ridge | alpha=" in report
+        "| silence duration | ego4d + egocom | encoder features | ridge | alpha="
+        in report
     )
     assert "4/5 |" in report
 
@@ -831,7 +832,7 @@ def test_progress_is_shown_and_changes_no_result(
     stderr = capsys.readouterr().err
     # A bar over fits, and one line per fitted probe with its selection.
     assert "probes" in stderr and "fit" in stderr
-    assert "ego speaking | trained on egocom | Mimi features: C=" in stderr
+    assert "ego speaking | trained on egocom | encoder features: C=" in stderr
     assert "(4/5 folds)" in stderr
     assert f"probes: probe-train {snapshots[0]} (" in stderr
     assert f"probes: validation {snapshots[1]} (" in stderr

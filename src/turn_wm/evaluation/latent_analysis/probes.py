@@ -1,5 +1,5 @@
 """
-Linear probes of a run's representations: Mimi `features` and the V1
+Linear probes of a run's representations: encoder `features` and the V1
 projector's `latent`, both from `extract-latents` snapshots of one checkpoint.
 
 Questions:
@@ -741,7 +741,7 @@ def _context(classes, snapshots: Mapping[str, ProbeData]) -> dict[str, Any]:
 # Display names (progress lines, figures and report)
 # ---------------------------------------------------------------------------
 
-REPRESENTATION_NAMES = {FEATURES: "Mimi features", LATENT: "WM latent"}
+REPRESENTATION_NAMES = {FEATURES: "encoder features", LATENT: "WM latent"}
 
 
 TASK_LABELS = {

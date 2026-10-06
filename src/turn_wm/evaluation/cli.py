@@ -126,9 +126,9 @@ def _add_run_options(
         help="Torch device, e.g. cpu, cuda, mps (default: %(default)s).",
     )
     command.add_argument(
-        "--mimi-cache-root",
+        "--feature-cache-root",
         type=Path,
-        help="Where the run's Mimi cache now lives, if it moved.",
+        help="Where the run's feature cache now lives, if it moved.",
     )
     command.add_argument(
         "--output",
@@ -226,7 +226,7 @@ def _extract_latents(
             batch_size=args.batch_size,
             num_workers=args.num_workers,
             device=args.device,
-            mimi_cache_root=args.mimi_cache_root,
+            feature_cache_root=args.feature_cache_root,
         )
     except (ValueError, FileNotFoundError) as error:
         # Not a run directory, edited config, other data revision or cache,
@@ -386,7 +386,7 @@ def _extract_rollouts(
             batch_size=args.batch_size,
             num_workers=args.num_workers,
             device=args.device,
-            mimi_cache_root=args.mimi_cache_root,
+            feature_cache_root=args.feature_cache_root,
         )
     except (ValueError, FileNotFoundError) as error:
         raise SystemExit(f"turn-wm: error: {error}") from error
@@ -497,7 +497,7 @@ def _extract_action_ablation(
             batch_size=args.batch_size,
             num_workers=args.num_workers,
             device=args.device,
-            mimi_cache_root=args.mimi_cache_root,
+            feature_cache_root=args.feature_cache_root,
         )
     except (ValueError, FileNotFoundError, RuntimeError) as error:
         raise SystemExit(f"turn-wm: error: {error}") from error
@@ -561,7 +561,7 @@ def _add_probe_latents(commands: argparse._SubParsersAction) -> None:
         description=(
             "Fit linear probes (logistic for categorical labels, ridge for "
             "continuous ones) on a train-split snapshot and evaluate them on a "
-            "validation-split snapshot of the same checkpoint, for the Mimi "
+            "validation-split snapshot of the same checkpoint, for the encoder "
             "features and the WM latent: pooled, within and across corpora. "
             "Refuses shared recordings and the test split."
         ),
@@ -608,7 +608,7 @@ def _add_probe_concepts(commands: argparse._SubParsersAction) -> None:
         "probe-concepts",
         help="Linear probes of vocal, multi-party, social and unrelated concepts.",
         description=(
-            "Probe the Mimi features and the WM latent for concepts beyond the "
+            "Probe the encoder features and the WM latent for concepts beyond the "
             "current conversational state: vocal activity, multi-party "
             "structure, social signals and information unrelated to the "
             "conversation. Concepts that vary within a recording are fitted on "

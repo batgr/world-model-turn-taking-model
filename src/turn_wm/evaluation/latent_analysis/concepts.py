@@ -3,7 +3,7 @@ Concept probes: what the frozen representations keep linearly accessible
 beyond the current conversational state.
 
 Question: besides who speaks now (`probes.py`), which information do the
-Mimi features and the WM latent keep in a linearly accessible form, along
+encoder features and the WM latent keep in a linearly accessible form, along
 four axes?
 
 - vocal activity: how many voices are active now, whether another
@@ -15,7 +15,7 @@ four axes?
 - information unrelated to the conversation: background fan or music
   (EgoCom), the wearer's speech rate in words per second (EgoCom).
 
-The latent is a per-frame projection of the Mimi features: it cannot hold
+The latent is a per-frame projection of the encoder features: it cannot hold
 information the features lack. A score difference measures what the
 projector keeps linearly accessible, not what it adds. A successful probe
 supports "the information is linearly accessible", not "the world model
