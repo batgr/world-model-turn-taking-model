@@ -434,7 +434,7 @@ def label_report(summary: Mapping[str, Any]) -> str:
             f"(largest difference {alignment['max_abs_time_difference_s']:.2g} s, "
             f"tolerance {alignment['time_tolerance_s']:g} s). No nearest-neighbour "
             "matching is used. Label reference instant: the end of the anchor's "
-            "100 ms cell, i.e. the last instant the representation has observed."
+            "grid cell, i.e. the last instant the representation has observed."
         ),
         "",
         "| variable | corpus | snapshot rows | joined | valid | coverage |",

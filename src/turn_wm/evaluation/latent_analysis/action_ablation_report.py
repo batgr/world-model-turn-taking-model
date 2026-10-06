@@ -317,7 +317,7 @@ def rollout_figure(summary: Mapping[str, Any]) -> Figure:
     axes[0][0].legend(frameon=False, fontsize=8, labelcolor=SECONDARY_INK)
     figure.suptitle(
         "Rollout under observed, state-preserving and shuffled future actions "
-        "(95% paired recording bootstrap; at 0.1 s no future token is read)",
+        "(95% paired recording bootstrap; at one step no future token is read)",
         color=INK,
         fontsize=10,
         x=0.02,
@@ -581,7 +581,7 @@ def ablation_report(summary: Mapping[str, Any]) -> str:
             f"Unchanged in every condition: {ablation['unchanged']}.",
             "",
             (
-                f"**Integrity check (0.1 s, no future token read):** maximum absolute "
+                f"**Integrity check (one step, no future token read):** maximum absolute "
                 f"difference between conditions = "
                 f"{integrity.get('max_abs_difference_between_conditions')} — "
                 f"{'passed' if integrity.get('passed') else 'FAILED'}."
