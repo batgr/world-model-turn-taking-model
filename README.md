@@ -10,38 +10,16 @@ the floor.
 
 ## Data
 
-Inspect the structure of the first batch built from a dataset. This loads the
-dataset through the same data package used for training:
-
-```bash
-uv run turn-wm inspect-data --dataset dataset
-uv run turn-wm inspect-data --dataset dataset --split validation --batch-size 4
-```
-
-`--dataset full` loads every configured corpus into one dataset; a split
-includes only the corpora that publish it. The same releases on a 12.5 Hz grid
-(80 ms steps, one per Mimi frame) are `egocom_12.5hz`, `ego4d_12.5hz` and
-`full_12.5hz`; train on them with `data.grid_rate_hz=12.5` and step counts in
-80 ms steps. Add `--shuffle` to inspect a
-seeded shuffled mixed-corpus batch.
-
-```bash
-uv run turn-wm inspect-data --dataset full --batch-size 8 --shuffle
-```
-
-In code, one or many corpora go through the same path:
+Runs load the Hugging Face releases listed in `turn_wm.data.source.DATASETS`
+(`data.dataset`): `egocom` (public), `ego4d` and `full` (private, both
+corpora) on the 10 Hz grid, and `egocom_12.5hz`, `ego4d_12.5hz`, `full_12.5hz`
+on a 12.5 Hz grid (80 ms steps, one per Mimi frame; train them with
+`data.grid_rate_hz=12.5`). A split includes only the corpora that publish it.
 
 ```python
 loaded = load_data(DATASETS["full"])
 dataset = build_dataset(loaded, split="train", window=WindowConfig(), training=True)
 loader = build_dataloader(dataset, loader=DataLoaderConfig(batch_size=32))
-```
-
-Raw media is not downloaded automatically. To decode it from a local copy,
-pass the root directory referenced by the dataset's media manifest:
-
-```bash
-uv run turn-wm inspect-data --dataset dataset --batch-size 1 --media-root /path/to/media
 ```
 
 ## Model

@@ -1,14 +1,8 @@
 import pytest
 import torch
-from torch.utils.data import (
-    Dataset,
-    RandomSampler,
-    SequentialSampler,
-    WeightedRandomSampler,
-)
+from torch.utils.data import Dataset, RandomSampler, SequentialSampler
 
 from turn_wm.data.loader import DataLoaderConfig, build_dataloader
-from turn_wm.data.sampling import SamplingConfig
 
 
 class FakeTurnTakingDataset(Dataset):
@@ -45,25 +39,9 @@ class FakeTurnTakingDataset(Dataset):
 def test_training_natural_sampling_uses_shuffle():
     dataset = FakeTurnTakingDataset(training=True)
 
-    loader = build_dataloader(
-        dataset,
-        loader=DataLoaderConfig(batch_size=2),
-        sampling=SamplingConfig(strategy="natural"),
-    )
+    loader = build_dataloader(dataset, loader=DataLoaderConfig(batch_size=2))
 
     assert isinstance(loader.sampler, RandomSampler)
-
-
-def test_training_balanced_sampling_uses_weighted_sampler():
-    dataset = FakeTurnTakingDataset(training=True)
-
-    loader = build_dataloader(
-        dataset,
-        loader=DataLoaderConfig(batch_size=2),
-        sampling=SamplingConfig(strategy="balanced"),
-    )
-
-    assert isinstance(loader.sampler, WeightedRandomSampler)
 
 
 def test_evaluation_uses_sequential_sampling():
@@ -72,17 +50,6 @@ def test_evaluation_uses_sequential_sampling():
     loader = build_dataloader(dataset, loader=DataLoaderConfig(batch_size=2))
 
     assert isinstance(loader.sampler, SequentialSampler)
-
-
-def test_balanced_sampling_is_rejected_for_evaluation():
-    dataset = FakeTurnTakingDataset(training=False)
-
-    with pytest.raises(ValueError, match="only valid during training"):
-        build_dataloader(
-            dataset,
-            loader=DataLoaderConfig(),
-            sampling=SamplingConfig(strategy="balanced"),
-        )
 
 
 def test_loader_produces_padded_batch():

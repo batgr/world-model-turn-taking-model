@@ -84,12 +84,6 @@ class CorpusConfig:
     action_grid_config: str
     media_manifest_config: str | None = None
     metadata_file: str = "metadata.json"
-    # Directory of the corpus's files in the repository (its action grid).
-    data_dir: str = "data"
-
-    @property
-    def action_grid_file(self) -> str:
-        return f"{self.data_dir}/action_grid.parquet"
 
 
 @dataclass(frozen=True)
@@ -110,20 +104,6 @@ class HuggingFaceSource:
             raise ValueError(f"Duplicate corpus names in source: {names}")
 
 
-@dataclass(frozen=True)
-class LocalSource:
-    """Local model-ready and action-grid artifacts for one corpus."""
-
-    model_ready_dir: Path
-    action_grid_file: Path
-    metadata_file: Path | None = None
-    media_manifest_file: Path | None = None
-    name: str = "local"
-
-
-type DataSource = HuggingFaceSource | LocalSource
-
-
 def _private_corpus(name: str) -> CorpusConfig:
     return CorpusConfig(
         name=name,
@@ -131,7 +111,6 @@ def _private_corpus(name: str) -> CorpusConfig:
         action_grid_config=f"{name}_action_grid",
         media_manifest_config=f"{name}_media_manifest",
         metadata_file=f"{name}/metadata.json",
-        data_dir=name,
     )
 
 
@@ -268,13 +247,10 @@ class LoadedData:
         raise KeyError(f"No corpus {name!r}; loaded: {list(self.names)}")
 
 
-def load_data(source: DataSource) -> LoadedData:
-    """Load a dataset source and validate its modelling contract."""
+def load_data(source: HuggingFaceSource) -> LoadedData:
+    """Load a published release and validate its modelling contract."""
 
-    if isinstance(source, HuggingFaceSource):
-        data = _load_huggingface(source)
-    else:
-        data = LoadedData(corpora=(_load_local(source),))
+    data = _load_huggingface(source)
 
     for corpus in data.corpora:
         _validate_model_ready(corpus.model_ready, corpus=corpus.name)
@@ -344,60 +320,6 @@ def _resolve_revision(source: HuggingFaceSource) -> str | None:
         return source.revision
 
     return info.sha or source.revision
-
-
-def _load_local(source: LocalSource) -> LoadedCorpus:
-    split_files = {}
-
-    for split in ("train", "validation", "test"):
-        path = source.model_ready_dir / f"{split}.parquet"
-
-        if path.exists():
-            split_files[split] = str(path)
-
-    if not split_files:
-        raise FileNotFoundError(
-            f"No model-ready split files found in {source.model_ready_dir}"
-        )
-
-    if not source.action_grid_file.exists():
-        raise FileNotFoundError(f"Action grid not found: {source.action_grid_file}")
-
-    model_ready = load_dataset("parquet", data_files=split_files)
-
-    action_grid = load_dataset(
-        "parquet", data_files={"train": str(source.action_grid_file)}, split="train"
-    )
-
-    metadata = {}
-
-    if source.metadata_file is not None:
-        if not source.metadata_file.exists():
-            raise FileNotFoundError(f"Metadata file not found: {source.metadata_file}")
-
-        metadata = _read_json(source.metadata_file)
-
-    media_manifest = None
-
-    if source.media_manifest_file is not None:
-        if not source.media_manifest_file.exists():
-            raise FileNotFoundError(
-                f"Media manifest not found: {source.media_manifest_file}"
-            )
-
-        media_manifest = load_dataset(
-            "parquet",
-            data_files={"train": str(source.media_manifest_file)},
-            split="train",
-        )
-
-    return LoadedCorpus(
-        name=source.name,
-        model_ready=model_ready,
-        action_grid=action_grid,
-        metadata=metadata,
-        media_manifest=media_manifest,
-    )
 
 
 def _validate_model_ready(dataset: DatasetDict, *, corpus: str) -> None:

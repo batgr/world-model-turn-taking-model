@@ -6,7 +6,6 @@ from turn_wm.data.build import build_dataset
 from turn_wm.data.dataset import STATE_TO_ID, TurnTakingDataset, WindowConfig
 from turn_wm.data.loader import DataLoaderConfig, build_dataloader
 from turn_wm.data.multi import MultiCorpusDataset
-from turn_wm.data.sampling import SamplingConfig
 from turn_wm.data.source import LoadedData
 
 WINDOW = WindowConfig(min_context_steps=10, max_context_steps=10, future_steps=10)
@@ -156,58 +155,6 @@ def test_shuffled_batch_draws_from_both_corpora(combined):
         combined[i]["sample_id"] for i in range(5)
     )
     assert sorted(batch["dataset"]) == ["a", "a", "a", "b", "b"]
-
-
-def test_natural_sampling_does_not_request_sample_classes(monkeypatch):
-    dataset = MultiCorpusDataset(
-        {
-            "a": child("a", state="SILENT", count=3, training=True),
-            "b": child("b", state="SPEAKING", count=2, training=True),
-        }
-    )
-
-    def fail():
-        raise AssertionError("natural sampling must not read sample classes")
-
-    monkeypatch.setattr(dataset, "sample_classes", fail)
-
-    loader = build_dataloader(
-        dataset,
-        loader=DataLoaderConfig(batch_size=5),
-        sampling=SamplingConfig(strategy="natural"),
-    )
-
-    assert len(next(iter(loader))["dataset"]) == 5
-
-
-def test_balanced_sampling_uses_classes_from_all_corpora():
-    # Each corpus holds one class; balancing is only possible across both.
-    dataset = MultiCorpusDataset(
-        {
-            "a": child("a", state="SILENT", count=3, training=True),
-            "b": child(
-                "b", state="SPEAKING", count=1, training=True, sample_class="background"
-            ),
-        }
-    )
-
-    assert dataset.sample_classes() == ["event"] * 3 + ["background"]
-
-    loader = build_dataloader(
-        dataset,
-        loader=DataLoaderConfig(batch_size=4),
-        sampling=SamplingConfig(strategy="balanced", num_samples=400, seed=0),
-    )
-
-    weights = loader.sampler.weights
-
-    # Classes are weighted by class frequency, independent of corpus.
-    assert weights.tolist() == pytest.approx([1 / 3] * 3 + [1.0])
-
-    drawn = list(loader.sampler)
-    background_share = sum(index == 3 for index in drawn) / len(drawn)
-
-    assert background_share == pytest.approx(0.5, abs=0.1)
 
 
 def test_build_dataset_matches_manual_composition():

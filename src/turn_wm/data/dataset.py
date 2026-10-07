@@ -238,10 +238,6 @@ class TurnTakingDataset(Dataset):
 
         return sample
 
-    def sample_classes(self) -> list[str]:
-        """Return the sampling class associated with each exposed anchor."""
-        return list(self.anchors["sample_class"])
-
     def _attach_features(
         self,
         *,

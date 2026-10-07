@@ -20,7 +20,6 @@ from turn_wm.data.build import build_dataset
 from turn_wm.data.collate import collate_turn_taking
 from turn_wm.data.dataset import TurnTakingDataset, WindowConfig
 from turn_wm.data.loader import DataLoaderConfig, build_dataloader
-from turn_wm.data.sampling import SamplingConfig
 from turn_wm.data.source import FULL, load_data
 
 pytestmark = pytest.mark.integration
@@ -93,9 +92,7 @@ def test_boundaries_route_to_corpus_local_samples(full, train_eval):
 def test_shuffled_training_batch_mixes_corpora(full):
     dataset = build_dataset(full, split="train", window=WINDOW, training=True)
     loader = build_dataloader(
-        dataset,
-        loader=DataLoaderConfig(batch_size=64, num_workers=0, seed=0),
-        sampling=SamplingConfig(strategy="natural"),
+        dataset, loader=DataLoaderConfig(batch_size=64, num_workers=0, seed=0)
     )
 
     batch = next(iter(loader))
@@ -104,21 +101,6 @@ def test_shuffled_training_batch_mixes_corpora(full):
     assert set(batch["dataset"]) == {"egocom", "ego4d"}
     assert batch["future_state"].shape == (64, WINDOW.future_steps)
     assert batch["context_state"].shape[0] == 64
-
-
-def test_balanced_sampling_spans_both_corpora(full):
-    dataset = build_dataset(full, split="train", window=WINDOW, training=True)
-    loader = build_dataloader(
-        dataset,
-        loader=DataLoaderConfig(batch_size=64, num_workers=0, seed=0),
-        sampling=SamplingConfig(strategy="balanced", seed=0),
-    )
-
-    assert len(loader.sampler.weights) == len(dataset)
-
-    batch = next(iter(loader))
-
-    assert set(batch["sample_class"]) == {"event", "background"}
 
 
 def media_roots() -> dict[str, Path]:

@@ -22,7 +22,6 @@ from turn_wm.data.dataset import (
     WindowConfig,
 )
 from turn_wm.data.loader import DataLoaderConfig, build_dataloader
-from turn_wm.data.sampling import SamplingConfig
 from turn_wm.data.source import EGOCOM, load_data
 
 pytestmark = pytest.mark.integration
@@ -139,9 +138,7 @@ def test_balanced_training_batch(data, train_anchors):
         training=True,
     )
     loader = build_dataloader(
-        dataset,
-        loader=DataLoaderConfig(batch_size=BATCH_SIZE, num_workers=0),
-        sampling=SamplingConfig(strategy="balanced"),
+        dataset, loader=DataLoaderConfig(batch_size=BATCH_SIZE, num_workers=0)
     )
 
     batch = next(iter(loader))

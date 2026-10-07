@@ -1,4 +1,4 @@
-"""Dataset inspection and encoder feature precomputation commands."""
+"""The encoder feature precomputation command."""
 
 from __future__ import annotations
 
@@ -7,10 +7,8 @@ import json
 import re
 import time
 from pathlib import Path
-from typing import cast
 
 import httpx
-from datasets import concatenate_datasets
 from datasets.exceptions import DatasetNotFoundError
 from huggingface_hub.errors import (
     GatedRepoError,
@@ -19,28 +17,15 @@ from huggingface_hub.errors import (
 )
 
 from turn_wm.config import CONFIG_DIR
-from turn_wm.data.build import build_dataset
-from turn_wm.data.dataset import WindowConfig
 from turn_wm.data.feature_precompute import RecordingSpan, precompute_features
-from turn_wm.data.loader import DataLoaderConfig, build_dataloader
-from turn_wm.data.media import (
-    MEDIA_MODALITIES,
-    MediaIndex,
-    MediaModality,
-    validate_modalities,
-)
 from turn_wm.data.source import DATASETS, HuggingFaceSource, LoadedData, load_data
-from turn_wm.data.summary import format_summary
 from turn_wm.models.encoders.base import Encoder
 from turn_wm.progress import log, progress
 
-SPLITS = ("train", "validation", "test")
-_DEFAULT_WINDOW = WindowConfig()
 _ROOT_NAME = re.compile(r"^[A-Za-z0-9_-]+$")
 
 
 def add_data_commands(commands: argparse._SubParsersAction) -> None:
-    _add_inspect_data(commands)
     _add_precompute_features(commands)
 
 
@@ -193,149 +178,6 @@ def _encoder(
         parser.error(str(error))
 
 
-def _add_inspect_data(commands: argparse._SubParsersAction) -> None:
-    inspect = commands.add_parser(
-        "inspect-data",
-        help="Load a published dataset and summarize one batch.",
-        description=(
-            "Load a published dataset through the modelling data package and "
-            "print the structure of its first batch. Uses natural sampling "
-            "and deterministic (evaluation-style) context lengths."
-        ),
-    )
-    inspect.add_argument(
-        "--dataset",
-        choices=sorted(DATASETS),
-        default="egocom",
-        help=(
-            "Published source to inspect: one corpus, or 'full' for every "
-            "corpus of the private release (default: egocom)."
-        ),
-    )
-    inspect.add_argument(
-        "--split",
-        choices=SPLITS,
-        default="train",
-        help="Model-ready split to inspect (default: train).",
-    )
-    inspect.add_argument(
-        "--batch-size",
-        type=positive_int,
-        default=32,
-        help="Number of samples in the inspected batch (default: 32).",
-    )
-    inspect.add_argument(
-        "--context-min",
-        type=positive_int,
-        default=_DEFAULT_WINDOW.min_context_steps,
-        help="Minimum context steps (default: %(default)s).",
-    )
-    inspect.add_argument(
-        "--context-max",
-        type=positive_int,
-        default=_DEFAULT_WINDOW.max_context_steps,
-        help="Maximum context steps (default: %(default)s).",
-    )
-    inspect.add_argument(
-        "--future-steps",
-        type=positive_int,
-        default=_DEFAULT_WINDOW.future_steps,
-        help="Future steps to predict (default: %(default)s).",
-    )
-    inspect.add_argument(
-        "--shuffle",
-        action="store_true",
-        help="Inspect a seeded shuffled batch instead of the first samples.",
-    )
-    inspect.add_argument(
-        "--media-root",
-        action="append",
-        type=_media_root,
-        metavar="[DATASET=]PATH",
-        help=(
-            "Decode raw media from a local corpus root. Use DATASET=PATH, "
-            "repeated, when the media manifest covers several datasets."
-        ),
-    )
-    inspect.add_argument(
-        "--modalities",
-        type=_modalities,
-        metavar="MODALITY[,MODALITY]",
-        help=(
-            "Media to decode with --media-root, comma-separated among "
-            f"{', '.join(MEDIA_MODALITIES)} (default: all)."
-        ),
-    )
-    inspect.set_defaults(handler=_inspect_data)
-
-
-def _inspect_data(args: argparse.Namespace, parser: argparse.ArgumentParser) -> int:
-    try:
-        window = WindowConfig(
-            min_context_steps=args.context_min,
-            max_context_steps=args.context_max,
-            future_steps=args.future_steps,
-        )
-    except ValueError as error:
-        parser.error(str(error))
-
-    if args.modalities is not None and not args.media_root:
-        parser.error("--modalities requires --media-root")
-
-    modalities = args.modalities or MEDIA_MODALITIES
-
-    source = DATASETS[args.dataset]
-    data = _load(source)
-    media_roots = _media_roots(data, args.media_root) if args.media_root else None
-
-    try:
-        dataset = build_dataset(
-            data,
-            split=args.split,
-            window=window,
-            training=False,
-            media_roots=media_roots,
-            modalities=modalities,
-        )
-    except ValueError as error:
-        raise SystemExit(f"turn-wm: error: {error}") from error
-
-    loader = build_dataloader(
-        dataset,
-        loader=DataLoaderConfig(
-            batch_size=args.batch_size, num_workers=0, shuffle=args.shuffle
-        ),
-    )
-
-    try:
-        batch = next(iter(loader))
-    except FileNotFoundError as error:
-        if media_roots is None:
-            raise
-
-        raise SystemExit(
-            f"turn-wm: error: raw media for the first batch is missing "
-            f"under the configured media root: {error}"
-        ) from error
-
-    print(
-        format_summary(
-            source=source,
-            split=args.split,
-            data=data,
-            dataset=dataset,
-            window=window,
-            batch=batch,
-            media_index=(
-                None if media_roots is None else _display_index(data, media_roots)
-            ),
-            modalities=modalities,
-        )
-    )
-
-    return 0
-
-
 def _load(source: HuggingFaceSource) -> LoadedData:
     """Load a source, turning common Hub failures into clear CLI errors."""
 
@@ -405,14 +247,6 @@ def _media_roots(
     return roots
 
 
-def _display_index(data: LoadedData, roots: dict[str, Path]) -> MediaIndex:
-    """Lookup of every loaded media record, for describing the first sample."""
-
-    manifests = [c.media_manifest for c in data.corpora if c.media_manifest is not None]
-
-    return MediaIndex.from_manifest(concatenate_datasets(manifests), roots)
-
-
 def _media_root(value: str) -> tuple[str | None, Path]:
     name: str | None = None
     head, separator, tail = value.partition("=")
@@ -428,15 +262,6 @@ def _media_root(value: str) -> tuple[str | None, Path]:
     return name, path
 
 
-def _modalities(value: str) -> tuple[MediaModality, ...]:
-    try:
-        # validate_modalities rejects anything that is not a MediaModality.
-        parts = cast(list[MediaModality], [part.strip() for part in value.split(",")])
-        return validate_modalities(parts)
-    except ValueError as error:
-        raise argparse.ArgumentTypeError(str(error)) from None
-
-
 def positive_float(value: str) -> float:
     try:
         number = float(value)
@@ -445,19 +270,5 @@ def positive_float(value: str) -> float:
 
     if not number > 0:
         raise argparse.ArgumentTypeError(f"must be positive, got {value}")
-
-    return number
-
-
-def positive_int(value: str) -> int:
-    try:
-        number = int(value)
-    except ValueError:
-        raise argparse.ArgumentTypeError(
-            f"expected an integer, got {value!r}"
-        ) from None
-
-    if number <= 0:
-        raise argparse.ArgumentTypeError(f"must be positive, got {number}")
 
     return number

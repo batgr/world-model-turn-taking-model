@@ -48,13 +48,3 @@ class MultiCorpusDataset(ConcatDataset):
             name: len(dataset)
             for name, dataset in zip(self.corpora, self.datasets, strict=True)
         }
-
-    def sample_classes(self) -> list[str]:
-        """Return classes in global dataset order."""
-
-        classes: list[str] = []
-
-        for dataset in self.datasets:
-            classes.extend(dataset.sample_classes())
-
-        return classes

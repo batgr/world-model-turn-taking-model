@@ -6,7 +6,7 @@ import pytest
 from datasets import Dataset, DatasetDict
 
 from turn_wm.data import source as source_module
-from turn_wm.data.source import CorpusConfig, HuggingFaceSource, LocalSource, load_data
+from turn_wm.data.source import CorpusConfig, HuggingFaceSource, load_data
 
 
 def make_model_ready(split: str) -> Dataset:
@@ -55,92 +55,6 @@ def make_action_grid() -> Dataset:
     )
 
 
-def test_load_local_source(tmp_path):
-    model_ready = tmp_path / "model_ready"
-    model_ready.mkdir()
-
-    make_model_ready("train").to_parquet(model_ready / "train.parquet")
-    make_model_ready("validation").to_parquet(model_ready / "validation.parquet")
-
-    action_grid = tmp_path / "action_grid.parquet"
-    make_action_grid().to_parquet(action_grid)
-
-    metadata = tmp_path / "metadata.json"
-    metadata.write_text(json.dumps({"dataset": "synthetic"}), encoding="utf-8")
-
-    loaded = load_data(
-        LocalSource(
-            model_ready_dir=model_ready,
-            action_grid_file=action_grid,
-            metadata_file=metadata,
-        )
-    )
-
-    assert set(loaded.corpora[0].model_ready) == {"train", "validation"}
-    assert len(loaded.corpora[0].action_grid) == 1
-    assert loaded.corpora[0].metadata["dataset"] == "synthetic"
-
-
-def test_missing_action_grid_raises(tmp_path):
-    model_ready = tmp_path / "model_ready"
-    model_ready.mkdir()
-
-    make_model_ready("train").to_parquet(model_ready / "train.parquet")
-
-    with pytest.raises(FileNotFoundError):
-        load_data(
-            LocalSource(
-                model_ready_dir=model_ready,
-                action_grid_file=tmp_path / "missing.parquet",
-            )
-        )
-
-
-def test_missing_model_ready_files_raise(tmp_path):
-    model_ready = tmp_path / "model_ready"
-    model_ready.mkdir()
-
-    action_grid = tmp_path / "action_grid.parquet"
-    make_action_grid().to_parquet(action_grid)
-
-    with pytest.raises(FileNotFoundError):
-        load_data(
-            LocalSource(model_ready_dir=model_ready, action_grid_file=action_grid)
-        )
-
-
-def test_split_column_must_match_physical_split(tmp_path):
-    model_ready = tmp_path / "model_ready"
-    model_ready.mkdir()
-
-    make_model_ready("validation").to_parquet(model_ready / "train.parquet")
-
-    action_grid = tmp_path / "action_grid.parquet"
-    make_action_grid().to_parquet(action_grid)
-
-    with pytest.raises(ValueError):
-        load_data(
-            LocalSource(model_ready_dir=model_ready, action_grid_file=action_grid)
-        )
-
-
-def test_test_split_is_optional(tmp_path):
-    model_ready = tmp_path / "model_ready"
-    model_ready.mkdir()
-
-    make_model_ready("train").to_parquet(model_ready / "train.parquet")
-    make_model_ready("validation").to_parquet(model_ready / "validation.parquet")
-
-    action_grid = tmp_path / "action_grid.parquet"
-    make_action_grid().to_parquet(action_grid)
-
-    loaded = load_data(
-        LocalSource(model_ready_dir=model_ready, action_grid_file=action_grid)
-    )
-
-    assert "test" not in loaded.corpora[0].model_ready
-
-
 def make_media_manifest(**overrides) -> Dataset:
     row = {
         "dataset": "synthetic",
@@ -153,91 +67,6 @@ def make_media_manifest(**overrides) -> Dataset:
     row.update(overrides)
 
     return Dataset.from_list([row])
-
-
-def write_local_artifacts(tmp_path):
-    model_ready = tmp_path / "model_ready"
-    model_ready.mkdir()
-    make_model_ready("train").to_parquet(model_ready / "train.parquet")
-
-    action_grid = tmp_path / "action_grid.parquet"
-    make_action_grid().to_parquet(action_grid)
-
-    return model_ready, action_grid
-
-
-def test_local_source_loads_optional_media_manifest(tmp_path):
-    model_ready, action_grid = write_local_artifacts(tmp_path)
-
-    manifest = tmp_path / "media_manifest.parquet"
-    make_media_manifest(media_offset_s=12.5).to_parquet(manifest)
-
-    loaded = load_data(
-        LocalSource(
-            model_ready_dir=model_ready,
-            action_grid_file=action_grid,
-            media_manifest_file=manifest,
-        )
-    )
-
-    assert loaded.corpora[0].media_manifest is not None
-    assert loaded.corpora[0].media_manifest[0]["media_offset_s"] == 12.5
-
-
-def test_local_source_without_media_manifest(tmp_path):
-    model_ready, action_grid = write_local_artifacts(tmp_path)
-
-    loaded = load_data(
-        LocalSource(model_ready_dir=model_ready, action_grid_file=action_grid)
-    )
-
-    assert loaded.corpora[0].media_manifest is None
-
-
-def test_missing_local_media_manifest_raises(tmp_path):
-    model_ready, action_grid = write_local_artifacts(tmp_path)
-
-    with pytest.raises(FileNotFoundError, match="Media manifest not found"):
-        load_data(
-            LocalSource(
-                model_ready_dir=model_ready,
-                action_grid_file=action_grid,
-                media_manifest_file=tmp_path / "missing.parquet",
-            )
-        )
-
-
-@pytest.mark.parametrize(
-    ("manifest", "message"),
-    [
-        (
-            make_media_manifest().remove_columns("media_offset_s"),
-            "missing required columns",
-        ),
-        (
-            make_media_manifest(video_path=None, audio_path=None),
-            "without video or audio",
-        ),
-        (
-            Dataset.from_list([make_media_manifest()[0], make_media_manifest()[0]]),
-            "duplicate",
-        ),
-    ],
-)
-def test_malformed_media_manifest_raises(tmp_path, manifest, message):
-    model_ready, action_grid = write_local_artifacts(tmp_path)
-
-    path = tmp_path / "media_manifest.parquet"
-    manifest.to_parquet(path)
-
-    with pytest.raises(ValueError, match=message):
-        load_data(
-            LocalSource(
-                model_ready_dir=model_ready,
-                action_grid_file=action_grid,
-                media_manifest_file=path,
-            )
-        )
 
 
 @pytest.fixture
@@ -427,3 +256,17 @@ def test_the_12_5_hz_releases_are_registered_next_to_the_10_hz_ones():
         base, faster = DATASETS[name], DATASETS[f"{name}_12.5hz"]
         assert faster.repo_id == f"{base.repo_id}-12.5hz"
         assert faster.corpora == base.corpora
+
+
+def test_a_split_column_disagreeing_with_its_partition_is_refused():
+    with pytest.raises(ValueError, match="split"):
+        source_module._validate_model_ready(
+            DatasetDict({"train": make_model_ready("validation")}), corpus="c"
+        )
+
+
+def test_a_release_without_a_train_split_is_refused():
+    with pytest.raises(ValueError, match="train split"):
+        source_module._validate_model_ready(
+            DatasetDict({"validation": make_model_ready("validation")}), corpus="c"
+        )
