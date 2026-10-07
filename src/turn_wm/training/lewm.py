@@ -105,10 +105,7 @@ class LeWMModule(L.LightningModule):
         return int(total)
 
     def transfer_batch_to_device(
-        self,
-        batch: dict[str, Any],
-        device: torch.device,
-        dataloader_idx: int,
+        self, batch: dict[str, Any], device: torch.device, dataloader_idx: int
     ) -> dict[str, Any]:
         # Media windows are frozen dataclasses, which Lightning's generic
         # transfer cannot rebuild; the encoder moves their waveforms itself.
@@ -125,9 +122,7 @@ class LeWMModule(L.LightningModule):
         parameters = [p for p in self.parameters() if p.requires_grad]
 
         optimizer = optimizer_class(
-            parameters,
-            lr=config.lr,
-            weight_decay=config.weight_decay,
+            parameters, lr=config.lr, weight_decay=config.weight_decay
         )
 
         scheduler = warmup_cosine_scheduler(

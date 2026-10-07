@@ -45,10 +45,7 @@ def add_train_command(commands: argparse._SubParsersAction) -> None:
     train.set_defaults(handler=_train)
 
 
-def _train(
-    args: argparse.Namespace,
-    parser: argparse.ArgumentParser,
-) -> int:
+def _train(args: argparse.Namespace, parser: argparse.ArgumentParser) -> int:
     if args.restore is not None and args.overrides:
         parser.error("--restore resumes the run as configured; it takes no overrides")
 

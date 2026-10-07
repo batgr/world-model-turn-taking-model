@@ -37,9 +37,7 @@ def mimi_encoder():
 
 
 def assert_mimi_pipeline(
-    encoder: FrozenMimiEncoder,
-    media_window: MediaWindow,
-    target_steps: int,
+    encoder: FrozenMimiEncoder, media_window: MediaWindow, target_steps: int
 ) -> None:
     assert media_window.audio is not None
 
@@ -119,8 +117,7 @@ def first_batch_with_local_media(
         modalities=modalities,
     )
     loader = build_dataloader(
-        dataset,
-        loader=DataLoaderConfig(batch_size=1, num_workers=0),
+        dataset, loader=DataLoaderConfig(batch_size=1, num_workers=0)
     )
 
     batch = next(iter(loader))
@@ -166,8 +163,7 @@ def assert_window(
     assert audio.sample_rate > 0
     assert audio.waveform.ndim == 2
     assert audio.waveform.shape[1] == pytest.approx(
-        duration * audio.sample_rate,
-        abs=0.01 * audio.sample_rate,
+        duration * audio.sample_rate, abs=0.01 * audio.sample_rate
     )
 
 
@@ -222,9 +218,7 @@ def test_nonzero_offset_raw_multimodal_batch():
 
     data = load_private(EGO4D).corpus("ego4d")
     batch, media = first_batch_with_local_media(
-        data,
-        root,
-        offset_filter=lambda offset: offset > 1.0,
+        data, root, offset_filter=lambda offset: offset > 1.0
     )
 
     assert media.media_offset_s > 1.0
@@ -256,10 +250,7 @@ def test_ego4d_single_modality_batch(modalities):
 
     data = load_private(EGO4D).corpus("ego4d")
     batch, media = first_batch_with_local_media(
-        data,
-        root,
-        offset_filter=lambda offset: offset > 1.0,
-        modalities=modalities,
+        data, root, offset_filter=lambda offset: offset > 1.0, modalities=modalities
     )
 
     assert media.audio_path is None and media.video_has_audio is True
@@ -283,10 +274,7 @@ def test_ego4d_audio_through_mimi(mimi_encoder):
 
     data = load_private(EGO4D).corpus("ego4d")
     batch, _ = first_batch_with_local_media(
-        data,
-        root,
-        offset_filter=lambda offset: offset > 1.0,
-        modalities=("audio",),
+        data, root, offset_filter=lambda offset: offset > 1.0, modalities=("audio",)
     )
 
     assert_mimi_pipeline(

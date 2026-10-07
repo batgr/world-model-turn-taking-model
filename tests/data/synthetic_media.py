@@ -9,17 +9,11 @@ import numpy as np
 
 
 def make_audio(
-    path: Path,
-    *,
-    sample_rate: int = 16_000,
-    duration_s: float = 1.0,
+    path: Path, *, sample_rate: int = 16_000, duration_s: float = 1.0
 ) -> None:
     samples = int(sample_rate * duration_s)
 
-    signal = np.zeros(
-        samples,
-        dtype=np.int16,
-    )
+    signal = np.zeros(samples, dtype=np.int16)
 
     with wave.open(str(path), "wb") as wav:
         wav.setnchannels(1)
@@ -28,37 +22,19 @@ def make_audio(
         wav.writeframes(signal.tobytes())
 
 
-def make_video(
-    path: Path,
-    *,
-    fps: int = 10,
-    frames: int = 10,
-) -> None:
-    container = av.open(
-        str(path),
-        mode="w",
-    )
+def make_video(path: Path, *, fps: int = 10, frames: int = 10) -> None:
+    container = av.open(str(path), mode="w")
 
-    stream = container.add_stream(
-        "mpeg4",
-        rate=fps,
-    )
+    stream = container.add_stream("mpeg4", rate=fps)
 
     stream.width = 32
     stream.height = 32
     stream.pix_fmt = "yuv420p"
 
     for index in range(frames):
-        array = np.full(
-            (32, 32, 3),
-            index,
-            dtype=np.uint8,
-        )
+        array = np.full((32, 32, 3), index, dtype=np.uint8)
 
-        frame = av.VideoFrame.from_ndarray(
-            array,
-            format="rgb24",
-        )
+        frame = av.VideoFrame.from_ndarray(array, format="rgb24")
 
         for packet in stream.encode(frame):
             container.mux(packet)
@@ -70,11 +46,7 @@ def make_video(
 
 
 def make_video_with_audio(
-    path: Path,
-    *,
-    duration_s: float = 1.0,
-    fps: int = 10,
-    sample_rate: int = 16_000,
+    path: Path, *, duration_s: float = 1.0, fps: int = 10, sample_rate: int = 16_000
 ) -> None:
     container = av.open(str(path), mode="w")
 
@@ -87,8 +59,7 @@ def make_video_with_audio(
 
     for index in range(int(duration_s * fps)):
         frame = av.VideoFrame.from_ndarray(
-            np.full((32, 32, 3), index, dtype=np.uint8),
-            format="rgb24",
+            np.full((32, 32, 3), index, dtype=np.uint8), format="rgb24"
         )
         for packet in video.encode(frame):
             container.mux(packet)

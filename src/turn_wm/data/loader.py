@@ -89,10 +89,7 @@ def build_dataloader(
         # Natural sampling uses standard shuffled iteration; only other
         # strategies need the (potentially millions of) sample classes.
         if sampling.strategy != "natural":
-            sampler = build_sampler(
-                dataset.sample_classes(),
-                sampling,
-            )
+            sampler = build_sampler(dataset.sample_classes(), sampling)
 
         shuffle = sampler is None
 

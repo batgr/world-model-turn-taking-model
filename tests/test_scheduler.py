@@ -18,10 +18,7 @@ def make_scheduler(total_steps, *, warmup_ratio=0.05):
     parameter = torch.nn.Parameter(torch.zeros(1))
     optimizer = torch.optim.AdamW([parameter], lr=BASE_LR, weight_decay=1e-3)
     scheduler = warmup_cosine_scheduler(
-        optimizer,
-        total_steps=total_steps,
-        warmup_ratio=warmup_ratio,
-        min_lr=MIN_LR,
+        optimizer, total_steps=total_steps, warmup_ratio=warmup_ratio, min_lr=MIN_LR
     )
 
     return optimizer, scheduler

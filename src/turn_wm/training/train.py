@@ -47,11 +47,7 @@ from turn_wm.training.run_dir import (
 from turn_wm.training.run_log import text_log
 
 
-def run(
-    cfg: DictConfig,
-    *,
-    media_roots: Mapping[str, Path] | None = None,
-) -> Path:
+def run(cfg: DictConfig, *, media_roots: Mapping[str, Path] | None = None) -> Path:
     """Run one training experiment in a new run directory; return it."""
 
     loaded, observations = _prepare(cfg, media_roots)
@@ -82,11 +78,7 @@ def run(
     return run_dir
 
 
-def restore(
-    run_dir: Path,
-    *,
-    media_roots: Mapping[str, Path] | None = None,
-) -> Path:
+def restore(run_dir: Path, *, media_roots: Mapping[str, Path] | None = None) -> Path:
     """Resume a run in its own directory, from its config and `last.ckpt`.
 
     The saved config is used as it is (its hash is checked), so the resumed
@@ -176,11 +168,7 @@ def _fit(
         )
 
 
-def _build_callbacks(
-    cfg: DictConfig,
-    *,
-    run_dir: Path,
-) -> list[Callback]:
+def _build_callbacks(cfg: DictConfig, *, run_dir: Path) -> list[Callback]:
     callbacks: list[Callback] = []
 
     if cfg.checkpoint.enabled:

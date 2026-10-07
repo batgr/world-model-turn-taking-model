@@ -75,8 +75,7 @@ def trajectories(batch: dict[str, Any]) -> Trajectories:
     future_steps = int(batch["future_action"].shape[1])
 
     actions = torch.cat(
-        [batch["context_action"][:, :context_steps], batch["future_action"]],
-        dim=1,
+        [batch["context_action"][:, :context_steps], batch["future_action"]], dim=1
     )
 
     if has_features:
@@ -126,8 +125,7 @@ def trajectories(batch: dict[str, Any]) -> Trajectories:
 
 
 def encode_trajectories(
-    model: JEPA,
-    batch: Trajectories,
+    model: JEPA, batch: Trajectories
 ) -> tuple[torch.Tensor, torch.Tensor]:
     """Encoder features and projected latents of every step, each (B, T, ·).
 

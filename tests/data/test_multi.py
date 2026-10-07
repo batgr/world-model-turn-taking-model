@@ -146,8 +146,7 @@ def test_ordinary_dataloader_collates_mixed_batch(combined):
 
 def test_shuffled_batch_draws_from_both_corpora(combined):
     loader = build_dataloader(
-        combined,
-        loader=DataLoaderConfig(batch_size=5, shuffle=True, seed=0),
+        combined, loader=DataLoaderConfig(batch_size=5, shuffle=True, seed=0)
     )
 
     batch = next(iter(loader))
@@ -187,11 +186,7 @@ def test_balanced_sampling_uses_classes_from_all_corpora():
         {
             "a": child("a", state="SILENT", count=3, training=True),
             "b": child(
-                "b",
-                state="SPEAKING",
-                count=1,
-                training=True,
-                sample_class="background",
+                "b", state="SPEAKING", count=1, training=True, sample_class="background"
             ),
         }
     )

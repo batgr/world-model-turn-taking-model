@@ -82,10 +82,7 @@ def test_default_model_uses_causal_bn_and_layernorm_variant_is_available():
 
 def test_learned_position_variant_keeps_positional_pred_projector_stats():
     cfg = load_config(
-        [
-            "model=lewm_learned_pos",
-            "data.observation_source=feature_cache",
-        ]
+        ["model=lewm_learned_pos", "data.observation_source=feature_cache"]
     )
     model = build_model(cfg)
 
@@ -97,10 +94,7 @@ def test_learned_position_variant_keeps_positional_pred_projector_stats():
 
 def test_standard_bn_config_flattens_time_for_both_projectors():
     cfg = load_config(
-        [
-            "model=lewm_standard_bn",
-            "data.observation_source=feature_cache",
-        ]
+        ["model=lewm_standard_bn", "data.observation_source=feature_cache"]
     )
     model = build_model(cfg)
 
@@ -184,10 +178,7 @@ def test_training_projectors_preserve_prefix_and_receive_gradients():
     torch.testing.assert_close(full_pred[:, :3], prefix_pred, rtol=1e-5, atol=1e-5)
 
     batch = Trajectories(
-        actions=actions,
-        context_steps=4,
-        future_steps=3,
-        features=features,
+        actions=actions, context_steps=4, future_steps=3, features=features
     )
     loss = lejepa_forward(model, SIGReg(num_proj=16), batch, cfg, rollout_horizons=[1])[
         "loss"

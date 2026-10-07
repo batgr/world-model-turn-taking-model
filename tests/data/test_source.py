@@ -6,12 +6,7 @@ import pytest
 from datasets import Dataset, DatasetDict
 
 from turn_wm.data import source as source_module
-from turn_wm.data.source import (
-    CorpusConfig,
-    HuggingFaceSource,
-    LocalSource,
-    load_data,
-)
+from turn_wm.data.source import CorpusConfig, HuggingFaceSource, LocalSource, load_data
 
 
 def make_model_ready(split: str) -> Dataset:
@@ -71,10 +66,7 @@ def test_load_local_source(tmp_path):
     make_action_grid().to_parquet(action_grid)
 
     metadata = tmp_path / "metadata.json"
-    metadata.write_text(
-        json.dumps({"dataset": "synthetic"}),
-        encoding="utf-8",
-    )
+    metadata.write_text(json.dumps({"dataset": "synthetic"}), encoding="utf-8")
 
     loaded = load_data(
         LocalSource(
@@ -84,10 +76,7 @@ def test_load_local_source(tmp_path):
         )
     )
 
-    assert set(loaded.corpora[0].model_ready) == {
-        "train",
-        "validation",
-    }
+    assert set(loaded.corpora[0].model_ready) == {"train", "validation"}
     assert len(loaded.corpora[0].action_grid) == 1
     assert loaded.corpora[0].metadata["dataset"] == "synthetic"
 
@@ -116,10 +105,7 @@ def test_missing_model_ready_files_raise(tmp_path):
 
     with pytest.raises(FileNotFoundError):
         load_data(
-            LocalSource(
-                model_ready_dir=model_ready,
-                action_grid_file=action_grid,
-            )
+            LocalSource(model_ready_dir=model_ready, action_grid_file=action_grid)
         )
 
 
@@ -134,10 +120,7 @@ def test_split_column_must_match_physical_split(tmp_path):
 
     with pytest.raises(ValueError):
         load_data(
-            LocalSource(
-                model_ready_dir=model_ready,
-                action_grid_file=action_grid,
-            )
+            LocalSource(model_ready_dir=model_ready, action_grid_file=action_grid)
         )
 
 
@@ -152,10 +135,7 @@ def test_test_split_is_optional(tmp_path):
     make_action_grid().to_parquet(action_grid)
 
     loaded = load_data(
-        LocalSource(
-            model_ready_dir=model_ready,
-            action_grid_file=action_grid,
-        )
+        LocalSource(model_ready_dir=model_ready, action_grid_file=action_grid)
     )
 
     assert "test" not in loaded.corpora[0].model_ready
@@ -304,9 +284,7 @@ def fake_hub(monkeypatch, tmp_path):
 
 
 def hf_source(
-    *,
-    media_manifest_config: str | None = None,
-    revision: str | None = None,
+    *, media_manifest_config: str | None = None, revision: str | None = None
 ) -> HuggingFaceSource:
     return HuggingFaceSource(
         repo_id="owner/synthetic",
@@ -431,8 +409,7 @@ def test_source_requires_unique_non_empty_corpora():
 
     with pytest.raises(ValueError, match="Duplicate corpus names"):
         HuggingFaceSource(
-            repo_id="owner/x",
-            corpora=(corpus_config("a"), corpus_config("a")),
+            repo_id="owner/x", corpora=(corpus_config("a"), corpus_config("a"))
         )
 
 

@@ -26,11 +26,7 @@ from turn_wm.data.media import (
 )
 from turn_wm.data.reader import MediaReader, MediaWindow
 
-STATE_TO_ID = {
-    "SILENT": 0,
-    "SPEAKING": 1,
-    "UNKNOWN": 2,
-}
+STATE_TO_ID = {"SILENT": 0, "SPEAKING": 1, "UNKNOWN": 2}
 
 PAD_STATE_ID = 3
 
@@ -38,12 +34,7 @@ PAD_STATE_ID = 3
 # Controllable ego actions used by the world model. The published action grid
 # still stores NO_EVENT / ONSET / OFFSET events; they are converted here using
 # focal_state_before so the model conditions on an explicit ego action.
-ACTION_TO_ID = {
-    "WAIT": 0,
-    "START": 1,
-    "STOP": 2,
-    "HOLD": 3,
-}
+ACTION_TO_ID = {"WAIT": 0, "START": 1, "STOP": 2, "HOLD": 3}
 
 TRANSITION_ACTIONS = ("START", "STOP")
 
@@ -111,9 +102,7 @@ class TurnTakingDataset(Dataset):
                 lambda datasets, recording_ids: [
                     (dataset, recording_id) in available
                     for dataset, recording_id in zip(
-                        datasets,
-                        recording_ids,
-                        strict=True,
+                        datasets, recording_ids, strict=True
                     )
                 ],
                 input_columns=["dataset", "recording_id"],
@@ -196,10 +185,7 @@ class TurnTakingDataset(Dataset):
         )
 
         context = slice(0, context_steps)
-        future = slice(
-            context_steps,
-            context_steps + self.window.future_steps,
-        )
+        future = slice(context_steps, context_steps + self.window.future_steps)
 
         states = rows["focal_state_before"]
         actions = rows["action"]
@@ -207,37 +193,21 @@ class TurnTakingDataset(Dataset):
 
         sample = {
             "context_state": torch.tensor(
-                self._encode_states(states[context]),
-                dtype=torch.long,
+                self._encode_states(states[context]), dtype=torch.long
             ),
             "context_action": torch.tensor(
-                self._encode_actions(
-                    actions[context],
-                    states[context],
-                    valid[context],
-                ),
+                self._encode_actions(actions[context], states[context], valid[context]),
                 dtype=torch.long,
             ),
-            "context_valid": torch.tensor(
-                valid[context],
-                dtype=torch.bool,
-            ),
+            "context_valid": torch.tensor(valid[context], dtype=torch.bool),
             "future_state": torch.tensor(
-                self._encode_states(states[future]),
-                dtype=torch.long,
+                self._encode_states(states[future]), dtype=torch.long
             ),
             "future_action": torch.tensor(
-                self._encode_actions(
-                    actions[future],
-                    states[future],
-                    valid[future],
-                ),
+                self._encode_actions(actions[future], states[future], valid[future]),
                 dtype=torch.long,
             ),
-            "future_valid": torch.tensor(
-                valid[future],
-                dtype=torch.bool,
-            ),
+            "future_valid": torch.tensor(valid[future], dtype=torch.bool),
             "context_length": context_steps,
             "sample_id": anchor["sample_id"],
             "dataset": anchor["dataset"],
@@ -336,29 +306,18 @@ class TurnTakingDataset(Dataset):
 
         future_end_s = decision_times[-1] + grid_step_s
 
-        media = self.media_index.get(
-            dataset=dataset,
-            recording_id=recording_id,
-        )
+        media = self.media_index.get(dataset=dataset, recording_id=recording_id)
 
         sample["context_media"] = self._read_media(
-            media,
-            start_time_s=context_start_s,
-            end_time_s=future_start_s,
+            media, start_time_s=context_start_s, end_time_s=future_start_s
         )
 
         sample["future_media"] = self._read_media(
-            media,
-            start_time_s=future_start_s,
-            end_time_s=future_end_s,
+            media, start_time_s=future_start_s, end_time_s=future_end_s
         )
 
     def _read_media(
-        self,
-        media: MediaPaths,
-        *,
-        start_time_s: float,
-        end_time_s: float,
+        self, media: MediaPaths, *, start_time_s: float, end_time_s: float
     ) -> MediaWindow:
         """Decode a canonical-time interval from the media file's timeline."""
 
@@ -372,25 +331,18 @@ class TurnTakingDataset(Dataset):
         )
 
         return replace(
-            window,
-            canonical_start_time_s=start_time_s,
-            canonical_end_time_s=end_time_s,
+            window, canonical_start_time_s=start_time_s, canonical_end_time_s=end_time_s
         )
 
     def _context_steps(self, anchor: dict[str, Any]) -> int:
-        available = min(
-            int(anchor["max_context_steps"]),
-            self.window.max_context_steps,
-        )
+        available = min(int(anchor["max_context_steps"]), self.window.max_context_steps)
 
         if not self.training:
             return available
 
         return int(
             torch.randint(
-                low=self.window.min_context_steps,
-                high=available + 1,
-                size=(1,),
+                low=self.window.min_context_steps, high=available + 1, size=(1,)
             ).item()
         )
 
@@ -408,9 +360,7 @@ class TurnTakingDataset(Dataset):
 
     @staticmethod
     def _encode_actions(
-        values: list[str | None],
-        states: list[str],
-        valid: list[bool],
+        values: list[str | None], states: list[str], valid: list[bool]
     ) -> list[int]:
         """Convert action-grid events to controllable ego actions.
 
@@ -459,10 +409,7 @@ class TurnTakingDataset(Dataset):
 
     @staticmethod
     def _validate_slice(
-        *,
-        rows: dict[str, list[Any]],
-        recording_id: str,
-        expected_steps: int,
+        *, rows: dict[str, list[Any]], recording_id: str, expected_steps: int
     ) -> None:
         row_count = len(rows["recording_id"])
 

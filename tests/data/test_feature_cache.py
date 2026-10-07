@@ -17,10 +17,7 @@ def test_mimi_features_round_trip(tmp_path):
     features = torch.randn(100, 512)
 
     path = write_features(
-        tmp_path,
-        dataset="synthetic",
-        recording_id="r1",
-        features=features,
+        tmp_path, dataset="synthetic", recording_id="r1", features=features
     )
 
     write_manifest(
@@ -44,29 +41,18 @@ def test_mimi_features_round_trip(tmp_path):
 
     store = FeatureStore(tmp_path)
 
-    result = store.get(
-        dataset="synthetic",
-        recording_id="r1",
-        start=20,
-        end=30,
-    )
+    result = store.get(dataset="synthetic", recording_id="r1", start=20, end=30)
 
     assert result.shape == (10, 512)
 
-    assert torch.allclose(
-        result.float(),
-        features[20:30].half().float(),
-    )
+    assert torch.allclose(result.float(), features[20:30].half().float())
 
 
 def test_feature_store_rejects_out_of_bounds_slice(tmp_path):
     features = torch.randn(10, 512)
 
     path = write_features(
-        tmp_path,
-        dataset="synthetic",
-        recording_id="r1",
-        features=features,
+        tmp_path, dataset="synthetic", recording_id="r1", features=features
     )
 
     write_manifest(
@@ -91,12 +77,7 @@ def test_feature_store_rejects_out_of_bounds_slice(tmp_path):
     store = FeatureStore(tmp_path)
 
     with pytest.raises(IndexError):
-        store.get(
-            dataset="synthetic",
-            recording_id="r1",
-            start=0,
-            end=11,
-        )
+        store.get(dataset="synthetic", recording_id="r1", start=0, end=11)
 
 
 def test_manifest_is_deterministic(tmp_path):
@@ -146,9 +127,7 @@ def test_manifest_is_deterministic(tmp_path):
     assert first == second
 
 
-def test_manifest_round_trips_sorted_gaps_and_exclusions_without_a_timestamp(
-    tmp_path,
-):
+def test_manifest_round_trips_sorted_gaps_and_exclusions_without_a_timestamp(tmp_path):
     gaps = (
         CachedAudioGap(start_time_s=2.0, end_time_s=2.25),
         CachedAudioGap(start_time_s=1.0, end_time_s=1.101),
@@ -200,21 +179,10 @@ def test_manifest_round_trips_sorted_gaps_and_exclusions_without_a_timestamp(
     assert "created_at" not in payload
     assert "generated_at" not in payload
     assert payload["recordings"][0]["audio_gaps"] == [
-        {
-            "duration_s": pytest.approx(0.101),
-            "end_time_s": 1.101,
-            "start_time_s": 1.0,
-        },
-        {
-            "duration_s": 0.25,
-            "end_time_s": 2.25,
-            "start_time_s": 2.0,
-        },
+        {"duration_s": pytest.approx(0.101), "end_time_s": 1.101, "start_time_s": 1.0},
+        {"duration_s": 0.25, "end_time_s": 2.25, "start_time_s": 2.0},
     ]
-    assert [row["recording_id"] for row in payload["excluded_recordings"]] == [
-        "a",
-        "z",
-    ]
+    assert [row["recording_id"] for row in payload["excluded_recordings"]] == ["a", "z"]
 
     store = FeatureStore(tmp_path)
     assert store.recording_keys == frozenset({("ego4d", "kept")})
@@ -226,10 +194,7 @@ def test_manifest_round_trips_sorted_gaps_and_exclusions_without_a_timestamp(
 
 def test_store_reads_back_the_record_fields(tmp_path):
     path = write_features(
-        tmp_path,
-        dataset="synthetic",
-        recording_id="r1",
-        features=torch.zeros(5, 512),
+        tmp_path, dataset="synthetic", recording_id="r1", features=torch.zeros(5, 512)
     )
     record = FeatureRecord(
         dataset="synthetic",

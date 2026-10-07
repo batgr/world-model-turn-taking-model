@@ -80,10 +80,7 @@ def lejepa_forward(
     # =========================================================
 
     # z0..z(C-1) -> z1..zC: one-step supervision at every context position.
-    tf_pred = model.predict(
-        emb[:, :context_steps],
-        act_emb[:, :context_steps],
-    )
+    tf_pred = model.predict(emb[:, :context_steps], act_emb[:, :context_steps])
 
     tf_loss = F.mse_loss(tf_pred, emb[:, 1 : context_steps + 1])
 
@@ -109,10 +106,7 @@ def lejepa_forward(
         if h in rollout_horizons:
             target_idx = context_steps + h - 1
 
-            rollout_losses[h] = F.mse_loss(
-                pred,
-                emb[:, target_idx : target_idx + 1],
-            )
+            rollout_losses[h] = F.mse_loss(pred, emb[:, target_idx : target_idx + 1])
 
         next_emb = pred.detach() if rollout_stop_gradient else pred
 
@@ -122,8 +116,7 @@ def lejepa_forward(
             action_idx = context_steps + h - 1
 
             rollout_act = torch.cat(
-                [rollout_act, act_emb[:, action_idx : action_idx + 1]],
-                dim=1,
+                [rollout_act, act_emb[:, action_idx : action_idx + 1]], dim=1
             )
 
     # Weighted mean over the active horizons: activating more horizons makes
@@ -133,8 +126,7 @@ def lejepa_forward(
     }
 
     rollout_loss = sum(
-        (weights[h] * rollout_losses[h] for h in rollout_horizons),
-        emb.new_zeros(()),
+        (weights[h] * rollout_losses[h] for h in rollout_horizons), emb.new_zeros(())
     ) / sum(weights.values())
 
     # =========================================================

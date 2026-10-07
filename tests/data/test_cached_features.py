@@ -131,9 +131,7 @@ def media_index(tmp_path) -> MediaIndex:
     return MediaIndex(
         [
             MediaPaths(
-                dataset="egocom",
-                recording_id="r1",
-                video_path=tmp_path / "r1.mp4",
+                dataset="egocom", recording_id="r1", video_path=tmp_path / "r1.mp4"
             )
         ],
         validate_paths=False,
@@ -168,10 +166,7 @@ def test_other_modalities_still_come_from_media(store, tmp_path):
     # Audio from the cache, video from the media; audio is never decoded.
     assert [
         call.kwargs["modalities"] for call in reader.read_window.call_args_list
-    ] == [
-        ("video",),
-        ("video",),
-    ]
+    ] == [("video",), ("video",)]
     assert sample["context_features"].shape == (4, 512)
     assert "context_media" in sample
 

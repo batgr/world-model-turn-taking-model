@@ -16,45 +16,25 @@ def test_invalid_negative_start_raises():
     reader = MediaReader()
 
     media = MediaPaths(
-        dataset="synthetic",
-        recording_id="r1",
-        audio_path=Path("audio.wav"),
+        dataset="synthetic", recording_id="r1", audio_path=Path("audio.wav")
     )
 
-    with pytest.raises(
-        ValueError,
-        match="non-negative",
-    ):
-        reader.read_window(
-            media,
-            start_time_s=-0.0013,
-            end_time_s=1.0,
-        )
+    with pytest.raises(ValueError, match="non-negative"):
+        reader.read_window(media, start_time_s=-0.0013, end_time_s=1.0)
 
 
 def test_invalid_window_order_raises():
     reader = MediaReader()
 
     media = MediaPaths(
-        dataset="synthetic",
-        recording_id="r1",
-        audio_path=Path("audio.wav"),
+        dataset="synthetic", recording_id="r1", audio_path=Path("audio.wav")
     )
 
-    with pytest.raises(
-        ValueError,
-        match="greater than",
-    ):
-        reader.read_window(
-            media,
-            start_time_s=1.0,
-            end_time_s=1.0,
-        )
+    with pytest.raises(ValueError, match="greater than"):
+        reader.read_window(media, start_time_s=1.0, end_time_s=1.0)
 
 
-def test_audio_window_is_decoded(
-    tmp_path: Path,
-):
+def test_audio_window_is_decoded(tmp_path: Path):
     path = tmp_path / "audio.wav"
 
     make_audio(path)
@@ -62,11 +42,7 @@ def test_audio_window_is_decoded(
     reader = MediaReader()
 
     window = reader.read_window(
-        MediaPaths(
-            dataset="synthetic",
-            recording_id="r1",
-            audio_path=path,
-        ),
+        MediaPaths(dataset="synthetic", recording_id="r1", audio_path=path),
         start_time_s=0.25,
         end_time_s=0.50,
     )
@@ -75,25 +51,16 @@ def test_audio_window_is_decoded(
     assert window.video is None
 
     assert window.audio.sample_rate == 16_000
-    assert window.audio.waveform.shape == (
-        1,
-        4_000,
-    )
+    assert window.audio.waveform.shape == (1, 4_000)
 
 
-def test_audio_is_float32(
-    tmp_path: Path,
-):
+def test_audio_is_float32(tmp_path: Path):
     path = tmp_path / "audio.wav"
 
     make_audio(path)
 
     window = MediaReader().read_window(
-        MediaPaths(
-            dataset="synthetic",
-            recording_id="r1",
-            audio_path=path,
-        ),
+        MediaPaths(dataset="synthetic", recording_id="r1", audio_path=path),
         start_time_s=0.0,
         end_time_s=0.2,
     )
@@ -103,19 +70,13 @@ def test_audio_is_float32(
     assert window.audio.waveform.dtype.is_floating_point
 
 
-def test_video_window_is_decoded(
-    tmp_path: Path,
-):
+def test_video_window_is_decoded(tmp_path: Path):
     path = tmp_path / "video.mp4"
 
     make_video(path)
 
     window = MediaReader().read_window(
-        MediaPaths(
-            dataset="synthetic",
-            recording_id="r1",
-            video_path=path,
-        ),
+        MediaPaths(dataset="synthetic", recording_id="r1", video_path=path),
         start_time_s=0.2,
         end_time_s=0.6,
     )
@@ -123,28 +84,18 @@ def test_video_window_is_decoded(
     assert window.video is not None
 
     assert window.video.frames.ndim == 4
-    assert window.video.frames.shape[1:] == (
-        3,
-        32,
-        32,
-    )
+    assert window.video.frames.shape[1:] == (3, 32, 32)
 
     assert window.video.frames.shape[0] == window.video.timestamps_s.shape[0]
 
 
-def test_video_timestamps_are_inside_window(
-    tmp_path: Path,
-):
+def test_video_timestamps_are_inside_window(tmp_path: Path):
     path = tmp_path / "video.mp4"
 
     make_video(path)
 
     window = MediaReader().read_window(
-        MediaPaths(
-            dataset="synthetic",
-            recording_id="r1",
-            video_path=path,
-        ),
+        MediaPaths(dataset="synthetic", recording_id="r1", video_path=path),
         start_time_s=0.2,
         end_time_s=0.6,
     )
@@ -157,19 +108,13 @@ def test_video_timestamps_are_inside_window(
     assert (timestamps < 0.6).all()
 
 
-def test_video_without_audio_returns_none(
-    tmp_path: Path,
-):
+def test_video_without_audio_returns_none(tmp_path: Path):
     path = tmp_path / "video.mp4"
 
     make_video(path)
 
     window = MediaReader().read_window(
-        MediaPaths(
-            dataset="synthetic",
-            recording_id="r1",
-            video_path=path,
-        ),
+        MediaPaths(dataset="synthetic", recording_id="r1", video_path=path),
         start_time_s=0.0,
         end_time_s=0.5,
     )
@@ -178,9 +123,7 @@ def test_video_without_audio_returns_none(
     assert window.audio is None
 
 
-def test_separate_audio_and_video_are_loaded(
-    tmp_path: Path,
-):
+def test_separate_audio_and_video_are_loaded(tmp_path: Path):
     video_path = tmp_path / "video.mp4"
     audio_path = tmp_path / "audio.wav"
 
@@ -289,10 +232,7 @@ def test_video_only_never_decodes_audio(separate_media, decode_spies):
 
 def embedded(path: Path) -> MediaPaths:
     return MediaPaths(
-        dataset="synthetic",
-        recording_id="r1",
-        video_path=path,
-        video_has_audio=True,
+        dataset="synthetic", recording_id="r1", video_path=path, video_has_audio=True
     )
 
 
@@ -368,8 +308,7 @@ def test_requested_audio_missing_from_media_is_none(tmp_path: Path, decode_spies
 
 
 @pytest.mark.parametrize(
-    "modalities",
-    [(), ("text",), ("audio", "depth"), ("audio", "audio")],
+    "modalities", [(), ("text",), ("audio", "depth"), ("audio", "audio")]
 )
 def test_reader_rejects_invalid_modalities(separate_media, modalities):
     with pytest.raises(ValueError, match="modalit"):
@@ -473,10 +412,7 @@ def test_local_timestamp_jitter_is_concatenated_without_silence(tmp_path: Path):
 
 
 @pytest.mark.parametrize("gap_samples", [101, 250])
-def test_true_local_gap_is_exact_silence_and_metadata(
-    tmp_path: Path,
-    gap_samples: int,
-):
+def test_true_local_gap_is_exact_silence_and_metadata(tmp_path: Path, gap_samples: int):
     path = tmp_path / f"gap-{gap_samples}.mkv"
     next_start = 200 + gap_samples
     make_audio_with_timestamps(path, [0, 100, next_start])

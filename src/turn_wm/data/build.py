@@ -118,10 +118,7 @@ def build_dataset(
     return MultiCorpusDataset(children)
 
 
-def _media_index(
-    corpus: LoadedCorpus,
-    media_roots: Mapping[str, Path],
-) -> MediaIndex:
+def _media_index(corpus: LoadedCorpus, media_roots: Mapping[str, Path]) -> MediaIndex:
     if corpus.media_manifest is None:
         raise ValueError(f"Corpus {corpus.name!r} does not publish a media manifest")
 

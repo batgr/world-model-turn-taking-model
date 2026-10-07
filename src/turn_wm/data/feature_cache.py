@@ -60,10 +60,7 @@ class FeatureRecord:
     audio_gaps: tuple[CachedAudioGap, ...] = ()
 
 
-def _recording_filename(
-    dataset: str,
-    recording_id: str,
-) -> str:
+def _recording_filename(dataset: str, recording_id: str) -> str:
     key = f"{dataset}\0{recording_id}".encode()
 
     digest = hashlib.sha256(key).hexdigest()[:24]
@@ -72,11 +69,7 @@ def _recording_filename(
 
 
 def write_features(
-    root: Path,
-    *,
-    dataset: str,
-    recording_id: str,
-    features: torch.Tensor,
+    root: Path, *, dataset: str, recording_id: str, features: torch.Tensor
 ) -> Path:
     """Write one recording's aligned encoder features."""
 
@@ -89,10 +82,7 @@ def write_features(
     directory = root / dataset
     directory.mkdir(parents=True, exist_ok=True)
 
-    path = directory / _recording_filename(
-        dataset,
-        recording_id,
-    )
+    path = directory / _recording_filename(dataset, recording_id)
 
     save_file(
         {
@@ -111,19 +101,12 @@ def _audio_gap_from_manifest(row: dict[str, Any]) -> CachedAudioGap:
     duration_s = float(row["duration_s"])
     end_time_s = float(row.get("end_time_s", start_time_s + duration_s))
 
-    if not math.isclose(
-        end_time_s - start_time_s,
-        duration_s,
-        abs_tol=1e-9,
-    ):
+    if not math.isclose(end_time_s - start_time_s, duration_s, abs_tol=1e-9):
         raise ValueError(
             "Audio-gap duration_s does not match end_time_s - start_time_s"
         )
 
-    return CachedAudioGap(
-        start_time_s=start_time_s,
-        end_time_s=end_time_s,
-    )
+    return CachedAudioGap(start_time_s=start_time_s, end_time_s=end_time_s)
 
 
 class FeatureStore:
@@ -150,10 +133,7 @@ class FeatureStore:
         self.metadata = manifest
 
         self._records = {
-            (
-                row["dataset"],
-                row["recording_id"],
-            ): FeatureRecord(
+            (row["dataset"], row["recording_id"]): FeatureRecord(
                 dataset=row["dataset"],
                 recording_id=row["recording_id"],
                 path=row["path"],
@@ -235,12 +215,7 @@ class FeatureStore:
             raise KeyError(f"No cached features for {key!r}") from error
 
     def get_by_index(
-        self,
-        *,
-        dataset: str,
-        recording_id: str,
-        start_index: int,
-        end_index: int,
+        self, *, dataset: str, recording_id: str, start_index: int, end_index: int
     ) -> torch.Tensor:
         """Features of action-grid `decision_index` in [start_index, end_index).
 
@@ -267,12 +242,7 @@ class FeatureStore:
         )
 
     def get(
-        self,
-        *,
-        dataset: str,
-        recording_id: str,
-        start: int,
-        end: int,
+        self, *, dataset: str, recording_id: str, start: int, end: int
     ) -> torch.Tensor:
         """Read rows [start:end] of one recording's file without loading it all."""
 
@@ -289,11 +259,7 @@ class FeatureStore:
         if not path.is_file():
             raise FileNotFoundError(f"feature file not found: {path}")
 
-        with safe_open(
-            str(path),
-            framework="pt",
-            device="cpu",
-        ) as file:
+        with safe_open(str(path), framework="pt", device="cpu") as file:
             features = file.get_slice("features")[start:end]
 
         return features
@@ -343,19 +309,12 @@ def write_manifest(
                     }
                     for gap in sorted(
                         record.audio_gaps,
-                        key=lambda gap: (
-                            gap.start_time_s,
-                            gap.end_time_s,
-                        ),
+                        key=lambda gap: (gap.start_time_s, gap.end_time_s),
                     )
                 ],
             }
             for record in sorted(
-                recordings,
-                key=lambda record: (
-                    record.dataset,
-                    record.recording_id,
-                ),
+                recordings, key=lambda record: (record.dataset, record.recording_id)
             )
         ],
         "excluded_recordings": [
@@ -380,13 +339,7 @@ def write_manifest(
     path = root / "manifest.json"
 
     path.write_text(
-        json.dumps(
-            manifest,
-            indent=2,
-            sort_keys=True,
-        )
-        + "\n",
-        encoding="utf-8",
+        json.dumps(manifest, indent=2, sort_keys=True) + "\n", encoding="utf-8"
     )
 
     return path
@@ -428,12 +381,7 @@ class FeatureCaches:
         )
 
     def get_by_index(
-        self,
-        *,
-        dataset: str,
-        recording_id: str,
-        start_index: int,
-        end_index: int,
+        self, *, dataset: str, recording_id: str, start_index: int, end_index: int
     ) -> torch.Tensor:
         return self._store(dataset, recording_id).get_by_index(
             dataset=dataset,

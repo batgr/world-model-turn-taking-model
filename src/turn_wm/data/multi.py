@@ -21,10 +21,7 @@ class MultiCorpusDataset(ConcatDataset):
 
     datasets: list[TurnTakingDataset]
 
-    def __init__(
-        self,
-        datasets: Mapping[str, TurnTakingDataset],
-    ) -> None:
+    def __init__(self, datasets: Mapping[str, TurnTakingDataset]) -> None:
         if not datasets:
             raise ValueError("MultiCorpusDataset requires at least one dataset")
 

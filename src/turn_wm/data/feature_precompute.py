@@ -103,11 +103,7 @@ class RecordingSpan:
         return self.start_time_s + self.steps / self.grid_rate_hz
 
 
-def _recording_spans(
-    corpus: LoadedCorpus,
-    *,
-    grid_rate: float,
-) -> list[RecordingSpan]:
+def _recording_spans(corpus: LoadedCorpus, *, grid_rate: float) -> list[RecordingSpan]:
     """One span per recording; refuses grids with gaps or irregular timing."""
 
     # with_format("arrow")[:] honours any filter applied to the grid, unlike
@@ -115,12 +111,7 @@ def _recording_spans(
     table = cast(
         pa.Table,
         corpus.action_grid.select_columns(
-            [
-                "dataset",
-                "recording_id",
-                "decision_index",
-                "decision_time_s",
-            ]
+            ["dataset", "recording_id", "decision_index", "decision_time_s"]
         ).with_format("arrow")[:],
     )
 
@@ -170,11 +161,7 @@ def _recording_spans(
 
 
 def _load_recording_audio(
-    *,
-    reader: MediaReader,
-    media: MediaPaths,
-    span: RecordingSpan,
-    grid_rate: float,
+    *, reader: MediaReader, media: MediaPaths, span: RecordingSpan, grid_rate: float
 ) -> PreparedRecordingAudio:
     """Exact-duration encoder input and true gaps on the canonical timeline."""
 
@@ -200,10 +187,7 @@ def _load_recording_audio(
         raise ValueError(f"No usable audio interval for {media.key!r}")
 
     window = reader.read_window(
-        media,
-        start_time_s=read_start,
-        end_time_s=media_end,
-        modalities=("audio",),
+        media, start_time_s=read_start, end_time_s=media_end, modalities=("audio",)
     )
 
     if window.audio is None:
@@ -214,14 +198,8 @@ def _load_recording_audio(
 
     audio_gaps = tuple(
         CachedAudioGap(
-            start_time_s=max(
-                canonical_start,
-                gap.start_time_s - media.media_offset_s,
-            ),
-            end_time_s=min(
-                canonical_end,
-                gap.end_time_s - media.media_offset_s,
-            ),
+            start_time_s=max(canonical_start, gap.start_time_s - media.media_offset_s),
+            end_time_s=min(canonical_end, gap.end_time_s - media.media_offset_s),
         )
         for gap in window.audio.audio_gaps
         if gap.end_time_s - media.media_offset_s > canonical_start
@@ -249,18 +227,12 @@ def _load_recording_audio(
         waveform = waveform[..., :expected_samples]
 
     return PreparedRecordingAudio(
-        waveform=waveform,
-        sample_rate=sample_rate,
-        audio_gaps=audio_gaps,
+        waveform=waveform, sample_rate=sample_rate, audio_gaps=audio_gaps
     )
 
 
 def _encode_recording(
-    *,
-    encoder: Encoder,
-    audio: PreparedRecordingAudio,
-    steps: int,
-    chunk_seconds: float,
+    *, encoder: Encoder, audio: PreparedRecordingAudio, steps: int, chunk_seconds: float
 ) -> torch.Tensor:
     """`(steps, output_dim)` features: frame k of the encoder is grid step k."""
 
@@ -371,8 +343,7 @@ def precompute_features(
                 continue
 
             media = media_index.get(
-                dataset=span.dataset,
-                recording_id=span.recording_id,
+                dataset=span.dataset, recording_id=span.recording_id
             )
 
             if media.audio_source is None:
@@ -391,10 +362,7 @@ def precompute_features(
             progress(index, len(jobs), span)
 
         prepared = _load_recording_audio(
-            reader=reader,
-            media=media,
-            span=span,
-            grid_rate=grid_rate,
+            reader=reader, media=media, span=span, grid_rate=grid_rate
         )
 
         features = _encode_recording(

@@ -115,8 +115,7 @@ def test_evaluation_batch(data, train_anchors):
         training=False,
     )
     loader = build_dataloader(
-        dataset,
-        loader=DataLoaderConfig(batch_size=BATCH_SIZE, num_workers=0),
+        dataset, loader=DataLoaderConfig(batch_size=BATCH_SIZE, num_workers=0)
     )
 
     batch = next(iter(loader))

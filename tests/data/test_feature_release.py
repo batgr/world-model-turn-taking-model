@@ -40,8 +40,7 @@ def release(make_feature_cache, tmp_path):
         ego4d_root,
         recordings=[
             replace(
-                record,
-                audio_gaps=(CachedAudioGap(start_time_s=1.0, end_time_s=1.25),),
+                record, audio_gaps=(CachedAudioGap(start_time_s=1.0, end_time_s=1.25),)
             )
         ],
         model_name=store.model_name,

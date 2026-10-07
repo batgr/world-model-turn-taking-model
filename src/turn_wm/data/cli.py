@@ -111,8 +111,7 @@ def _add_precompute_features(commands: argparse._SubParsersAction) -> None:
 
 
 def _precompute_features(
-    args: argparse.Namespace,
-    parser: argparse.ArgumentParser,
+    args: argparse.Namespace, parser: argparse.ArgumentParser
 ) -> int:
     start = time.perf_counter()
     log(f"precompute-features: dataset {args.dataset}")
@@ -174,10 +173,7 @@ ENCODERS = tuple(
 
 
 def _encoder(
-    name: str,
-    overrides: list[str],
-    data: LoadedData,
-    parser: argparse.ArgumentParser,
+    name: str, overrides: list[str], data: LoadedData, parser: argparse.ArgumentParser
 ) -> Encoder:
     """The `name` encoder, which must run at the decision grid rate of `data`."""
 
@@ -273,10 +269,7 @@ def _add_inspect_data(commands: argparse._SubParsersAction) -> None:
     inspect.set_defaults(handler=_inspect_data)
 
 
-def _inspect_data(
-    args: argparse.Namespace,
-    parser: argparse.ArgumentParser,
-) -> int:
+def _inspect_data(args: argparse.Namespace, parser: argparse.ArgumentParser) -> int:
     try:
         window = WindowConfig(
             min_context_steps=args.context_min,
@@ -310,9 +303,7 @@ def _inspect_data(
     loader = build_dataloader(
         dataset,
         loader=DataLoaderConfig(
-            batch_size=args.batch_size,
-            num_workers=0,
-            shuffle=args.shuffle,
+            batch_size=args.batch_size, num_workers=0, shuffle=args.shuffle
         ),
     )
 
@@ -380,8 +371,7 @@ def _load(source: HuggingFaceSource) -> LoadedData:
 
 
 def _media_roots(
-    data: LoadedData,
-    media_roots: list[tuple[str | None, Path]],
+    data: LoadedData, media_roots: list[tuple[str | None, Path]]
 ) -> dict[str, Path]:
     manifests = [c.media_manifest for c in data.corpora if c.media_manifest is not None]
 

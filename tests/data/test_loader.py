@@ -7,20 +7,12 @@ from torch.utils.data import (
     WeightedRandomSampler,
 )
 
-from turn_wm.data.loader import (
-    DataLoaderConfig,
-    build_dataloader,
-)
+from turn_wm.data.loader import DataLoaderConfig, build_dataloader
 from turn_wm.data.sampling import SamplingConfig
 
 
 class FakeTurnTakingDataset(Dataset):
-    def __init__(
-        self,
-        *,
-        training: bool,
-        size: int = 8,
-    ):
+    def __init__(self, *, training: bool, size: int = 8):
         self.training = training
         self.size = size
 
@@ -34,30 +26,12 @@ class FakeTurnTakingDataset(Dataset):
         length = 2 + index % 3
 
         return {
-            "context_state": torch.zeros(
-                length,
-                dtype=torch.long,
-            ),
-            "context_action": torch.zeros(
-                length,
-                dtype=torch.long,
-            ),
-            "context_valid": torch.ones(
-                length,
-                dtype=torch.bool,
-            ),
-            "future_state": torch.zeros(
-                3,
-                dtype=torch.long,
-            ),
-            "future_action": torch.zeros(
-                3,
-                dtype=torch.long,
-            ),
-            "future_valid": torch.ones(
-                3,
-                dtype=torch.bool,
-            ),
+            "context_state": torch.zeros(length, dtype=torch.long),
+            "context_action": torch.zeros(length, dtype=torch.long),
+            "context_valid": torch.ones(length, dtype=torch.bool),
+            "future_state": torch.zeros(3, dtype=torch.long),
+            "future_action": torch.zeros(3, dtype=torch.long),
+            "future_valid": torch.ones(3, dtype=torch.bool),
             "context_length": length,
             "sample_id": f"sample-{index}",
             "dataset": "synthetic",
@@ -69,94 +43,52 @@ class FakeTurnTakingDataset(Dataset):
 
 
 def test_training_natural_sampling_uses_shuffle():
-    dataset = FakeTurnTakingDataset(
-        training=True,
-    )
+    dataset = FakeTurnTakingDataset(training=True)
 
     loader = build_dataloader(
         dataset,
-        loader=DataLoaderConfig(
-            batch_size=2,
-        ),
-        sampling=SamplingConfig(
-            strategy="natural",
-        ),
+        loader=DataLoaderConfig(batch_size=2),
+        sampling=SamplingConfig(strategy="natural"),
     )
 
-    assert isinstance(
-        loader.sampler,
-        RandomSampler,
-    )
+    assert isinstance(loader.sampler, RandomSampler)
 
 
 def test_training_balanced_sampling_uses_weighted_sampler():
-    dataset = FakeTurnTakingDataset(
-        training=True,
-    )
+    dataset = FakeTurnTakingDataset(training=True)
 
     loader = build_dataloader(
         dataset,
-        loader=DataLoaderConfig(
-            batch_size=2,
-        ),
-        sampling=SamplingConfig(
-            strategy="balanced",
-        ),
+        loader=DataLoaderConfig(batch_size=2),
+        sampling=SamplingConfig(strategy="balanced"),
     )
 
-    assert isinstance(
-        loader.sampler,
-        WeightedRandomSampler,
-    )
+    assert isinstance(loader.sampler, WeightedRandomSampler)
 
 
 def test_evaluation_uses_sequential_sampling():
-    dataset = FakeTurnTakingDataset(
-        training=False,
-    )
+    dataset = FakeTurnTakingDataset(training=False)
 
-    loader = build_dataloader(
-        dataset,
-        loader=DataLoaderConfig(
-            batch_size=2,
-        ),
-    )
+    loader = build_dataloader(dataset, loader=DataLoaderConfig(batch_size=2))
 
-    assert isinstance(
-        loader.sampler,
-        SequentialSampler,
-    )
+    assert isinstance(loader.sampler, SequentialSampler)
 
 
 def test_balanced_sampling_is_rejected_for_evaluation():
-    dataset = FakeTurnTakingDataset(
-        training=False,
-    )
+    dataset = FakeTurnTakingDataset(training=False)
 
-    with pytest.raises(
-        ValueError,
-        match="only valid during training",
-    ):
+    with pytest.raises(ValueError, match="only valid during training"):
         build_dataloader(
             dataset,
             loader=DataLoaderConfig(),
-            sampling=SamplingConfig(
-                strategy="balanced",
-            ),
+            sampling=SamplingConfig(strategy="balanced"),
         )
 
 
 def test_loader_produces_padded_batch():
-    dataset = FakeTurnTakingDataset(
-        training=False,
-    )
+    dataset = FakeTurnTakingDataset(training=False)
 
-    loader = build_dataloader(
-        dataset,
-        loader=DataLoaderConfig(
-            batch_size=3,
-        ),
-    )
+    loader = build_dataloader(dataset, loader=DataLoaderConfig(batch_size=3))
 
     batch = next(iter(loader))
 
@@ -169,17 +101,9 @@ def test_loader_produces_padded_batch():
 
 
 def test_batch_size_is_respected():
-    dataset = FakeTurnTakingDataset(
-        training=False,
-        size=8,
-    )
+    dataset = FakeTurnTakingDataset(training=False, size=8)
 
-    loader = build_dataloader(
-        dataset,
-        loader=DataLoaderConfig(
-            batch_size=4,
-        ),
-    )
+    loader = build_dataloader(dataset, loader=DataLoaderConfig(batch_size=4))
 
     batch = next(iter(loader))
 
@@ -187,38 +111,24 @@ def test_batch_size_is_respected():
 
 
 def test_drop_last_is_respected():
-    dataset = FakeTurnTakingDataset(
-        training=False,
-        size=5,
-    )
+    dataset = FakeTurnTakingDataset(training=False, size=5)
 
     loader = build_dataloader(
-        dataset,
-        loader=DataLoaderConfig(
-            batch_size=2,
-            drop_last=True,
-        ),
+        dataset, loader=DataLoaderConfig(batch_size=2, drop_last=True)
     )
 
     assert len(loader) == 2
 
 
-@pytest.mark.parametrize(
-    "batch_size",
-    [0, -1],
-)
+@pytest.mark.parametrize("batch_size", [0, -1])
 def test_invalid_batch_size_raises(batch_size):
     with pytest.raises(ValueError):
-        DataLoaderConfig(
-            batch_size=batch_size,
-        )
+        DataLoaderConfig(batch_size=batch_size)
 
 
 def test_negative_worker_count_raises():
     with pytest.raises(ValueError):
-        DataLoaderConfig(
-            num_workers=-1,
-        )
+        DataLoaderConfig(num_workers=-1)
 
 
 @pytest.mark.parametrize(
@@ -240,8 +150,7 @@ def test_persistent_workers_follow_the_config():
 
     default = build_dataloader(dataset, loader=DataLoaderConfig(num_workers=2))
     persistent = build_dataloader(
-        dataset,
-        loader=DataLoaderConfig(num_workers=2, persistent_workers=True),
+        dataset, loader=DataLoaderConfig(num_workers=2, persistent_workers=True)
     )
 
     assert default.persistent_workers is False
@@ -259,8 +168,7 @@ def test_prefetch_factor_is_propagated():
 
 def test_single_process_loading_ignores_worker_options():
     loader = build_dataloader(
-        FakeTurnTakingDataset(training=False),
-        loader=DataLoaderConfig(),
+        FakeTurnTakingDataset(training=False), loader=DataLoaderConfig()
     )
 
     assert loader.num_workers == 0

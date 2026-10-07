@@ -24,10 +24,7 @@ class LogMelEncoder(Encoder):
     modality = "audio"
 
     def __init__(
-        self,
-        frame_rate: float,
-        n_mels: int = 80,
-        sample_rate: int = 16_000,
+        self, frame_rate: float, n_mels: int = 80, sample_rate: int = 16_000
     ) -> None:
         super().__init__()
 

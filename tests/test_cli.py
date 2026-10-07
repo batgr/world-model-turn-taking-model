@@ -56,10 +56,7 @@ def make_data(
 
 
 def make_corpus(
-    name: str = "synthetic",
-    *,
-    media_manifest: Dataset | None = None,
-    **splits: Dataset,
+    name: str = "synthetic", *, media_manifest: Dataset | None = None, **splits: Dataset
 ) -> LoadedCorpus:
     return LoadedCorpus(
         name=name,
@@ -319,8 +316,7 @@ def test_modalities_require_a_media_root(capsys):
 def test_nonzero_offset_formatting(fake_load, media_root, capsys):
     _, state = fake_load
     state["data"] = make_data(
-        media_manifest=make_manifest({"media_offset_s": 300.0}),
-        train=make_anchors(),
+        media_manifest=make_manifest({"media_offset_s": 300.0}), train=make_anchors()
     )
 
     assert cli.main(["inspect-data", "--media-root", str(media_root)]) == 0
@@ -364,8 +360,7 @@ def test_missing_root_for_manifest_dataset(fake_load, media_root):
 def test_unnamed_root_needs_single_dataset_manifest(fake_load, media_root):
     _, state = fake_load
     state["data"] = make_data(
-        media_manifest=make_manifest({}, {"dataset": "other"}),
-        train=make_anchors(),
+        media_manifest=make_manifest({}, {"dataset": "other"}), train=make_anchors()
     )
 
     with pytest.raises(SystemExit, match="DATASET=PATH"):
@@ -495,21 +490,9 @@ def test_train_loads_config_and_runs(monkeypatch):
     monkeypatch.setattr(training_cli, "load_config", fake_load_config)
     monkeypatch.setattr(training_cli, "run_training", fake_run)
 
-    assert (
-        cli.main(
-            [
-                "train",
-                "data.dataset=egocom",
-                "trainer.max_epochs=3",
-            ]
-        )
-        == 0
-    )
+    assert cli.main(["train", "data.dataset=egocom", "trainer.max_epochs=3"]) == 0
 
-    assert received["overrides"] == [
-        "data.dataset=egocom",
-        "trainer.max_epochs=3",
-    ]
+    assert received["overrides"] == ["data.dataset=egocom", "trainer.max_epochs=3"]
     assert received["cfg"] is cfg
 
 

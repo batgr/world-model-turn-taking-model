@@ -448,10 +448,7 @@ def test_wandb_enabled_without_the_package_is_a_clear_error(tmp_path, monkeypatc
 def test_checkpoint_is_inside_run_directory(tmp_path):
     cfg = load_config()
 
-    callbacks = _build_callbacks(
-        cfg,
-        run_dir=tmp_path,
-    )
+    callbacks = _build_callbacks(cfg, run_dir=tmp_path)
 
     checkpoint = callbacks[0]
 
@@ -776,10 +773,7 @@ def test_an_edited_run_config_cannot_be_resumed(recorder, media_roots, tmp_path)
 def test_fit_never_uses_the_test_split(recorder, media_roots):
     run(media_roots)
 
-    assert [call["split"] for call in recorder.dataset_calls] == [
-        "train",
-        "validation",
-    ]
+    assert [call["split"] for call in recorder.dataset_calls] == ["train", "validation"]
     [trainer] = recorder.trainers
     [(_, train_loader, val_loader, _)] = trainer.fit_calls
     assert (train_loader, val_loader) == (

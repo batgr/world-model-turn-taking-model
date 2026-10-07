@@ -52,9 +52,7 @@ def sha256_file(path: Path) -> str:
 
 
 def release_files(
-    release_root: Path,
-    *,
-    corpus_names: tuple[str, ...] = CORPORA,
+    release_root: Path, *, corpus_names: tuple[str, ...] = CORPORA
 ) -> list[str]:
     """Released corpus files (manifests and features), as sorted POSIX paths.
 
@@ -113,11 +111,7 @@ def _encoder_settings(stores: Mapping[str, FeatureStore]) -> dict[str, Any]:
 
 
 def _corpus_summary(
-    name: str,
-    store: FeatureStore,
-    *,
-    root: Path,
-    source_repo: str,
+    name: str, store: FeatureStore, *, root: Path, source_repo: str
 ) -> dict[str, Any]:
     records = store.records
     gaps = [gap for record in records for gap in record.audio_gaps]

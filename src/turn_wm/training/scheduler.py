@@ -23,11 +23,7 @@ from torch.optim.lr_scheduler import LambdaLR
 
 
 def warmup_cosine_factor(
-    step: int,
-    *,
-    total_steps: int,
-    warmup_steps: int,
-    min_lr_ratio: float,
+    step: int, *, total_steps: int, warmup_steps: int, min_lr_ratio: float
 ) -> float:
     """LR factor for the optimizer step `step` (0-based) of `total_steps`."""
 

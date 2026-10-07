@@ -66,16 +66,12 @@ def test_single_corpus_uses_same_api():
 
 
 def test_cache_mode_filters_only_anchors_missing_from_the_store(
-    make_feature_cache,
-    caplog,
+    make_feature_cache, caplog
 ):
     base = make_corpus("a", state="SILENT", splits={"train": 1})
     second_grid = make_grid(dataset="a", state="SPEAKING", recording_id="r2")
     second_anchors = make_anchors(
-        dataset="a",
-        split="train",
-        count=1,
-        recording_id="r2",
+        dataset="a", split="train", count=1, recording_id="r2"
     ).map(lambda row: {"anchor_row": row["anchor_row"] + len(base.action_grid)})
     corpus = replace(
         base,
@@ -130,10 +126,7 @@ def test_no_usable_anchors_anywhere_fails():
 class EchoReader:
     def read_window(self, media, *, start_time_s, end_time_s, modalities):
         return MediaWindow(
-            start_time_s=start_time_s,
-            end_time_s=end_time_s,
-            audio=None,
-            video=None,
+            start_time_s=start_time_s, end_time_s=end_time_s, audio=None, video=None
         )
 
 
@@ -314,10 +307,7 @@ def real_media_corpora(tmp_path) -> tuple[LoadedData, dict[str, Path]]:
                 state="SPEAKING",
                 splits={"train": 2},
                 media_manifest=manifest(
-                    "ego4d",
-                    audio_path=None,
-                    media_offset_s=0.5,
-                    video_has_audio=True,
+                    "ego4d", audio_path=None, media_offset_s=0.5, video_has_audio=True
                 ),
             ),
         )
@@ -328,11 +318,7 @@ def real_media_corpora(tmp_path) -> tuple[LoadedData, dict[str, Path]]:
 
 @pytest.mark.parametrize(
     ("modalities", "audio", "video"),
-    [
-        (None, True, True),
-        (("audio",), True, False),
-        (("video",), False, True),
-    ],
+    [(None, True, True), (("audio",), True, False), (("video",), False, True)],
 )
 def test_multi_corpus_batch_decodes_only_selected_modalities(
     real_media_corpora, decode_spies, modalities, audio, video

@@ -30,9 +30,7 @@ class FrozenMimiEncoder(Encoder):
     modality = "audio"
 
     def __init__(
-        self,
-        model_name: str = "kyutai/mimi",
-        revision: str | None = None,
+        self, model_name: str = "kyutai/mimi", revision: str | None = None
     ) -> None:
         super().__init__()
 
@@ -87,11 +85,7 @@ class FrozenMimiEncoder(Encoder):
 
     @torch.no_grad()
     def encode_recording(
-        self,
-        input: torch.Tensor,
-        rate: float,
-        *,
-        chunk_seconds: float = 20.0,
+        self, input: torch.Tensor, rate: float, *, chunk_seconds: float = 20.0
     ) -> torch.Tensor:
         """
         Encode a continuous recording without resetting Mimi's state.

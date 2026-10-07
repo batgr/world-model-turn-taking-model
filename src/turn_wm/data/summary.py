@@ -19,19 +19,10 @@ from turn_wm.data.dataset import (
     STATE_TO_ID,
     WindowConfig,
 )
-from turn_wm.data.media import (
-    MEDIA_MODALITIES,
-    MediaIndex,
-    MediaModality,
-    MediaPaths,
-)
+from turn_wm.data.media import MEDIA_MODALITIES, MediaIndex, MediaModality, MediaPaths
 from turn_wm.data.multi import MultiCorpusDataset
 from turn_wm.data.reader import MediaWindow
-from turn_wm.data.source import (
-    HuggingFaceSource,
-    LoadedCorpus,
-    LoadedData,
-)
+from turn_wm.data.source import HuggingFaceSource, LoadedCorpus, LoadedData
 
 _CONTEXT_KEYS = ("context_state", "context_action", "context_valid", "context_mask")
 _FUTURE_KEYS = ("future_state", "future_action", "future_valid")
@@ -134,8 +125,7 @@ def _media_lines(
         return []
 
     media = media_index.get(
-        dataset=batch["dataset"][0],
-        recording_id=batch["recording_id"][0],
+        dataset=batch["dataset"][0], recording_id=batch["recording_id"][0]
     )
 
     return [

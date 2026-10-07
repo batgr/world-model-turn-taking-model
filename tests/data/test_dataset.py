@@ -12,14 +12,8 @@ from turn_wm.data.dataset import (
     TurnTakingDataset,
     WindowConfig,
 )
-from turn_wm.data.media import (
-    MediaIndex,
-    MediaPaths,
-)
-from turn_wm.data.reader import (
-    MediaReader,
-    MediaWindow,
-)
+from turn_wm.data.media import MediaIndex, MediaPaths
+from turn_wm.data.reader import MediaReader, MediaWindow
 
 STATE_ACTION_KEYS = {
     "context_state",
@@ -41,10 +35,7 @@ STATE_ACTION_KEYS = {
 def test_media_reader_requires_media_index():
     reader = Mock(spec=MediaReader)
 
-    with pytest.raises(
-        ValueError,
-        match="requires media_index",
-    ):
+    with pytest.raises(ValueError, match="requires media_index"):
         TurnTakingDataset(
             anchors=make_anchors(),
             action_grid=make_grid(),
@@ -59,9 +50,7 @@ def test_dataset_without_media_keeps_original_contract():
         anchors=make_anchors(),
         action_grid=make_grid(),
         window=WindowConfig(
-            min_context_steps=10,
-            max_context_steps=10,
-            future_steps=10,
+            min_context_steps=10, max_context_steps=10, future_steps=10
         ),
         training=False,
     )
@@ -76,9 +65,7 @@ def make_media_index(*records: MediaPaths) -> MediaIndex:
         records
         or [
             MediaPaths(
-                dataset="synthetic",
-                recording_id="r1",
-                video_path=Path("/fake/r1.mp4"),
+                dataset="synthetic", recording_id="r1", video_path=Path("/fake/r1.mp4")
             )
         ],
         validate_paths=False,
@@ -92,10 +79,7 @@ def make_reader() -> Mock:
 
     def read_window(media, *, start_time_s, end_time_s, modalities):
         return MediaWindow(
-            start_time_s=start_time_s,
-            end_time_s=end_time_s,
-            audio=None,
-            video=None,
+            start_time_s=start_time_s, end_time_s=end_time_s, audio=None, video=None
         )
 
     reader.read_window.side_effect = read_window
@@ -119,11 +103,7 @@ def make_media_dataset(
         ),
         action_grid=make_grid(),
         window=window
-        or WindowConfig(
-            min_context_steps=10,
-            max_context_steps=10,
-            future_steps=10,
-        ),
+        or WindowConfig(min_context_steps=10, max_context_steps=10, future_steps=10),
         training=False,
         media_index=media_index,
         media_reader=reader,
@@ -248,9 +228,7 @@ def test_context_media_tracks_selected_context_length():
             reader=reader,
             max_context_steps=15,
             window=WindowConfig(
-                min_context_steps=10,
-                max_context_steps=context_steps,
-                future_steps=10,
+                min_context_steps=10, max_context_steps=context_steps, future_steps=10
             ),
         )
 
@@ -297,10 +275,7 @@ def test_default_requests_audio_and_video_from_reader():
     assert dataset.modalities == ("audio", "video")
     assert [
         call.kwargs["modalities"] for call in reader.read_window.call_args_list
-    ] == [
-        ("audio", "video"),
-        ("audio", "video"),
-    ]
+    ] == [("audio", "video"), ("audio", "video")]
 
 
 @pytest.mark.parametrize("modalities", [("audio",), ("video",)])
@@ -320,10 +295,7 @@ def test_selected_modalities_reach_both_media_reads(modalities):
 
     assert [
         call.kwargs["modalities"] for call in reader.read_window.call_args_list
-    ] == [
-        modalities,
-        modalities,
-    ]
+    ] == [modalities, modalities]
 
 
 @pytest.mark.parametrize("modalities", [(), ("text",), ("audio", "depth")])
@@ -341,11 +313,7 @@ def test_dataset_rejects_invalid_modalities(modalities):
 def test_missing_media_mapping_fails():
     reader = make_reader()
     media_index = make_media_index(
-        MediaPaths(
-            dataset="other",
-            recording_id="r1",
-            video_path=Path("/fake/r1.mp4"),
-        )
+        MediaPaths(dataset="other", recording_id="r1", video_path=Path("/fake/r1.mp4"))
     )
     dataset = make_media_dataset(media_index=media_index, reader=reader)
 
@@ -355,11 +323,7 @@ def test_missing_media_mapping_fails():
     reader.read_window.assert_not_called()
 
 
-def make_grid(
-    *,
-    recording_id: str = "r1",
-    length: int = 40,
-) -> Dataset:
+def make_grid(*, recording_id: str = "r1", length: int = 40) -> Dataset:
     states = ["SILENT" if i < 20 else "SPEAKING" for i in range(length)]
 
     actions = ["NO_EVENT"] * length
@@ -425,8 +389,7 @@ def make_anchors(
 
 
 @pytest.mark.parametrize(
-    ("max_context_steps", "future_steps", "kept"),
-    [(10, 10, 1), (9, 10, 0), (10, 9, 0)],
+    ("max_context_steps", "future_steps", "kept"), [(10, 10, 1), (9, 10, 0), (10, 9, 0)]
 )
 def test_anchors_that_cannot_support_the_window_are_left_out(
     max_context_steps, future_steps, kept
@@ -445,15 +408,9 @@ def test_anchors_that_cannot_support_the_window_are_left_out(
 
 def test_eval_uses_maximum_context():
     dataset = TurnTakingDataset(
-        anchors=make_anchors(
-            max_context_steps=10,
-        ),
+        anchors=make_anchors(max_context_steps=10),
         action_grid=make_grid(),
-        window=WindowConfig(
-            min_context_steps=5,
-            max_context_steps=10,
-            future_steps=10,
-        ),
+        window=WindowConfig(min_context_steps=5, max_context_steps=10, future_steps=10),
         training=False,
     )
 
@@ -469,9 +426,7 @@ def test_context_ends_at_anchor():
         anchors=make_anchors(),
         action_grid=make_grid(),
         window=WindowConfig(
-            min_context_steps=10,
-            max_context_steps=10,
-            future_steps=10,
+            min_context_steps=10, max_context_steps=10, future_steps=10
         ),
         training=False,
     )
@@ -489,11 +444,7 @@ def test_future_has_requested_length():
     dataset = TurnTakingDataset(
         anchors=make_anchors(),
         action_grid=make_grid(),
-        window=WindowConfig(
-            min_context_steps=5,
-            max_context_steps=10,
-            future_steps=7,
-        ),
+        window=WindowConfig(min_context_steps=5, max_context_steps=10, future_steps=7),
         training=False,
     )
 
@@ -507,15 +458,9 @@ def test_training_context_stays_in_configured_range():
     torch.manual_seed(42)
 
     dataset = TurnTakingDataset(
-        anchors=make_anchors(
-            max_context_steps=10,
-        ),
+        anchors=make_anchors(max_context_steps=10),
         action_grid=make_grid(),
-        window=WindowConfig(
-            min_context_steps=5,
-            max_context_steps=10,
-            future_steps=10,
-        ),
+        window=WindowConfig(min_context_steps=5, max_context_steps=10, future_steps=10),
         training=True,
     )
 
@@ -538,28 +483,19 @@ def test_action_grid_events_become_controllable_ego_actions():
         ACTION_TO_ID["STOP"],
     ]
 
-    assert encode(
-        [None, "NO_EVENT"],
-        ["UNKNOWN", "UNKNOWN"],
-        [False, False],
-    ) == [MASKED_ACTION_ID, MASKED_ACTION_ID]
+    assert encode([None, "NO_EVENT"], ["UNKNOWN", "UNKNOWN"], [False, False]) == [
+        MASKED_ACTION_ID,
+        MASKED_ACTION_ID,
+    ]
 
 
 def test_masked_action_has_distinct_encoding():
-    anchors = make_anchors(
-        anchor_idx=29,
-        anchor_row=29,
-        max_context_steps=10,
-    )
+    anchors = make_anchors(anchor_idx=29, anchor_row=29, max_context_steps=10)
 
     dataset = TurnTakingDataset(
         anchors=anchors,
         action_grid=make_grid(),
-        window=WindowConfig(
-            min_context_steps=10,
-            max_context_steps=10,
-            future_steps=5,
-        ),
+        window=WindowConfig(min_context_steps=10, max_context_steps=10, future_steps=5),
         training=False,
     )
 
@@ -571,9 +507,7 @@ def test_masked_action_has_distinct_encoding():
 
 def test_non_trainable_anchors_are_filtered():
     dataset = TurnTakingDataset(
-        anchors=make_anchors(
-            is_trainable=False,
-        ),
+        anchors=make_anchors(is_trainable=False),
         action_grid=make_grid(),
         window=WindowConfig(),
         training=False,
@@ -583,37 +517,23 @@ def test_non_trainable_anchors_are_filtered():
 
 
 def test_window_cannot_cross_recording_boundary():
-    first = make_grid(
-        recording_id="r1",
-        length=20,
-    )
-    second = make_grid(
-        recording_id="r2",
-        length=20,
-    )
+    first = make_grid(recording_id="r1", length=20)
+    second = make_grid(recording_id="r2", length=20)
 
     grid = concatenate_datasets([first, second])
 
     anchors = make_anchors(
-        anchor_idx=19,
-        anchor_row=19,
-        max_context_steps=10,
-        future_steps=10,
+        anchor_idx=19, anchor_row=19, max_context_steps=10, future_steps=10
     )
 
     dataset = TurnTakingDataset(
         anchors=anchors,
         action_grid=grid,
         window=WindowConfig(
-            min_context_steps=10,
-            max_context_steps=10,
-            future_steps=10,
+            min_context_steps=10, max_context_steps=10, future_steps=10
         ),
         training=False,
     )
 
-    with pytest.raises(
-        ValueError,
-        match="recording boundary",
-    ):
+    with pytest.raises(ValueError, match="recording boundary"):
         dataset[0]

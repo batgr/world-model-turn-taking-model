@@ -96,10 +96,7 @@ def make_model(cfg, *, encoder_dim=512, **kwargs):
 
 
 def window(steps: int, *, rate: int = SAMPLE_RATE, with_audio: bool = True):
-    audio = DecodedAudio(
-        waveform=torch.randn(2, steps * rate // 10),
-        sample_rate=rate,
-    )
+    audio = DecodedAudio(waveform=torch.randn(2, steps * rate // 10), sample_rate=rate)
 
     return MediaWindow(
         start_time_s=0.0,
@@ -549,8 +546,7 @@ def default_batch(cfg):
 
 
 @pytest.mark.parametrize(
-    ("horizons", "rollout_calls"),
-    [([1], 1), ([1, 5], 5), ([1, 5, 10], 10)],
+    ("horizons", "rollout_calls"), [([1], 1), ([1, 5], 5), ([1, 5, 10], 10)]
 )
 def test_rollout_only_runs_to_the_largest_active_horizon(horizons, rollout_calls):
     cfg = load_config()
@@ -639,13 +635,7 @@ def test_default_losses_evaluate_every_configured_horizon():
 
 @pytest.mark.parametrize(
     ("global_step", "total_steps", "progress"),
-    [
-        (0, 100, 0.0),
-        (33, 100, 1 / 3),
-        (99, 100, 1.0),
-        (150, 100, 1.0),
-        (0, 1, 1.0),
-    ],
+    [(0, 100, 0.0), (33, 100, 1 / 3), (99, 100, 1.0), (150, 100, 1.0), (0, 1, 1.0)],
 )
 def test_progress_counts_optimizer_steps(global_step, total_steps, progress):
     cfg = small_config()
@@ -880,9 +870,7 @@ def test_a_run_keeps_its_messages_metrics_and_profile_in_its_directory(tmp_path)
 
     log = (tmp_path / "train.log").read_text()
     assert "'val/loss' reached" in log  # each validation's verdict
-    from tensorboard.backend.event_processing.event_accumulator import (
-        EventAccumulator,
-    )
+    from tensorboard.backend.event_processing.event_accumulator import EventAccumulator
 
     events = EventAccumulator(str(tmp_path / "tensorboard")).Reload()
     tags = set(events.Tags()["scalars"])

@@ -150,14 +150,10 @@ EGOCOM = HuggingFaceSource(
 )
 
 # The private release publishes each corpus as its own set of configs.
-EGO4D = HuggingFaceSource(
-    repo_id=_PRIVATE_REPO,
-    corpora=(_private_corpus("ego4d"),),
-)
+EGO4D = HuggingFaceSource(repo_id=_PRIVATE_REPO, corpora=(_private_corpus("ego4d"),))
 
 FULL = HuggingFaceSource(
-    repo_id=_PRIVATE_REPO,
-    corpora=(_private_corpus("egocom"), _private_corpus("ego4d")),
+    repo_id=_PRIVATE_REPO, corpora=(_private_corpus("egocom"), _private_corpus("ego4d"))
 )
 
 # The same releases on a 12.5 Hz decision grid (80 ms steps, one per Mimi
@@ -165,19 +161,12 @@ FULL = HuggingFaceSource(
 _PRIVATE_REPO_12_5_HZ = "batgre/conversational-dynamics-full-12.5hz"
 
 EGOCOM_12_5_HZ = HuggingFaceSource(
-    repo_id="batgre/conversational-dynamics-egocom-12.5hz",
-    corpora=EGOCOM.corpora,
+    repo_id="batgre/conversational-dynamics-egocom-12.5hz", corpora=EGOCOM.corpora
 )
 
-EGO4D_12_5_HZ = HuggingFaceSource(
-    repo_id=_PRIVATE_REPO_12_5_HZ,
-    corpora=EGO4D.corpora,
-)
+EGO4D_12_5_HZ = HuggingFaceSource(repo_id=_PRIVATE_REPO_12_5_HZ, corpora=EGO4D.corpora)
 
-FULL_12_5_HZ = HuggingFaceSource(
-    repo_id=_PRIVATE_REPO_12_5_HZ,
-    corpora=FULL.corpora,
-)
+FULL_12_5_HZ = HuggingFaceSource(repo_id=_PRIVATE_REPO_12_5_HZ, corpora=FULL.corpora)
 
 # Published datasets addressable by name from the CLI and experiments.
 DATASETS: dict[str, HuggingFaceSource] = {
@@ -312,32 +301,19 @@ def _load_huggingface(source: HuggingFaceSource) -> LoadedData:
 
 
 def _load_huggingface_corpus(
-    repo_id: str,
-    corpus: CorpusConfig,
-    *,
-    revision: str | None,
+    repo_id: str, corpus: CorpusConfig, *, revision: str | None
 ) -> LoadedCorpus:
-    model_ready = load_dataset(
-        repo_id,
-        corpus.model_ready_config,
-        revision=revision,
-    )
+    model_ready = load_dataset(repo_id, corpus.model_ready_config, revision=revision)
 
     action_grid = load_dataset(
-        repo_id,
-        corpus.action_grid_config,
-        split="train",
-        revision=revision,
+        repo_id, corpus.action_grid_config, split="train", revision=revision
     )
 
     media_manifest = None
 
     if corpus.media_manifest_config is not None:
         media_manifest = load_dataset(
-            repo_id,
-            corpus.media_manifest_config,
-            split="train",
-            revision=revision,
+            repo_id, corpus.media_manifest_config, split="train", revision=revision
         )
 
     metadata_path = hf_hub_download(
@@ -387,15 +363,10 @@ def _load_local(source: LocalSource) -> LoadedCorpus:
     if not source.action_grid_file.exists():
         raise FileNotFoundError(f"Action grid not found: {source.action_grid_file}")
 
-    model_ready = load_dataset(
-        "parquet",
-        data_files=split_files,
-    )
+    model_ready = load_dataset("parquet", data_files=split_files)
 
     action_grid = load_dataset(
-        "parquet",
-        data_files={"train": str(source.action_grid_file)},
-        split="train",
+        "parquet", data_files={"train": str(source.action_grid_file)}, split="train"
     )
 
     metadata = {}
@@ -451,17 +422,13 @@ def _validate_model_ready(dataset: DatasetDict, *, corpus: str) -> None:
 
 def _validate_action_grid(dataset: Dataset, *, corpus: str) -> None:
     _require_columns(
-        dataset,
-        ACTION_GRID_REQUIRED_COLUMNS,
-        artifact=f"{corpus}/action_grid",
+        dataset, ACTION_GRID_REQUIRED_COLUMNS, artifact=f"{corpus}/action_grid"
     )
 
 
 def _validate_media_manifest(dataset: Dataset, *, corpus: str) -> None:
     _require_columns(
-        dataset,
-        MEDIA_MANIFEST_REQUIRED_COLUMNS,
-        artifact=f"{corpus}/media_manifest",
+        dataset, MEDIA_MANIFEST_REQUIRED_COLUMNS, artifact=f"{corpus}/media_manifest"
     )
 
     rows = dataset.to_list()
@@ -477,12 +444,7 @@ def _validate_media_manifest(dataset: Dataset, *, corpus: str) -> None:
         )
 
 
-def _require_columns(
-    dataset: Dataset,
-    required: set[str],
-    *,
-    artifact: str,
-) -> None:
+def _require_columns(dataset: Dataset, required: set[str], *, artifact: str) -> None:
     available = set(dataset.column_names)
     missing = required - available
 

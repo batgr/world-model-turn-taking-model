@@ -40,9 +40,6 @@ class Embedder(nn.Module):
         x = self.embed(x)
 
         if pad_mask is not None:
-            x = x.masked_fill(
-                pad_mask.unsqueeze(-1),
-                0.0,
-            )
+            x = x.masked_fill(pad_mask.unsqueeze(-1), 0.0)
 
         return x

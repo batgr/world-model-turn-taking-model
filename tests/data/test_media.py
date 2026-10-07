@@ -64,8 +64,7 @@ def test_same_recording_id_in_two_datasets_does_not_collide(tmp_path: Path):
 
     index = MediaIndex.from_manifest(
         make_manifest(
-            {"dataset": "corpus_a"},
-            {"dataset": "corpus_b", "media_offset_s": 5.0},
+            {"dataset": "corpus_a"}, {"dataset": "corpus_b", "media_offset_s": 5.0}
         ),
         {"corpus_a": tmp_path / "a", "corpus_b": tmp_path / "b"},
     )
@@ -81,9 +80,7 @@ def test_same_recording_id_in_two_datasets_does_not_collide(tmp_path: Path):
 
 def test_duplicate_key_is_rejected():
     record = MediaPaths(
-        dataset="corpus_a",
-        recording_id="r1",
-        video_path=Path("r1.mp4"),
+        dataset="corpus_a", recording_id="r1", video_path=Path("r1.mp4")
     )
 
     with pytest.raises(ValueError, match="Duplicate media record"):
@@ -95,8 +92,7 @@ def test_relative_video_and_audio_paths_resolve_under_root(tmp_path: Path):
     touch(tmp_path / "audio/r1.wav")
 
     index = MediaIndex.from_manifest(
-        make_manifest({"audio_path": "audio/r1.wav"}),
-        {"corpus_a": tmp_path},
+        make_manifest({"audio_path": "audio/r1.wav"}), {"corpus_a": tmp_path}
     )
 
     media = index.get(dataset="corpus_a", recording_id="r1")
@@ -132,8 +128,7 @@ def test_audio_only_record(tmp_path: Path):
 
 
 @pytest.mark.parametrize(
-    ("video_has_audio", "uses_video"),
-    [(True, True), (None, True), (False, False)],
+    ("video_has_audio", "uses_video"), [(True, True), (None, True), (False, False)]
 )
 def test_video_only_audio_source_respects_video_has_audio(
     tmp_path: Path, video_has_audio, uses_video
@@ -141,8 +136,7 @@ def test_video_only_audio_source_respects_video_has_audio(
     touch(tmp_path / "videos/r1.mp4")
 
     index = MediaIndex.from_manifest(
-        make_manifest({"video_has_audio": video_has_audio}),
-        {"corpus_a": tmp_path},
+        make_manifest({"video_has_audio": video_has_audio}), {"corpus_a": tmp_path}
     )
 
     media = index.get(dataset="corpus_a", recording_id="r1")
@@ -156,8 +150,7 @@ def test_media_offset_maps_canonical_to_media_time(tmp_path: Path, offset):
     touch(tmp_path / "videos/r1.mp4")
 
     index = MediaIndex.from_manifest(
-        make_manifest({"media_offset_s": offset}),
-        {"corpus_a": tmp_path},
+        make_manifest({"media_offset_s": offset}), {"corpus_a": tmp_path}
     )
 
     media = index.get(dataset="corpus_a", recording_id="r1")
@@ -172,14 +165,12 @@ def test_unknown_root_is_rejected(tmp_path: Path):
 
 
 @pytest.mark.parametrize(
-    "bad_path",
-    ["/abs/r1.mp4", "../outside/r1.mp4", "videos/../../r1.mp4", ""],
+    "bad_path", ["/abs/r1.mp4", "../outside/r1.mp4", "videos/../../r1.mp4", ""]
 )
 def test_malformed_canonical_path_is_rejected(tmp_path: Path, bad_path):
     with pytest.raises(ValueError, match="relative to the corpus root"):
         MediaIndex.from_manifest(
-            make_manifest({"video_path": bad_path}),
-            {"corpus_a": tmp_path},
+            make_manifest({"video_path": bad_path}), {"corpus_a": tmp_path}
         )
 
 
@@ -194,8 +185,7 @@ def test_missing_audio_file_fails_on_lookup(tmp_path: Path):
     touch(tmp_path / "videos/r1.mp4")
 
     index = MediaIndex.from_manifest(
-        make_manifest({"audio_path": "audio/r1.wav"}),
-        {"corpus_a": tmp_path},
+        make_manifest({"audio_path": "audio/r1.wav"}), {"corpus_a": tmp_path}
     )
 
     with pytest.raises(FileNotFoundError, match="Audio file does not exist"):

@@ -52,9 +52,7 @@ class FakeReader:
     """Returns `duration_scale` times the requested audio, recording requests."""
 
     def __init__(
-        self,
-        duration_scale: float = 1.0,
-        audio_gaps: tuple[AudioGap, ...] = (),
+        self, duration_scale: float = 1.0, audio_gaps: tuple[AudioGap, ...] = ()
     ) -> None:
         self.duration_scale = duration_scale
         self.audio_gaps = audio_gaps
@@ -168,11 +166,9 @@ def test_audio_gaps_are_mapped_to_the_canonical_cache_timeline():
     )
 
     [gap] = prepared.audio_gaps
-    assert (
-        gap.start_time_s,
-        gap.end_time_s,
-        gap.duration_s,
-    ) == pytest.approx((1.5, 1.75, 0.25))
+    assert (gap.start_time_s, gap.end_time_s, gap.duration_s) == pytest.approx(
+        (1.5, 1.75, 0.25)
+    )
 
 
 @pytest.mark.parametrize("duration_scale", [0.99, 1.0, 1.1])
@@ -270,10 +266,7 @@ def test_precompute_writes_aligned_features_and_manifest(
     output = tmp_path / "cache"
 
     manifest = precompute_features(
-        loaded,
-        encoder=encoder,
-        media_roots=media_roots,
-        output_root=output,
+        loaded, encoder=encoder, media_roots=media_roots, output_root=output
     )
 
     assert manifest == output / "manifest.json"

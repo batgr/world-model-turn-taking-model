@@ -108,10 +108,7 @@ class MediaIndex:
     """Resolve `(dataset, recording_id)` to local media files."""
 
     def __init__(
-        self,
-        records: Iterable[MediaPaths],
-        *,
-        validate_paths: bool = True,
+        self, records: Iterable[MediaPaths], *, validate_paths: bool = True
     ) -> None:
         self._records: dict[MediaKey, MediaPaths] = {}
 

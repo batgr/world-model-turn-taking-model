@@ -18,14 +18,9 @@ def main(argv: Sequence[str] | None = None) -> int:
 
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
-        prog="turn-wm",
-        description="Turn-taking world-model tools.",
+        prog="turn-wm", description="Turn-taking world-model tools."
     )
-    commands = parser.add_subparsers(
-        title="commands",
-        dest="command",
-        required=True,
-    )
+    commands = parser.add_subparsers(title="commands", dest="command", required=True)
 
     add_data_commands(commands)
     add_train_command(commands)

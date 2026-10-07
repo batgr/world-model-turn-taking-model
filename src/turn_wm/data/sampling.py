@@ -34,8 +34,7 @@ class SamplingConfig:
 
 
 def build_sampler(
-    sample_classes: Sequence[str],
-    config: SamplingConfig,
+    sample_classes: Sequence[str], config: SamplingConfig
 ) -> Sampler[int] | None:
     """Build a sampler for the requested training strategy.
 

@@ -22,21 +22,13 @@ from typing import Any
 from omegaconf import DictConfig, OmegaConf
 
 from turn_wm.config import upgrade_run_config
-from turn_wm.data.feature_cache import (
-    FeatureCaches,
-)
+from turn_wm.data.feature_cache import FeatureCaches
 from turn_wm.models.build import observation_source
-from turn_wm.training.observations import (
-    feature_cache_identity,
-)
+from turn_wm.training.observations import feature_cache_identity
 
 
 def resolved_config(cfg: DictConfig) -> dict:
-    resolved = OmegaConf.to_container(
-        cfg,
-        resolve=True,
-        enum_to_str=True,
-    )
+    resolved = OmegaConf.to_container(cfg, resolve=True, enum_to_str=True)
 
     if not isinstance(resolved, dict):
         raise TypeError("Resolved configuration must be a mapping")
@@ -46,19 +38,13 @@ def resolved_config(cfg: DictConfig) -> dict:
 
 def hash_config(cfg: DictConfig) -> str:
     payload = json.dumps(
-        resolved_config(cfg),
-        sort_keys=True,
-        separators=(",", ":"),
-        ensure_ascii=False,
+        resolved_config(cfg), sort_keys=True, separators=(",", ":"), ensure_ascii=False
     ).encode("utf-8")
 
     return hashlib.sha256(payload).hexdigest()
 
 
-def create_run_dir(
-    cfg: DictConfig,
-    config_hash: str,
-) -> tuple[str, Path]:
+def create_run_dir(cfg: DictConfig, config_hash: str) -> tuple[str, Path]:
     timestamp = datetime.now(UTC).strftime("%Y%m%d-%H%M%S")
     run_id = f"{timestamp}-{config_hash[:8]}"
 
@@ -80,52 +66,27 @@ def git_metadata() -> dict[str, object]:
 
     try:
         commit = subprocess.run(
-            [
-                "git",
-                "-C",
-                str(repo_root),
-                "rev-parse",
-                "HEAD",
-            ],
+            ["git", "-C", str(repo_root), "rev-parse", "HEAD"],
             capture_output=True,
             text=True,
             check=True,
         ).stdout.strip()
 
         status = subprocess.run(
-            [
-                "git",
-                "-C",
-                str(repo_root),
-                "status",
-                "--porcelain",
-            ],
+            ["git", "-C", str(repo_root), "status", "--porcelain"],
             capture_output=True,
             text=True,
             check=True,
         ).stdout
 
     except (OSError, subprocess.CalledProcessError):
-        return {
-            "commit": None,
-            "dirty": None,
-        }
+        return {"commit": None, "dirty": None}
 
-    return {
-        "commit": commit,
-        "dirty": bool(status.strip()),
-    }
+    return {"commit": commit, "dirty": bool(status.strip())}
 
 
-def write_config(
-    cfg: DictConfig,
-    run_dir: Path,
-) -> None:
-    OmegaConf.save(
-        config=cfg,
-        f=run_dir / "config.yaml",
-        resolve=True,
-    )
+def write_config(cfg: DictConfig, run_dir: Path) -> None:
+    OmegaConf.save(config=cfg, f=run_dir / "config.yaml", resolve=True)
 
 
 def write_metadata(
@@ -159,13 +120,7 @@ def write_metadata(
     path = run_dir / "metadata.json"
 
     path.write_text(
-        json.dumps(
-            metadata,
-            indent=2,
-            sort_keys=True,
-        )
-        + "\n",
-        encoding="utf-8",
+        json.dumps(metadata, indent=2, sort_keys=True) + "\n", encoding="utf-8"
     )
 
 

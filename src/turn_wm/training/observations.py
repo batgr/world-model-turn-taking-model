@@ -84,9 +84,7 @@ def prepare_observations(
         )
 
     return RunObservations(
-        modalities=modalities,
-        feature_store=feature_store,
-        media_roots=roots,
+        modalities=modalities, feature_store=feature_store, media_roots=roots
     )
 
 
@@ -134,9 +132,7 @@ def require_feature_cache_root(cfg: DictConfig) -> None:
 
 
 def validate_feature_cache(
-    caches: FeatureCaches,
-    loaded: LoadedData,
-    cfg: DictConfig,
+    caches: FeatureCaches, loaded: LoadedData, cfg: DictConfig
 ) -> None:
     """Refuse caches that do not match the grid, the model or the loaded data.
 
@@ -185,10 +181,7 @@ def validate_feature_cache(
 
 
 def _require_grid_spans(
-    store: FeatureStore,
-    corpus: LoadedCorpus,
-    *,
-    loaded_revision: str | None,
+    store: FeatureStore, corpus: LoadedCorpus, *, loaded_revision: str | None
 ) -> None:
     """The cache's recordings of `corpus` must be exactly the loaded grid's."""
 
@@ -243,9 +236,7 @@ def _require_grid_spans(
         )
 
 
-def _resolve_media_roots(
-    loaded: LoadedData,
-) -> dict[str, Path]:
+def _resolve_media_roots(loaded: LoadedData) -> dict[str, Path]:
     """Resolve corpus media roots from environment variables."""
 
     roots = {}
@@ -271,8 +262,7 @@ def _resolve_media_roots(
 
 
 def _validate_media_roots(
-    loaded: LoadedData,
-    media_roots: Mapping[str, Path],
+    loaded: LoadedData, media_roots: Mapping[str, Path]
 ) -> dict[str, Path]:
     """Validate explicitly supplied media roots."""
 

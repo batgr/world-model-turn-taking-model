@@ -170,11 +170,7 @@ def first_local_index(full, corpus: str, root: Path, *, offset_filter) -> int:
 
 @pytest.mark.parametrize(
     ("modalities", "audio", "video"),
-    [
-        (None, True, True),
-        (("audio",), True, False),
-        (("video",), False, True),
-    ],
+    [(None, True, True), (("audio",), True, False), (("video",), False, True)],
 )
 def test_real_media_flows_through_one_pipeline(full, modalities, audio, video):
     roots = media_roots()

@@ -50,3 +50,9 @@ markers = [
 wandb = [
     "wandb",
 ]
+
+[tool.ruff.format]
+# Short calls fit on one line: a trailing comma does not force one argument
+# per line.
+skip-magic-trailing-comma = true
+

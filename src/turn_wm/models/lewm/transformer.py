@@ -28,10 +28,7 @@ class RotaryEmbedding(nn.Module):
     def _rotate(x: torch.Tensor, cos: torch.Tensor, sin: torch.Tensor) -> torch.Tensor:
         even = x[..., 0::2]
         odd = x[..., 1::2]
-        rotated = torch.stack(
-            (even * cos - odd * sin, even * sin + odd * cos),
-            dim=-1,
-        )
+        rotated = torch.stack((even * cos - odd * sin, even * sin + odd * cos), dim=-1)
         return rotated.flatten(-2)
 
     def forward(
@@ -48,9 +45,7 @@ class RotaryEmbedding(nn.Module):
             raise ValueError("RoPE requires Q and K to have the same sequence length")
 
         positions = torch.arange(
-            q.shape[-2],
-            device=q.device,
-            dtype=self.inv_freq.dtype,
+            q.shape[-2], device=q.device, dtype=self.inv_freq.dtype
         )
         angles = positions[:, None] * self.inv_freq[None, :]
         cos = angles.cos().to(dtype=q.dtype)[None, None]
