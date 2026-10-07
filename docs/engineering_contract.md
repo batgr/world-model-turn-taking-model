@@ -1,7 +1,6 @@
 # Engineering contract
 
 The rules for any change to this repository, by a person or an agent.
-[`AGENTS.md`](../AGENTS.md) is the short normative summary.
 
 MUST / MUST NOT are mandatory; SHOULD / SHOULD NOT hold unless there is a
 stated reason; MAY is optional. A request that conflicts with this contract
