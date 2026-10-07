@@ -284,7 +284,9 @@ rather than forcing one predictor/action space to cover every timescale.
 
 ## Current evidence snapshot
 
-These numbers are diagnostics, not a model ranking.
+These numbers are diagnostics, not a model ranking. The analysis code that
+produced them (`turn_wm/evaluation`, probes, latent analysis) was removed on
+2026-10-06; recover it from commit `bf9e24e`.
 
 ### Matched rollout-dynamics analysis (10k validation anchors)
 

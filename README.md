@@ -1,237 +1,92 @@
 # World model for conversational turn-taking
 
-A JEPA-style latent world model for planning-based multi-party turn-taking in
-social robots. A frozen audio encoder (Mimi by default) encodes speech into latent observations, and
-an action-conditioned causal predictor learns how the conversational state
-evolves over time. Its rollouts are designed to serve as the predictive model
-for a downstream planner deciding when the robot should speak, wait, or yield
-the floor.
-**Explore:** [public EgoCom dataset](https://huggingface.co/datasets/batgre/conversational-dynamics-egocom) · [training design](docs/training.md) · [research program](docs/research_program.md) · [research decisions](docs/decisions/README.md)
+A JEPA-style latent world model for multi-party turn-taking in social robots.
+A frozen encoder (Mimi by default) turns the recording into latent
+observations, and an action-conditioned causal predictor learns how the
+conversational state evolves. Its rollouts are meant to serve a downstream
+planner deciding when the robot should speak, wait or yield the floor.
+
+[Training design](docs/training.md) · [research program](docs/research_program.md) ·
+[decisions](docs/decisions/README.md) · [data pipeline](https://github.com/batgr/world-model-turn-taking-data)
 
 ## Data
 
-Runs load the Hugging Face releases listed in `turn_wm.data.source.DATASETS`
-(`data.dataset`): `egocom` (public), `ego4d` and `full` (private, both
-corpora) on the 10 Hz grid, and `egocom_12.5hz`, `ego4d_12.5hz`, `full_12.5hz`
-on a 12.5 Hz grid (80 ms steps, one per Mimi frame; train them with
-`data.grid_rate_hz=12.5`). A split includes only the corpora that publish it.
-
-```python
-loaded = load_data(DATASETS["full"])
-dataset = build_dataset(loaded, split="train", window=WindowConfig(), training=True)
-loader = build_dataloader(dataset, loader=DataLoaderConfig(batch_size=32))
-```
-
-## Model
-
-Implementation map:
-
-- `src/turn_wm/models/encoders/base.py` — the frozen-encoder contract (one frame per grid step)
-- `src/turn_wm/models/encoders/mimi.py`, `logmel.py` — frozen Mimi, log-mel
-- `src/turn_wm/models/lewm/mlp.py` — latent projector and prediction head
-- `src/turn_wm/models/lewm/embedder.py` — action embedding
-- `src/turn_wm/models/lewm/predictor.py` — action-conditioned predictor
-- `src/turn_wm/models/lewm/transformer.py` — causal Transformer backbone
-- `src/turn_wm/models/lewm/sigreg.py` — SIGReg regularizer
-- `src/turn_wm/training/objective.py` — training objective (teacher forcing, rollout, SIGReg)
-- `src/turn_wm/training/lewm.py` — Lightning module
-
-See [docs/training.md](docs/training.md) for architecture and training details.
+Runs load a Hugging Face release listed in `turn_wm.data.source.DATASETS`
+(`data.dataset`): `egocom` (public), `ego4d` and `full` (private, both corpora)
+on a 10 Hz grid, and `egocom_12.5hz`, `ego4d_12.5hz`, `full_12.5hz` on a
+12.5 Hz grid, one step per Mimi frame (train them with `data.grid_rate_hz=12.5`).
+A split includes only the corpora that publish it.
 
 ## Configuration
 
-Experiments are configured with [Hydra](https://hydra.cc) in the spirit of
-le-wm. `configs/config.yaml` holds the shared `embed_dim` and selects one
-model and one training recipe:
+[Hydra](https://hydra.cc) composes `configs/config.yaml` from one model and one
+training recipe:
 
 ```text
 configs/
   config.yaml       embed_dim; defaults: model, train
-  model/lewm.yaml   JEPA and its nested sub-modules (_target_)
+  model/lewm*.yaml  the JEPA and its sub-modules (_target_)
   model/encoder/    the frozen encoder (mimi, logmel) and the feature_dim it gives
-  train/lewm.yaml   seed, data (grid_rate_hz, observation source), prediction,
-                    loss, optimizer, loader, trainer
+  train/lewm*.yaml  seed, data, prediction, loss, optimizer, loader, trainer
 ```
 
-The training recipe is merged at the root of the composed config, so its keys
-read `cfg.trainer.max_epochs`, `cfg.loss.sigreg.weight`, etc. Compose and
-build from code, with Hydra override syntax:
-
-```python
-from turn_wm.config import load_config
-from turn_wm.models.build import build_model
-
-cfg = load_config(["embed_dim=256", "data.context_steps=20", "optimizer.lr=1e-4"])
-model = build_model(cfg)
-```
-
-A new model or recipe is a new file in its group (`configs/train/xxx.yaml`,
-selected with `train=xxx`). The default model uses a RoPE predictor and causal
-BatchNorm in both projectors; `model=lewm_ln`, `lewm_standard_bn`,
-`lewm_positional_cbn` and `lewm_learned_pos` each change one component.
-`train=lewm_v2` is the current recipe: a 30-step context and rollout window,
-horizons up to 10 steps and checkpoint selection on `val/rollout_10_loss`.
+The recipe sits at the root of the composed config (`cfg.trainer.max_epochs`,
+`cfg.loss.sigreg.weight`). `train=lewm_v2` is the current recipe; each
+`model=lewm_*` variant changes one component of the default model.
 
 ## Training
 
-Use precomputed encoder features for normal training runs:
+The encoder is frozen, so its features are computed once per dataset:
 
 ```bash
-uv run turn-wm train \
-  data.dataset=full \
-  data.observation_source=feature_cache \
-  data.feature_cache.root=/path/to/features
+uv run turn-wm precompute-features --encoder mimi --dataset egocom_12.5hz \
+  --media-root /path/to/EgoCom --output /path/to/cache --device cuda
 ```
 
-Override the Hydra configuration directly from the CLI:
+`--media-root` takes `DATASET=PATH` once per corpus for `full`; trailing Hydra
+overrides configure the encoder (e.g. `model.encoder.revision=<sha>`). Then
+train on the cache, with any Hydra override:
 
 ```bash
-uv run turn-wm train \
-  data.dataset=egocom \
-  data.feature_cache.root=/path/to/cache \
-  data.context_steps=20 \
-  prediction.rollout_context_size=10 \
-  loader.batch_size=16 \
-  optimizer.lr=1e-4
+uv run turn-wm train train=lewm_v2 data.dataset=egocom_12.5hz data.grid_rate_hz=12.5 \
+  data.feature_cache.root=/path/to/cache loader.batch_size=16
 ```
 
-For raw-audio debugging instead of the feature cache, set the media-root
-environment variable for the selected dataset. Replace `<dataset>` with the
-dataset key configured in `DATASETS`:
-
-```bash
-export <DATASET>_MEDIA_ROOT=/path/to/media
-
-uv run turn-wm train \
-  data.dataset=<dataset> \
-  data.observation_source=raw_audio
-```
-
-For example, a dataset key `my_corpus` uses `MY_CORPUS_MEDIA_ROOT`.
-
-Invalid Hydra overrides or configurations rejected by `validate_config` fail
-before data loading. See [docs/training.md](docs/training.md) for the objective,
-rollout semantics, horizon curriculum, validation protocol, and observation
-sources.
+`data.observation_source=raw_audio` encodes the media during training instead,
+for debugging; it reads `<DATASET>_MEDIA_ROOT` (e.g. `EGOCOM_MEDIA_ROOT`).
+A configuration rejected by `validate_config` fails before any data is read.
+[docs/training.md](docs/training.md) covers the objective, the curriculum,
+the encoders and the cache.
 
 ### Runs
 
-Each run gets its own directory, created only once the configuration, the
-dataset and the media roots have been checked (a rejected run leaves
-nothing behind):
+Each run gets a directory, created once the configuration, the dataset and
+the media roots have been checked:
 
 ```text
 outputs/<experiment.name>/<UTC timestamp>-<config hash>/
-  config.yaml      the fully resolved configuration
-  metadata.json    run id, seed, config hash, git commit and dirty flag, host,
-                   dataset and its resolved revision, every resumption
-  train.log        Lightning's messages: each validation's verdict (new best
-                   or not), resumption, warnings
-  tensorboard/     every logged metric: losses, validation metrics, LR,
-                   throughput (train/device/samples_per_sec)
-  fit-profile.txt  time per training hook, e.g. waiting for data
-                   (train_dataloader_next) vs the training step
-  checkpoints/     best checkpoints by checkpoint.monitor and last.ckpt
-  wandb/           Weights & Biases files, when logging.wandb.enabled
+  config.yaml      the resolved configuration
+  metadata.json    seed, git commit and dirty flag, host, dataset revision, resumptions
+  train.log        Lightning's messages (validation verdicts, resumption, warnings)
+  tensorboard/     losses, LR, throughput
+  fit-profile.txt  time per training hook (e.g. train_dataloader_next: waiting for data)
+  checkpoints/     best checkpoints by checkpoint.monitor, and last.ckpt
 ```
-
-`experiment.output_root` (default `outputs/`, relative to the working
-directory and git-ignored) and `experiment.name` choose where runs go. The
-hash covers the whole resolved configuration, so runs of the same
-configuration share its suffix.
-
-The terminal shows Lightning's progress bar (step, loss, it/s, time left).
-A run limited by data loading rather than by the model shows up in
-`fit-profile.txt` as time spent in `train_dataloader_next`. Follow the
-metrics with TensorBoard:
 
 ```bash
 uv run tensorboard --logdir outputs/
+uv run turn-wm train --restore outputs/lewm/<run id>     # resume in place
+uv run turn-wm train checkpoint.resume_from=<ckpt>        # new run from these weights
 ```
 
-Checkpoints follow `checkpoint.*`: by default the three best by `val/loss`
-plus `last.ckpt` (`checkpoint.enabled=false` turns them off). An interrupted
-run is resumed in place, from its own `config.yaml` and `last.ckpt` (optimizer
-state, epoch, step and curriculum included); the resumption is recorded in
-`metadata.json`:
-
-```bash
-uv run turn-wm train --restore outputs/lewm/<run id>
-```
-
-To start a new run from another run's weights instead, give its checkpoint
-(the new run gets its own directory; quote paths starting with `~`):
-
-```bash
-uv run turn-wm train checkpoint.resume_from=outputs/lewm/<run id>/checkpoints/last.ckpt
-```
-
-Weights & Biases logging is optional and off by default:
-
-```bash
-uv sync --extra wandb
-uv run turn-wm train logging.wandb.enabled=true logging.wandb.entity=<entity>
-```
-
-It logs to `logging.wandb.project` (default `turn-wm`) under the run id, or
-`logging.wandb.name`, with the resolved configuration, next to TensorBoard.
-
-## Precompute encoder features
-
-The encoder is frozen, so its features can be precomputed once and reused
-across training runs. `--encoder` names a config of `configs/model/encoder`
-(default `mimi`); the encoder must run at the dataset's decision grid rate,
-one frame per step:
-
-```bash
-uv run turn-wm precompute-features \
-  --dataset dataset \
-  --media-root /path/to/media \
-  --output /path/to/mimi-cache \
-  --device cuda
-```
-
-For multiple corpora, repeat `--media-root` with the `DATASET=PATH` form:
-
-```bash
-uv run turn-wm precompute-features \
-  --dataset full \
-  --media-root dataset_a=/path/to/dataset_a \
-  --media-root dataset_b=/path/to/dataset_b \
-  --output /path/to/mimi-cache \
-  --device cuda
-```
-
-The output directory must be new or empty. Trailing Hydra overrides configure
-the encoder, e.g. `model.encoder.revision=<commit SHA>` to pin Mimi's weights.
-Another encoder, and training on its cache:
-
-```bash
-uv run turn-wm precompute-features --encoder logmel \
-  --dataset dataset --media-root /path/to/media --output /path/to/logmel-cache
-uv run turn-wm train model/encoder=logmel data.feature_cache.root=/path/to/logmel-cache
-```
-
-The cache contains one feature file per recording plus a `manifest.json`
-describing the cache and source revisions. See [docs/training.md](docs/training.md)
-for the encoder contract, cache format, synchronization handling, and validation
-details.
+Weights & Biases is optional: `uv sync --extra wandb`, then
+`logging.wandb.enabled=true logging.wandb.entity=<entity>`.
 
 ## Tests
 
 ```bash
-uv run pytest                  # offline unit tests (default)
-uv run pytest -m integration   # real-data smoke test; downloads EgoCom from the Hub
+uv run pytest                  # offline unit tests
+uv run pytest -m integration   # downloads EgoCom (and Mimi) from the Hub
 ```
 
-Tests marked `integration` need network access (or a warm Hugging Face cache),
-so the default run skips them. The raw-media smoke tests also need local media
-and are skipped unless their corpus root is set:
-
-```bash
-EGOCOM_MEDIA_ROOT=/path/to/EgoCom uv run pytest -m integration
-EGO4D_MEDIA_ROOT=/path/to/Ego4D uv run pytest -m integration   # private dataset
-```
-
-The Mimi and training smoke tests also download the Mimi weights from the Hub
-on first use.
+Raw-media smoke tests also need `EGOCOM_MEDIA_ROOT` or `EGO4D_MEDIA_ROOT`.

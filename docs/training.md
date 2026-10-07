@@ -26,7 +26,8 @@ trainable projector (feature_dim -> 192)
 
 A trajectory is `data.context_steps` ground-truth context steps followed by
 `data.future_steps` future steps on the action grid, at `data.grid_rate_hz`
-(10 Hz in the published releases; the runner refuses data on another grid).
+(10 Hz or 12.5 Hz in the published releases; the runner refuses data whose
+measured grid rate differs).
 
 - **Predictor position** uses standard RoPE on attention queries and keys
   (base 10,000). The default predictor has no learned absolute-position table;
@@ -129,12 +130,11 @@ gradient clipping:    1.0
 
 The number of optimizer steps is Lightning's
 `trainer.estimated_stepping_batches`, which accounts for gradient
-accumulation, batch limits, `max_steps` and devices. With a logger (e.g.
-`logging.wandb.enabled=true`) the LR is logged at every optimizer step by
-Lightning's `LearningRateMonitor`. The scheduler is a
+accumulation, batch limits, `max_steps` and devices. Lightning's
+`LearningRateMonitor` logs the LR at every optimizer step. The scheduler is a
 PyTorch `LambdaLR`; its step count is saved in checkpoints, so resuming from
 `last.ckpt` continues the schedule where it stopped (as long as the run length
-is unchanged). Frozen Mimi weights are not optimized.
+is unchanged). The frozen encoder is not optimized.
 
 ### Loss
 
@@ -243,8 +243,7 @@ and stops early on `val/rollout_10_loss`, its longest-horizon rollout error.
 
 **The test split is not used during training or model selection.** `run()`
 builds only the train and validation splits, and the Lightning module has no
-test step. The test split is evaluated once after the final checkpoint is
-selected.
+test step. No code in this repository evaluates on the test split.
 
 ### Not in V1
 
