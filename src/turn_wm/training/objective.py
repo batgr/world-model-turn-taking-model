@@ -65,28 +65,20 @@ def lejepa_forward(
 
     context_steps = batch.context_steps
 
-    # ---------------------------------------------------------
     # Encode the complete ground-truth trajectory
-    # ---------------------------------------------------------
 
-    _, emb = encode_trajectories(model, batch)
-    # (B, T, D)
+    _, emb = encode_trajectories(model, batch)  # (B, T, D)
 
-    act_emb = model.encode_actions(batch.actions.to(emb.device))
-    # (B, T, D)
+    act_emb = model.encode_actions(batch.actions.to(emb.device))  # (B, T, D)
 
-    # =========================================================
-    # 1. DENSE TEACHER FORCING over the ground-truth context
-    # =========================================================
+    # 1. Dense teacher forcing over the ground-truth context
 
     # z0..z(C-1) -> z1..zC: one-step supervision at every context position.
     tf_pred = model.predict(emb[:, :context_steps], act_emb[:, :context_steps])
 
     tf_loss = F.mse_loss(tf_pred, emb[:, 1 : context_steps + 1])
 
-    # =========================================================
-    # 2. AUTOREGRESSIVE ROLLOUT from the context/future boundary
-    # =========================================================
+    # 2. Autoregressive rollout from the context/future boundary
 
     max_horizon = max(rollout_horizons)
 
@@ -129,15 +121,11 @@ def lejepa_forward(
         (weights[h] * rollout_losses[h] for h in rollout_horizons), emb.new_zeros(())
     ) / sum(weights.values())
 
-    # =========================================================
-    # 3. SIGREG over the trajectory latents, (T, B, D)
-    # =========================================================
+    # 3. SIGReg over the trajectory latents, (T, B, D)
 
     sigreg_loss = sigreg(emb.transpose(0, 1))
 
-    # =========================================================
-    # 4. TOTAL OBJECTIVE
-    # =========================================================
+    # 4. Total objective
 
     loss = (
         cfg.loss.teacher_forcing.weight * tf_loss
