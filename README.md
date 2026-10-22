@@ -82,6 +82,87 @@ uv run turn-wm train checkpoint.resume_from=<ckpt>        # new run from these w
 Weights & Biases is optional: `uv sync --extra wandb`, then
 `logging.wandb.enabled=true logging.wandb.entity=<entity>`.
 
+## Experiments
+
+Audio-only, frozen Mimi, 10 Hz. One seed per run, validation split only (the
+test split stays closed). Skill = 1 − MSE / MSE of persistence
+(z_(t+h) = z_t) for the autoregressive rollout, which feeds back its own
+predictions; intervals are 95% bootstraps over recordings.
+
+| run | data | change | analysed checkpoint |
+|---|---|---|---|
+| V1 | full (EgoCom + Ego4D) | first recipe: C=15, batch 128, 10k steps | `step 9000` |
+| V2 | full | C=W=30, H=10, batch 512, ≤ 8 epochs (`train=lewm_v2`) | `epoch=006` |
+| V2-A | full | V2 with SIGReg 0.09 → 0.03 | `epoch=006` |
+| V2-B | full | V2 with BatchNorm instead of CausalBN | `epoch=006` |
+| V2-D | full | V2 with per-position CausalBN in the projector | `epoch=006` |
+| EgoCom λ=0.09 / 0.025 | EgoCom | RoPE predictor, WAIT/START/HOLD/STOP ego actions, SIGReg 0.09 vs 0.025 | `epoch=002` / `epoch=003` |
+
+### Training
+
+![Training of the V2 runs](docs/figures/training-v2.png)
+
+Validation skill at 1 s plateaus by epoch 7; V2-A is ahead from the first
+epoch, with half the effective rank. V2-A's loss is lower partly because its
+SIGReg term weighs less, so losses are not comparable across SIGReg weights.
+V2 and V2-D overlap.
+
+### The world model beats persistence up to 1 s
+
+![Rollout skill of the full-data runs](docs/figures/evaluation-v2.png)
+
+Every run beats persistence at every horizon (skill 0.44–0.60). Going from V1
+to V2 raises skill at 0.1 s (0.47 → 0.55) and leaves 1 s unchanged; V1 and V2
+differ in several settings, so this is not attributed to the context length.
+BatchNorm (V2-B) and per-position statistics (V2-D) change nothing beyond the
+intervals: the projector normalization does not matter here.
+
+### SIGReg sets a trade-off, in two different setups
+
+![SIGReg weight in two setups](docs/figures/sigreg.png)
+
+Lowering the SIGReg weight has the same three effects on the full data with
+ONSET/OFFSET events and on EgoCom with RoPE and explicit ego actions:
+
+- skill drops at 0.1 s and rises at 0.5–1 s;
+- the latent's effective rank halves (83 → 41, 96 → 44);
+- the rollout relies more on the future events: replacing them by "no event"
+  (or by WAIT/HOLD) costs more skill (+0.23 → +0.33, +0.24 → +0.44).
+
+The cost shows across corpora. With λ = 0.03 the latent separates EgoCom from
+Ego4D more (dataset silhouette 0.040 → 0.067), and a probe for "others
+active" trained on EgoCom and tested on Ego4D falls further below the Mimi
+features (−0.03 → −0.07 balanced accuracy). λ is therefore a choice between
+local accuracy and domain robustness on one side, long-horizon,
+event-driven dynamics on the other, to be settled by a sweep.
+
+### What the latent is, and is not, yet useful for
+
+- **It keeps the encoder's information.** Linear probes read the current
+  conversational state (ego speaking, others active, joint state) from the V2
+  latent as well as from Mimi (balanced accuracy within 0.012).
+- **It does not yet add to it.** On TurnBench DEV, matched heads on each
+  representation, with thresholds at ≤ 10% false positives, give:
+
+  | task | Mimi | V1 latent z_t | V1 one-step prediction |
+  |---|---:|---:|---:|
+  | end of turn: recall · p50 latency | 0.595 · 1444 ms | 0.590 · 1559 ms | 0.536 · 1696 ms |
+  | interruption: recall · p50 latency | 0.553 · 291 ms | 0.484 · 316 ms | 0.481 · 267 ms |
+
+  Single operating points without intervals; V1 predates the V2 changes.
+- **Part of the transition skill is given, not predicted.** For V2 at 1 s, 41% of
+  the transition rows have an ONSET/OFFSET among the future tokens the
+  rollout reads. These are recorded conversation events, so the runs measure
+  event-conditioned dynamics, not anticipation or planning.
+- **Rollouts are cheap.** The EgoCom λ=0.09 predictor rolls out
+  1 s (10 steps) in 85 ms for one candidate and 93 ms for 128 candidates
+  (p50, NVIDIA L4, bf16, encoding excluded).
+
+Next: separate controllable robot actions from exogenous conversation events,
+then a SIGReg sweep on the frozen V2 recipe ([research
+program](docs/research_program.md)). The analysis code was removed from
+`main` (`a329a8f`); every run directory records its training commit.
+
 ## Tests
 
 ```bash
