@@ -150,18 +150,12 @@ event-driven dynamics on the other, to be settled by a sweep.
   | interruption: recall · p50 latency | 0.553 · 291 ms | 0.484 · 316 ms | 0.481 · 267 ms |
 
   Single operating points without intervals; V1 predates the V2 changes.
-- **Part of the transition skill is given, not predicted.** For V2 at 1 s, 41% of
-  the transition rows have an ONSET/OFFSET among the future tokens the
-  rollout reads. These are recorded conversation events, so the runs measure
-  event-conditioned dynamics, not anticipation or planning.
+
 - **Rollouts are cheap.** The EgoCom λ=0.09 predictor rolls out
   1 s (10 steps) in 85 ms for one candidate and 93 ms for 128 candidates
   (p50, NVIDIA L4, bf16, encoding excluded).
 
-Next: separate controllable robot actions from exogenous conversation events,
-then a SIGReg sweep on the frozen V2 recipe ([research
-program](docs/research_program.md)). The analysis code was removed from
-`main` (`a329a8f`); every run directory records its training commit.
+
 
 ## Tests
 
